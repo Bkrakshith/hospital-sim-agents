@@ -8,6 +8,7 @@ from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
 
+from wardzero_agents.kb.embed import Embedder, HashEmbedder
 from wardzero_agents.memory import memory_path
 from wardzero_agents.memory.longterm import LongTermMemory
 from wardzero_agents.memory.runlock import RunActive, active_run
@@ -34,6 +35,8 @@ def _backup(src: Path, dst: Path) -> None:
 def save_snapshot(mem_path: Path, name: str) -> Path:
     _check(name)
     mem_path = Path(mem_path)
+    if not mem_path.exists():
+        raise FileNotFoundError(f"memory db {mem_path} does not exist yet")
     out_dir = _snap_dir(mem_path)
     out_dir.mkdir(parents=True, exist_ok=True)
     dst = out_dir / f"{name}.sqlite"
@@ -54,6 +57,11 @@ def restore_snapshot(mem_path: Path, name: str) -> None:
     src = _snap_dir(mem_path) / f"{name}.sqlite"
     if not src.exists():
         raise FileNotFoundError(f"snapshot {name!r} not found ({src})")
+    try:
+        with closing(sqlite3.connect(f"file:{src}?mode=ro", uri=True)) as c:
+            c.execute("SELECT 1 FROM memories LIMIT 1")
+    except sqlite3.Error as e:
+        raise ValueError(f"snapshot {name!r} is not a valid memory db: {e}") from e
     mem_path.parent.mkdir(parents=True, exist_ok=True)
     _backup(src, mem_path)
 
@@ -76,10 +84,10 @@ def _refuse_if_active(data_dir: Path) -> None:
         raise RunActive(f"run {run_id} is active; stop it first")
 
 
-def guarded_reset(data_dir: Path, keys: list[str], seeds: dict[str, list[str]]) -> None:
-    from wardzero_agents.kb.embed import HashEmbedder
+def guarded_reset(data_dir: Path, keys: list[str], seeds: dict[str, list[str]],
+                  embedder: Embedder | None = None) -> None:
     _refuse_if_active(data_dir)
-    LongTermMemory(memory_path(data_dir), HashEmbedder()).reset(keys, seeds)
+    LongTermMemory(memory_path(data_dir), embedder or HashEmbedder()).reset(keys, seeds)
 
 
 def guarded_restore(data_dir: Path, name: str) -> None:

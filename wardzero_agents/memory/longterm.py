@@ -17,6 +17,7 @@ CREATE TABLE IF NOT EXISTS memories(
   id INTEGER PRIMARY KEY, person_key TEXT, run_id TEXT, run_index INTEGER, t REAL,
   kind TEXT CHECK(kind IN ('seed','episode','fact')), text TEXT, importance REAL, vector BLOB);
 CREATE INDEX IF NOT EXISTS memories_person ON memories(person_key);
+CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT);
 CREATE TABLE IF NOT EXISTS runs(run_id TEXT PRIMARY KEY, run_index INTEGER, started_at TEXT);
 """
 
@@ -37,6 +38,14 @@ class LongTermMemory:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with closing(self._conn()) as c:
             c.executescript(SCHEMA)
+            with c:
+                row = c.execute("SELECT value FROM meta WHERE key='embedder'").fetchone()
+                want = f"{embedder.name}:{embedder.dim}"
+                if row is None:
+                    c.execute("INSERT INTO meta VALUES('embedder',?)", (want,))
+                elif row[0] != want:
+                    raise ValueError(
+                        f"memory db was built with embedder {row[0]}, opened with {want}")
 
     def _conn(self) -> sqlite3.Connection:
         return sqlite3.connect(self.path)
@@ -53,7 +62,9 @@ class LongTermMemory:
 
     def _run_index(self, c: sqlite3.Connection, run_id: str) -> int:
         row = c.execute("SELECT run_index FROM runs WHERE run_id=?", (run_id,)).fetchone()
-        return row[0] if row else 0
+        if row is None:
+            raise ValueError(f"unknown run_id {run_id!r}; call begin_run first")
+        return row[0]
 
     def _insert(self, c, person_key, run_id, run_index, t, kind, texts, importance):
         vecs = self.embedder.embed(list(texts))
@@ -91,7 +102,7 @@ class LongTermMemory:
             if v.shape[0] != self.embedder.dim:
                 raise ValueError(
                     f"stored vector dim {v.shape[0]} != embedder dim {self.embedder.dim}")
-            score = (0.6 * float(v @ q) + 0.25 * math.exp(-(run_index - ri) / 5)
+            score = (0.6 * float(v @ q) + 0.25 * math.exp(-max(0, run_index - ri) / 5)
                      + 0.15 * imp)
             scored.append((score, t, MemoryHit(text, kind, imp, ri, score)))
         scored.sort(key=lambda s: (s[0], s[1]), reverse=True)

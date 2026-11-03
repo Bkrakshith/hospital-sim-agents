@@ -20,6 +20,11 @@ def mem(tmp_path):
     return LongTermMemory(memory_path(tmp_path), HashEmbedder())
 
 
+def run(mem, *ids):
+    for i in ids:
+        mem.begin_run(i)
+
+
 def count_rows(mem):
     with sqlite3.connect(mem.path) as c:
         return c.execute("select count(*) from memories").fetchone()[0]
@@ -61,13 +66,26 @@ def test_recency_beats_old(mem):
 
 
 def test_newer_t_wins_tie_in_run(mem):
-    mem.begin_run("r1")
-    mem.add(K, "r1", 1, "fact", "same words", 0.5)
+    run(mem, "r1")
     mem.add(K, "r1", 2, "fact", "same words", 0.5)
-    with sqlite3.connect(mem.path) as c:
-        c.execute("update memories set text='same words'")
+    mem.add(K, "r1", 1, "fact", "same words", 0.5)
+    with sqlite3.connect(mem.path) as c:  # distinguish rows without changing vectors
+        c.execute("update memories set text='newer' where t=2")
     hits = mem.search(K, "same words", 2, run_index=1)
-    assert len(hits) == 2 and hits[0].score == pytest.approx(hits[1].score)
+    assert hits[0].score == pytest.approx(hits[1].score)
+    assert hits[0].text == "newer"
+
+
+def test_add_unknown_run(mem):
+    with pytest.raises(ValueError, match="nope"):
+        mem.add(K, "nope", 1, "fact", "x", 0.5)
+
+
+def test_future_rows_not_boosted(mem):
+    run(mem, "r1", "r2", "r3")
+    mem.add(K, "r3", 1, "fact", "zzz qqq", 0.0)
+    h = mem.search(K, "zzz qqq", 1, run_index=1)[0]
+    assert h.score <= 0.6 + 0.25 + 1e-6
 
 
 def test_search_scoped_to_person(mem):
@@ -78,27 +96,54 @@ def test_search_scoped_to_person(mem):
 
 
 def test_reset_restores_seed(mem):
+    run(mem, 'r1')
     mem.add(K, "r1", 1, "episode", "shouted at robot", 0.9)
     mem.reset([K], {K: ["seed text"]})
     assert [h.text for h in mem.search(K, "robot", 5, run_index=2)] == ["seed text"]
 
 
 def test_reset_other_person_untouched(mem):
+    run(mem, 'r1')
     mem.add(K, "r1", 1, "episode", "one", 0.9)
     mem.add(K2, "r1", 1, "episode", "two", 0.9)
     mem.reset([K], {K: ["seed"]})
     assert [h.text for h in mem.search(K2, "two", 5, run_index=2)] == ["two"]
 
 
-def test_dim_mismatch(tmp_path):
-    m1 = LongTermMemory(memory_path(tmp_path), HashEmbedder(64))
-    m1.add(K, "r1", 1, "fact", "x", 0.5)
-    m2 = LongTermMemory(memory_path(tmp_path), HashEmbedder(32))
-    with pytest.raises(ValueError, match="dim"):
-        m2.search(K, "x", 1, run_index=1)
+def test_embedder_mismatch(tmp_path):
+    LongTermMemory(memory_path(tmp_path), HashEmbedder(64))
+    with pytest.raises(ValueError, match="hash64.*hash32"):
+        LongTermMemory(memory_path(tmp_path), HashEmbedder(32))
+
+
+def test_guarded_reset_explicit_embedder(tmp_path):
+    e = HashEmbedder(64)
+    m = LongTermMemory(memory_path(tmp_path), e)
+    run(m, "r1")
+    m.add(K, "r1", 1, "fact", "a", 0.5)
+    guarded_reset(tmp_path, [K], {K: ["seed"]}, embedder=e)
+    assert [h.text for h in m.search(K, "a", 5, run_index=1)] == ["seed"]
+    with pytest.raises(ValueError):
+        guarded_reset(tmp_path, [K], {K: ["seed"]})
+
+
+def test_save_snapshot_without_db(tmp_path):
+    with pytest.raises(FileNotFoundError):
+        save_snapshot(memory_path(tmp_path), "s")
+    assert not memory_path(tmp_path).exists()
+
+
+def test_restore_invalid_snapshot(mem, tmp_path):
+    (tmp_path / "snapshots").mkdir()
+    (tmp_path / "snapshots" / "junk.sqlite").write_bytes(b"not a database at all" * 10)
+    sqlite3.connect(tmp_path / "snapshots" / "empty.sqlite").close()
+    for n in ("junk", "empty"):
+        with pytest.raises(ValueError):
+            restore_snapshot(mem.path, n)
 
 
 def test_snapshot_roundtrip(mem, tmp_path):
+    run(mem, 'r1')
     mem.add(K, "r1", 1, "fact", "a", 0.5)
     before = count_rows(mem)
     p = save_snapshot(mem.path, "before")
@@ -139,6 +184,7 @@ def test_reset_refused_during_run(tmp_path):
 
 def test_guarded_when_idle(tmp_path):
     m = LongTermMemory(memory_path(tmp_path), HashEmbedder())
+    m.begin_run('r1')
     m.add(K, "r1", 1, "fact", "a", 0.5)
     save_snapshot(m.path, "s")
     guarded_reset(tmp_path, [K], {K: ["seed"]})
@@ -153,3 +199,26 @@ def test_stale_lock_removed(tmp_path):
     assert not (tmp_path / "active_run.json").exists()
     with RunLock(tmp_path, "new"):
         assert json.loads((tmp_path / "active_run.json").read_text())["pid"] == os.getpid()
+
+
+def test_dead_pid_lock_cleaned(tmp_path):
+    (tmp_path / "active_run.json").write_text(json.dumps({"run_id": "old", "pid": 2**22 + 777}))
+    with RunLock(tmp_path, "new"):
+        assert active_run(tmp_path) == "new"
+
+
+def test_young_unparsable_lock_is_live(tmp_path):
+    (tmp_path / "active_run.json").write_text("{")
+    assert active_run(tmp_path) is not None
+    with pytest.raises(RunActive):
+        with RunLock(tmp_path, "x"):
+            pass
+    old = os.stat(tmp_path / "active_run.json").st_mtime - 60
+    os.utime(tmp_path / "active_run.json", (old, old))
+    assert active_run(tmp_path) is None
+
+
+def test_exit_leaves_foreign_lock(tmp_path):
+    with RunLock(tmp_path, "a"):
+        (tmp_path / "active_run.json").write_text(json.dumps({"run_id": "b", "pid": os.getpid()}))
+    assert (tmp_path / "active_run.json").exists()
