@@ -12,8 +12,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import numpy as np
-import yaml
 
+from ..mind.prompts import persona_card
 from .chunker import Chunk, chunk_markdown
 from .embed import Embedder
 
@@ -120,8 +120,8 @@ class KnowledgeBase:
 
 
 def _persona_text(instance: "PersonInstance", loaded: "LoadedScenario") -> str:
-    """Plain YAML dump of a person. Task 8 replaces this with persona_card()."""
-    return yaml.safe_dump(instance.model_dump(mode="json"), sort_keys=False, allow_unicode=True)
+    """The same persona card the mind is given."""
+    return persona_card(instance, loaded.area)
 
 
 def _area_text(loaded: "LoadedScenario") -> str:
