@@ -346,3 +346,210 @@ async def test_tick_does_not_wait_for_a_pending_decision(tmp_path):
     assert s.pending_count() > 0
     gw.release.set()
     await s.aclose()
+
+
+# ---- final review fixes ------------------------------------------------------------------
+class SeedRecorder:
+    def __init__(self):
+        self.seeded = []
+
+    def ensure_seed(self, key, texts):
+        self.seeded.append((key, list(texts)))
+
+
+def roster_of(s, extra=()):
+    people = [RosterEntry(id=i.person_id, persona=i.persona_id, display_name=i.display_name)
+              for i in s.loaded.instances if not i.person_id.startswith("N")]
+    return people + list(extra)
+
+
+def test_newcomer_arrives_at_roster_time_and_is_seeded(tmp_path):
+    ltm = SeedRecorder()
+    s = AgentService(load_scenario(V1), RunLog(tmp_path), Out(), FakeMind, reflex_factory=QuietReflex, ltm=ltm)
+    assert ltm.seeded == []  # the cast is seeded at start-up, not here
+    new = s.on_roster(Roster(t=480.5, people=roster_of(s, [RosterEntry(id="N1", persona="ward_visitor",
+                                                                        display_name="X")])))
+    assert new == ["N1"]
+    inst = s.minds["N1"].inst
+    assert inst.arrive_at_s == 480.5  # not 0: their clock starts when they walk in
+    persona = s.loaded.personas["ward_visitor"]
+    assert persona.seed_memories and ltm.seeded == [(inst.memory_key, persona.seed_memories)]
+
+
+def test_newcomer_is_seeded_in_a_real_memory_db(tmp_path):
+    from wardzero_agents.kb.embed import HashEmbedder
+    from wardzero_agents.memory.longterm import LongTermMemory
+    ltm = LongTermMemory(tmp_path / "mem" / "longterm.sqlite", HashEmbedder())
+    ltm.begin_run("r1")
+    s = AgentService(load_scenario(V1), RunLog(tmp_path), Out(), FakeMind, reflex_factory=QuietReflex, ltm=ltm)
+    s.on_roster(Roster(t=60, people=roster_of(s, [RosterEntry(id="N1", persona="ward_visitor", display_name="X")])))
+    key = s.minds["N1"].inst.memory_key
+    hits = ltm.search(key, "hospital", 10, run_index=1)
+    assert {h.text for h in hits} == set(s.loaded.personas["ward_visitor"].seed_memories)
+
+
+def test_seeding_failure_does_not_lose_the_newcomer(tmp_path, caplog):
+    class Broken:
+        def ensure_seed(self, key, texts):
+            raise OSError("disk")
+    s = AgentService(load_scenario(V1), RunLog(tmp_path), Out(), FakeMind, reflex_factory=QuietReflex,
+                     ltm=Broken())
+    assert s.on_roster(Roster(t=5, people=roster_of(s, [RosterEntry(id="N1", persona="companion",
+                                                                     display_name="X")]))) == ["N1"]
+    assert "seeding long-term memory failed" in caplog.text
+
+
+def res(error=None, status=None, ok=False):
+    return LLMResult(ok, {} if ok else None, error, "m", status=status)
+
+
+REQ = LLMRequest(role="decide", person="P1", system_fixed="SYS", persona_card="CARD", user="secret prompt",
+                 schema={})
+
+
+def test_first_permanent_failure_of_each_kind_warns_and_posts_an_event(tmp_path, caplog):
+    events = []
+    s = AgentService(load_scenario(V1), RunLog(tmp_path), Out(), FakeMind, reflex_factory=QuietReflex,
+                     events=events.append, now=lambda: 12.0)
+    s.on_usage(REQ, res("auth", 401))
+    s.on_usage(REQ, res("auth", 401))  # the same kind again: no second warning
+    s.on_usage(REQ, res("model_not_found", 404))
+    warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert [r.getMessage() for r in warnings] == [
+        "AI provider rejected a request: auth (status 401)",
+        "AI provider rejected a request: model_not_found (status 404)"]
+    assert [e["text"] for e in events] == ["AI provider rejected a request: auth (status 401)",
+                                           "AI provider rejected a request: model_not_found (status 404)"]
+    assert all(e["schema"] == "wz.v1" and e["source"] == "agents" and e["t"] == 12.0 for e in events)
+    assert "secret prompt" not in caplog.text and not s.llm_off
+    assert [r["status"] for r in lines(tmp_path, "tokens")] == [401, 401, 404]
+
+
+def test_five_permanent_failures_in_a_row_stop_the_llm(tmp_path, caplog):
+    events = []
+    s = AgentService(load_scenario(V1), RunLog(tmp_path), Out(), FakeMind, reflex_factory=QuietReflex,
+                     events=events.append)
+    for _ in range(4):
+        s.on_usage(REQ, res("bad_request", 400))
+    s.on_usage(REQ, res("timeout"))  # a transient failure breaks the streak
+    for _ in range(4):
+        s.on_usage(REQ, res("bad_request", 400))
+    assert not s.llm_off
+    s.on_usage(REQ, res("budget"))  # no call was made: neither counts nor resets
+    s.on_usage(REQ, res("too_large", 413))
+    assert s.llm_off
+    msg = "AI provider rejecting requests: too_large (status 413). Check the key and model; see the README."
+    assert events[-1]["text"] == msg
+    errors = [r for r in caplog.records if r.levelname == "ERROR"]
+    assert len(errors) == 1 and msg in errors[0].getMessage()
+    s.on_usage(REQ, res("too_large", 413))  # logged and posted once only
+    assert len([r for r in caplog.records if r.levelname == "ERROR"]) == 1
+    assert [e["text"] for e in events].count(msg) == 1
+
+
+async def test_with_the_llm_off_reflexes_run_but_minds_get_no_ticks(tmp_path):
+    class Reflex(QuietReflex):
+        def tick(self, t, status, heard, idle):
+            return [type("A", (), {"kind": "fidget", "target": None})()]
+    s, out = make(tmp_path, reflex=Reflex)
+    s.on_status(status("P1"))
+    await s.tick(1.0)
+    assert len(s.minds["P1"].ticks) == 1
+    s.llm_off = True
+    await s.tick(2.0)
+    assert len(s.minds["P1"].ticks) == 1  # no new decisions
+    assert [i.kind for i in out.intents if i.person == "P1"] == ["fidget", "fidget"]  # reflexes go on
+
+
+async def test_guarded_gateway_stops_calling_the_provider(tmp_path):
+    calls = []
+
+    class Inner:
+        async def complete(self, req):
+            calls.append(req)
+            return res(ok=True)
+    s, _ = make(tmp_path)
+    gw = s.guard(Inner())
+    assert (await gw.complete(REQ)).ok and len(calls) == 1
+    s.llm_off = True
+    r = await gw.complete(REQ)
+    assert not r.ok and r.error == "llm_disabled" and len(calls) == 1
+
+
+def test_pre_restore_snapshot_keeps_the_later_memory(tmp_path, monkeypatch, capsys):
+    """A rerun (memory_snapshot set) first saves the memory it is about to overwrite."""
+    import sqlite3
+    from contextlib import closing
+
+    from wardzero_agents.kb.embed import HashEmbedder
+    from wardzero_agents.memory import memory_path
+    from wardzero_agents.memory.longterm import LongTermMemory
+    from wardzero_agents.memory.snapshots import save_snapshot
+    from wardzero_agents.ros.agent_node import _prepare_memory, pre_restore_name
+
+    monkeypatch.setenv("WARDZERO_DATA_DIR", str(tmp_path / "data"))
+    mem = memory_path(tmp_path / "data")
+    ltm = LongTermMemory(mem, HashEmbedder())
+    ltm.begin_run("r1")
+    ltm.add("k#1", "r1", 1.0, "episode", "early memory", 0.5)
+    save_snapshot(mem, "run-r1-start")
+    ltm.begin_run("r2")
+    ltm.add("k#1", "r2", 1.0, "episode", "a later run taught me this", 0.9)
+
+    def rows(path):
+        with closing(sqlite3.connect(path)) as c:
+            return sorted(r[0] for r in c.execute("SELECT text FROM memories"))
+    before = rows(mem)
+
+    loaded = load_scenario(V1)
+    loaded.scenario = loaded.scenario.model_copy(update={"memory_snapshot": "run-r1-start"})
+    _, _, _, snap_in, pre = _prepare_memory(loaded, "20261103-rerun", HashEmbedder())
+    assert pre == pre_restore_name("20261103-rerun") == "pre-restore-20261103-rerun"
+    kept = tmp_path / "data" / "snapshots" / f"{pre}.sqlite"
+    assert kept.is_file() and rows(kept) == before  # the later memory is safe
+    assert "a later run taught me this" not in rows(mem)  # the restore happened
+    out = capsys.readouterr().out
+    assert pre in out and "hhumans memory snapshot restore" in out
+
+
+def test_no_pre_restore_without_a_restore(tmp_path, monkeypatch):
+    from wardzero_agents.kb.embed import HashEmbedder
+    from wardzero_agents.ros.agent_node import _prepare_memory
+    monkeypatch.setenv("WARDZERO_DATA_DIR", str(tmp_path / "data"))
+    *_, pre = _prepare_memory(load_scenario(V1), "r9", HashEmbedder())
+    assert pre is None and not list((tmp_path / "data" / "snapshots").glob("pre-restore-*"))
+
+
+def test_pre_restore_name_is_valid_and_bounded():
+    from wardzero_agents.memory.snapshots import _check
+    from wardzero_agents.ros.agent_node import pre_restore_name
+    n = pre_restore_name("x" * 100 + " bad/chars")
+    _check(n)
+    assert n.startswith("pre-restore-") and len(n) == 64
+
+
+def test_key_check_covers_every_model_in_use(monkeypatch):
+    from wardzero_agents import keys
+    from wardzero_agents.ros.agent_node import _key_check, models_in_use
+    loaded = load_scenario(V1)
+    assert models_in_use(loaded) == ["claude-opus-5-5", "claude-haiku-5-5"]
+    seen = []
+
+    async def check(provider, client, model):
+        seen.append(model)
+    monkeypatch.delenv("WARDZERO_TEST_FAKE_LLM", raising=False)
+    monkeypatch.setattr(keys, "make_client", lambda p: object())
+    monkeypatch.setattr(keys, "check", check)
+    assert _key_check(loaded) is None and seen == ["claude-opus-5-5", "claude-haiku-5-5"]
+    loaded.scenario = loaded.scenario.model_copy(update={
+        "perception": "full",
+        "models": loaded.scenario.models.model_copy(update={"vision": "claude-sonnet-5-5"})})
+    seen.clear()
+    assert _key_check(loaded) is None
+    assert seen == ["claude-opus-5-5", "claude-haiku-5-5", "claude-sonnet-5-5"]
+
+    async def reject_summary(provider, client, model):
+        if model == "claude-haiku-5-5":
+            raise keys.ModelUnavailable(f"Model {model} is not available to this claude account.")
+    monkeypatch.setattr(keys, "check", reject_summary)
+    assert _key_check(loaded) == 2

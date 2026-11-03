@@ -285,3 +285,62 @@ def test_make_gateway_unknown_provider(monkeypatch):
     monkeypatch.delenv("WARDZERO_TEST_FAKE_LLM", raising=False)
     with pytest.raises(ValueError):
         make_gateway("bogus", ROLES, Budget(1.0), lambda r, x: None)
+
+
+# ---------- error kinds per HTTP status (final review finding 4b) ----------
+
+STATUS_KINDS = [(400, "bad_request"), (401, "auth"), (403, "auth"), (404, "model_not_found"),
+                (413, "too_large"), (500, "provider_error"), (503, "provider_error"),
+                (422, "provider_error")]
+
+
+def _status_exc(mod, code):
+    return mod.APIStatusError("x", response=_resp(code), body=None)
+
+
+async def test_anthropic_status_kinds():
+    for code, kind in STATUS_KINDS:
+        gw, _, seen = make_anthropic(raises=_status_exc(anthropic, code))
+        r = await gw.complete(req())
+        assert (r.ok, r.error, r.status) == (False, kind, code), code
+        assert seen[0][1].status == code
+    # the SDK's own subclasses map the same way
+    gw, _, _ = make_anthropic(raises=anthropic.AuthenticationError("x", response=_resp(401), body=None))
+    assert (await gw.complete(req())).error == "auth"
+    gw, _, _ = make_anthropic(raises=anthropic.NotFoundError("x", response=_resp(404), body=None))
+    assert (await gw.complete(req())).error == "model_not_found"
+    # connection errors and 429 keep their kinds, with no status
+    gw, _, _ = make_anthropic(raises=anthropic.APIConnectionError(request=httpx.Request("POST", "https://x")))
+    r = await gw.complete(req())
+    assert (r.error, r.status) == ("provider_error", None)
+    gw, _, _ = make_anthropic(raises=anthropic.RateLimitError("slow", response=_resp(429), body=None))
+    assert (await gw.complete(req())).error == "rate_limited"
+
+
+async def test_anthropic_max_tokens():
+    gw, _, _ = make_anthropic(result=message(text='{"intent": {"ki', stop="max_tokens"))
+    r = await gw.complete(req())
+    assert not r.ok and r.error == "max_tokens" and r.data is None and r.output_tokens == 20
+
+
+async def test_openai_status_kinds():
+    roles = ModelRoles(decide="gpt-x", summarise="gpt-y", vision="gpt-x")
+    for code, kind in STATUS_KINDS:
+        gw = OpenAIGateway(FakeOpenAI(raises=_status_exc(openai, code)), roles, Budget(1.0), lambda r, x: None)
+        r = await gw.complete(req())
+        assert (r.ok, r.error, r.status) == (False, kind, code), code
+    gw = OpenAIGateway(FakeOpenAI(raises=openai.APIConnectionError(request=httpx.Request("POST", "https://x"))),
+                       roles, Budget(1.0), lambda r, x: None)
+    r = await gw.complete(req())
+    assert (r.error, r.status) == ("provider_error", None)
+
+
+async def test_openai_max_tokens():
+    class Cut(FakeOpenAI):
+        async def _create(self, **kw):
+            r = await super()._create(**kw)
+            r.status, r.incomplete_details = "incomplete", NS(reason="max_output_tokens")
+            return r
+    roles = ModelRoles(decide="gpt-x", summarise="gpt-y", vision="gpt-x")
+    r = await OpenAIGateway(Cut(text='{"b"'), roles, Budget(1.0), lambda r, x: None).complete(req())
+    assert not r.ok and r.error == "max_tokens"

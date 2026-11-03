@@ -11,7 +11,7 @@ SCEN_EVENTS = "/scenario/events"
 CONTROL = "/scenario/control"
 PENDING = "/agents/pending"
 
-FORBIDDEN_FOR_ROBOT = ("/humans/", "/scenario/", "/sim/audio/events", "/sim/world_event")
+FORBIDDEN_FOR_ROBOT = ("/humans/", "/scenario/", "/sim/audio/events", "/sim/world_event", "/agents/pending")
 
 
 def status(pid: str) -> str:

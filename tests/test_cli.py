@@ -561,3 +561,84 @@ def test_claude_ambient_profile_detection(monkeypatch):
         assert cli._claude_ambient() is want
     monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
     assert cli._claude_ambient() is True
+
+
+# ---- final review fixes ------------------------------------------------------------------
+KEY_VARS = {"ANTHROPIC_API_KEY": "sk-" + "ant-api03-zzzzzzzzzzzz", "OPENAI_API_KEY": "sk-" + "proj-yyyyyyyyyyyyyyyy",
+            "ANTHROPIC_AUTH_TOKEN": "tok-" + "xxxxxxxx", "WARDZERO_KEY_FILE": "/tmp/keys.json"}
+
+
+def test_child_env_strips_keys_except_for_the_agents(monkeypatch):
+    for k, v in KEY_VARS.items():
+        monkeypatch.setenv(k, v)
+    plain = cli._child_env()
+    assert not set(KEY_VARS) & set(plain) and plain["PYTHONUNBUFFERED"] == "1"
+    agents = cli._child_env(with_keys=True)
+    assert all(agents[k] == v for k, v in KEY_VARS.items())
+
+
+def test_run_gives_the_key_only_to_the_agent_node(fake_llm, monkeypatch):
+    for k, v in KEY_VARS.items():
+        monkeypatch.setenv(k, v)
+    seen = {}
+
+    def fake(children, **kw):
+        seen["children"], seen["env"] = children, kw.get("env")
+        return 0
+    monkeypatch.setattr(cli, "supervise", fake)
+    assert main(["run", V1, "--no-panel"]) == 0
+    default = seen["env"]
+    assert default is not None and not set(KEY_VARS) & set(default)
+    for c in seen["children"]:
+        env = c.env if c.env is not None else default
+        has = set(KEY_VARS) <= set(env)
+        assert has == (c.name == "agents"), c.name
+
+
+def test_supervise_uses_each_childs_own_env(tmp_path):
+    out = tmp_path / "env"
+    code = "import os, sys; open(sys.argv[1], 'a').write(sys.argv[2] + '=' + os.environ.get('WZ_X', '-') + '\\n')"
+    kids = [cli.Child("a", py(code) + [str(out), "a"], env=dict(os.environ, WZ_X="own")),
+            cli.Child("b", py(code) + [str(out), "b"], ends_run=True)]
+    assert cli.supervise(kids, env=dict(os.environ, WZ_X="shared"), early_exit_grace_s=5) == 0
+    assert sorted(out.read_text().split()) == ["a=own", "b=shared"]
+
+
+def test_replay_intents_records_into_the_new_run_folder(fake_llm, launched, tmp_path):
+    src = make_recorded_run(tmp_path)
+    launched.clear()
+    time.sleep(1.1)
+    assert main(["replay", str(src), "--intents"]) == 0
+    (children,) = launched
+    rec = Path(opt(argv_of(children, "replay"), "--record-dir"))
+    assert rec == Path(opt(argv_of(children, "stub_sim"), "--run-dir")) and rec != src
+
+
+@pytest.mark.parametrize("name", ["run-20261103-start", "run-x-end", "pre-restore-abc"])
+def test_snapshot_save_refuses_reserved_names(name, capsys):
+    seeded_memory()
+    assert main(["memory", "snapshot", "save", name]) == 2
+    assert "reserved" in capsys.readouterr().err
+    assert not (data_dir() / "snapshots" / f"{name}.sqlite").exists()
+
+
+def test_snapshot_restore_keeps_the_memory_it_replaces(capsys):
+    import sqlite3
+    from contextlib import closing
+    loaded, ltm = seeded_memory()
+    assert main(["memory", "snapshot", "save", "before"]) == 0
+    ltm.add(loaded.instances[0].memory_key, "r1", 2.0, "episode", "learned later", 0.9)
+    capsys.readouterr()
+    assert main(["memory", "snapshot", "restore", "before"]) == 0
+    out = capsys.readouterr().out
+    (kept,) = list((data_dir() / "snapshots").glob("pre-restore-manual-*.sqlite"))
+    assert kept.stem in out
+    with closing(sqlite3.connect(kept)) as c:
+        assert c.execute("SELECT COUNT(*) FROM memories WHERE text='learned later'").fetchone()[0] == 1
+    assert episodes(ltm, loaded.instances[0].memory_key) == 1  # the restore itself happened
+
+
+def test_snapshot_restore_of_a_missing_snapshot_saves_nothing(capsys):
+    seeded_memory()
+    assert main(["memory", "snapshot", "restore", "nope"]) == 2
+    assert not list((data_dir() / "snapshots").glob("pre-restore-*"))

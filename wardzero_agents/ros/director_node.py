@@ -26,6 +26,7 @@ from ..contracts import Control, Nudge, ReflexOverride, Roster, Status, WorldEve
 from ..director.cards import CardExecutor, CardRejected
 from ..director.chaos import Chaos
 from ..director.storyboard import CardFiring, StoryboardEngine, WorldView
+from ..memory.snapshots import check_user_name
 from ..panel.server import CONTROL_ACTIONS, SNAPSHOT_RE, BadRequest
 from ..runlog import RunLog
 
@@ -86,8 +87,9 @@ class DirectorService:
         self.run_id = run_id
         self.snapshot_fn = snapshot_fn
         self.engine = StoryboardEngine(loaded.storyboard, loaded.deck)
-        self.executor = CardExecutor(loaded.deck, {i.person_id: i for i in loaded.instances})
         sc = loaded.scenario
+        self.executor = CardExecutor(loaded.deck, {i.person_id: i for i in loaded.instances},
+                                     loaded.personas, sc.seed)
         self.seed = sc.seed
         self.chaos_enabled = sc.chaos.enabled
         self.chaos_rate = float(sc.chaos.rate_per_hour)
@@ -129,6 +131,16 @@ class DirectorService:
             self.paused = False
         elif ctl.action == "stop":
             self.stopped = True
+        self._refresh()
+
+    def on_scenario_event(self, ev: dict) -> None:
+        """An event another node posted on /scenario/events (the agent service's AI provider
+        warnings). The director's own events are already in the list."""
+        if not isinstance(ev, dict) or ev.get("source") != "agents" or not isinstance(ev.get("text"), str):
+            return
+        t = ev.get("t")
+        t = float(t) if isinstance(t, (int, float)) and not isinstance(t, bool) else self.t
+        self.events.append({"t": t, "text": ev["text"][:300]})
         self._refresh()
 
     def ingest(self, stream: str, rec: dict) -> None:
@@ -295,6 +307,10 @@ class DirectorService:
     def snapshot(self, name: str) -> dict:
         if not SNAPSHOT_RE.match(name or ""):
             raise BadRequest("'name' must be 1 to 64 letters, digits, dot, dash or underscore.")
+        try:
+            check_user_name(name)
+        except ValueError as exc:  # run-* and pre-restore-* are saved automatically
+            raise BadRequest(str(exc)) from None
         if self.snapshot_fn is None:
             return {"ok": False, "error": "snapshots are not available here"}
         self.snapshot_fn(name)
@@ -384,6 +400,14 @@ async def _run(args) -> int:
         subscribe_person(i.person_id)
     ros.subscribe_json(Roster, topics.ROSTER, on_roster, QOS_LATCHED)
     ros.subscribe_json(Control, topics.CONTROL, on_control)
+
+    def on_event_text(text: str) -> None:
+        try:
+            svc.on_scenario_event(json.loads(text))
+        except ValueError:
+            pass
+
+    ros.subscribe(String, topics.SCEN_EVENTS, on_event_text, convert=lambda m: m.data)
     for t in (topics.WORLD_EVENT, topics.CONTROL, topics.TIMELINE, topics.SCEN_EVENTS):
         ros.publisher(t, String)
     ros.start()

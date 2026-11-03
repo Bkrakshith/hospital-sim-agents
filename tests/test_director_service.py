@@ -193,3 +193,51 @@ def test_state_is_a_cached_snapshot(tmp_path):
     assert s.state() == a  # statuses alone do not rebuild it; the tick does
     s.tick(3.0)
     assert {c["id"]: c for c in s.state()["cast"]}["P1"]["posture"] == "standing"
+
+
+# ---- final review fixes ------------------------------------------------------------------
+def test_arrival_without_a_persona_gets_one_from_the_seed(tmp_path):
+    """new_arrival names no persona: the director picks one from the run seed, not the stub's default."""
+    picks = {}
+    for seed in (1, 2, 3, 4, 5, 6):
+        for attempt in range(2):
+            d = tmp_path / f"s{seed}-{attempt}"
+            s, out, _ = make(d)
+            s.seed = seed
+            s.executor.seed = seed
+            assert s.fire("new_arrival", None, {})["ok"] is True
+            (ev,) = out.of("world")
+            assert ev.kind == "arrival" and ev.persona is not None
+            assert s.loaded.personas[ev.persona].role != "companion"
+            assert lines(d, "world")[0]["persona"] == ev.persona  # recorded, so replays match
+            picks.setdefault(seed, set()).add(ev.persona)
+    assert all(len(p) == 1 for p in picks.values())  # the same seed always picks the same persona
+    assert len(set.union(*picks.values())) > 1  # and the seed matters
+
+
+def test_arrival_persona_from_the_scenario_seed(tmp_path):
+    from wardzero_agents.director.cards import arrival_persona
+    s, out, _ = make(tmp_path)
+    s.fire("new_arrival", None, {})
+    (ev,) = out.of("world")
+    assert ev.persona == arrival_persona(s.loaded.personas, s.loaded.scenario.seed, "panel-1")
+    # a card that names its persona keeps it
+    s.fire("ward_visitor", None, {})
+    assert out.of("world")[-1].persona == "ward_visitor"
+
+
+def test_agent_events_reach_the_panel(tmp_path):
+    s, _, _ = make(tmp_path)
+    s.on_scenario_event({"schema": "wz.v1", "kind": "ai_provider", "source": "agents", "t": 4.0,
+                         "text": "AI provider rejected a request: auth (status 401)"})
+    s.on_scenario_event({"schema": "wz.v1", "kind": "card", "t": 5.0, "text": "my own event"})  # the director's
+    s.on_scenario_event("not a dict")
+    assert s.state()["events"] == [{"t": 4.0, "text": "AI provider rejected a request: auth (status 401)"}]
+
+
+@pytest.mark.parametrize("name", ["run-20261103-start", "pre-restore-x"])
+def test_panel_refuses_reserved_snapshot_names(tmp_path, name):
+    s, _, snaps = make(tmp_path)
+    with pytest.raises(BadRequest, match="reserved"):
+        s.snapshot(name)
+    assert snaps == []

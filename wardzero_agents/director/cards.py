@@ -4,10 +4,11 @@ Cards never address the robot. The robot only meets the consequences.
 """
 from __future__ import annotations
 
+import hashlib
 import re
 from typing import Optional
 
-from wardzero_agents.config.models import CardDef, PersonInstance
+from wardzero_agents.config.models import CardDef, Persona, PersonInstance
 from wardzero_agents.contracts import Nudge, ReflexOverride, Roster, WorldEvent
 
 from .storyboard import CardFiring, WorldView
@@ -15,14 +16,27 @@ from .storyboard import CardFiring, WorldView
 _PLACEHOLDER = re.compile(r"\{([^{}]*)\}")
 
 
+def arrival_persona(personas: dict[str, Persona], seed: int, firing_id: str) -> Optional[str]:
+    """The persona for an arrival that names none: chosen from the run seed and the firing id
+    among the personas who come on their own (not companions). Same seed, same choice."""
+    ids = sorted(pid for pid, p in personas.items() if p.role != "companion")
+    if not ids:
+        return None
+    h = hashlib.sha256(f"{seed}:{firing_id}".encode("utf-8")).digest()
+    return ids[int.from_bytes(h[:8], "big") % len(ids)]
+
+
 class CardRejected(Exception):
     """The card cannot run, for example because its target has left the room."""
 
 
 class CardExecutor:
-    def __init__(self, deck: dict[str, CardDef], instances_by_id: dict[str, PersonInstance]):
+    def __init__(self, deck: dict[str, CardDef], instances_by_id: dict[str, PersonInstance],
+                 personas: Optional[dict[str, Persona]] = None, seed: int = 0):
         self.deck = deck
         self.instances = instances_by_id
+        self.personas = personas  # with seed, picks the persona of an arrival that names none
+        self.seed = seed
 
     def _names(self, roster: Roster) -> dict[str, str]:
         names = {pid: i.display_name for pid, i in self.instances.items()}
@@ -97,8 +111,11 @@ class CardExecutor:
             if text is not None:
                 text = self._render(str(text), values_for(target), params)
             kind = w["kind"]
+            persona = w.get("persona") if kind == "arrival" else None
+            if kind == "arrival" and persona is None and self.personas:
+                persona = arrival_persona(self.personas, self.seed, firing.id)
             outs.append(WorldEvent(
                 id=firing.id, t=firing.t, kind=kind, text=text, x=w.get("x"), y=w.get("y"),
-                persona=w.get("persona") if kind == "arrival" else None,
+                persona=persona,
                 person=target if kind == "person_exit" else None))
         return outs

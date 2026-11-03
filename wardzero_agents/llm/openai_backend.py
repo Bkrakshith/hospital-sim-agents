@@ -8,7 +8,7 @@ import json
 import openai
 
 from .images import media_type
-from .gateway import BaseGateway, LLMRequest, LLMResult
+from .gateway import BaseGateway, LLMRequest, LLMResult, status_error
 
 
 class OpenAIGateway(BaseGateway):
@@ -38,7 +38,11 @@ class OpenAIGateway(BaseGateway):
             return fail("timeout")
         except openai.RateLimitError:
             return fail("rate_limited")
-        except openai.OpenAIError:
+        except openai.APIStatusError as exc:
+            res = fail(status_error(exc.status_code))
+            res.status = exc.status_code
+            return res
+        except openai.OpenAIError:  # connection errors and the like
             return fail("provider_error")
 
         u = r.usage
@@ -46,6 +50,10 @@ class OpenAIGateway(BaseGateway):
         res = LLMResult(False, None, None, model, getattr(u, "input_tokens", 0) or 0,
                         getattr(u, "output_tokens", 0) or 0,
                         getattr(details, "cached_tokens", 0) or 0, 0, None)
+        inc = getattr(r, "incomplete_details", None)
+        if getattr(r, "status", None) == "incomplete" and getattr(inc, "reason", None) == "max_output_tokens":
+            res.error = "max_tokens"  # the JSON was cut off
+            return res
         try:
             res.data = json.loads(r.output_text)
             res.ok = True

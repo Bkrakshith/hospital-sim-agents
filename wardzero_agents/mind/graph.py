@@ -139,7 +139,6 @@ def build_graph(deps: "MindDeps", checkpointer: Any = None):
     """Compile the mind graph for one person. thread_id in the run config must be the person id."""
     inst, loaded = deps.inst, deps.loaded
     card = persona_card(inst, loaded.area)
-    roster = [i.person_id for i in loaded.instances]
     person = inst.person_id
     n_persona = sum(1 for c in deps.kb.chunks if c.file == "<persona>") if deps.kb is not None else 0
 
@@ -197,6 +196,8 @@ def build_graph(deps: "MindDeps", checkpointer: Any = None):
         res = await deps.gateway.complete(req)
         decision, error = None, res.error
         if res.ok:
+            # the roster as it is now: people who arrived after this graph was built count too
+            roster = [i.person_id for i in loaded.instances]
             decision, error = check_decision(res.data, loaded.area, loaded.signs, roster, deps.robot_id)
         data = res.data if isinstance(res.data, dict) else None
         deps.runlog.write("decisions", {
@@ -210,7 +211,11 @@ def build_graph(deps: "MindDeps", checkpointer: Any = None):
         return {"decision": decision, "error": error}
 
     async def act(state: MindState) -> dict:
-        d, t = state["decision"], state["t"]
+        # Stamp with the sim time of sending, not of the decision's start: the decision took the
+        # LLM's latency, and a replay plays each intent at its stamp. One value for the intent
+        # and its speech, because the sim speaks a talk intent and its Say once by (t, text).
+        d = state["decision"]
+        t = deps.clock() if deps.clock is not None else state["t"]
         i = d["intent"]
         intent = Intent(id=uuid.uuid4().hex, person=person, t=t, kind=i["kind"], target=i["target"],
                         text=i["text"], addressee=d["addressee"])

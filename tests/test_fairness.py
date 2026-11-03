@@ -13,9 +13,9 @@ def test_audit_clean():
 
 def test_audit_every_forbidden_prefix():
     topics = ["/humans/roster", "/scenario/control", "/sim/audio/events", "/sim/world_event",
-              "/g1/audio/heard", "/g1/speech/say", "/clock"]
+              "/agents/pending", "/g1/audio/heard", "/g1/speech/say", "/clock"]
     v = audit({"robot_stack": topics})
-    assert [x["topic"] for x in v] == topics[:4]
+    assert [x["topic"] for x in v] == topics[:5]
 
 
 def test_audit_allowed_prefix_uses_the_node_name_not_the_namespace():

@@ -1,4 +1,5 @@
 import asyncio
+import json
 import sqlite3
 from pathlib import Path
 from typing import get_args
@@ -41,6 +42,8 @@ def assert_strict(schema, path="$"):
             assert_strict(v, f"{path}.{k}")
     if "array" in types:
         assert_strict(schema["items"], f"{path}[]")
+    for i, alt in enumerate(schema.get("anyOf", [])):
+        assert_strict(alt, f"{path}|{i}")
 
 
 def heard(kind, src, text, addressed=False, db=60.0):
@@ -146,7 +149,9 @@ def test_schema_enums():
     assert props["patience_delta"]["type"] == "number"
     for nullable in (props["say"], props["addressee"], props["intent"]["properties"]["target"],
                      props["intent"]["properties"]["text"]):
-        assert nullable["type"] == ["string", "null"]
+        assert nullable == {"anyOf": [{"type": "string"}, {"type": "null"}]}
+        assert "type" not in nullable  # no type arrays anywhere
+    assert '"type": [' not in json.dumps(DECISION_SCHEMA) + json.dumps(SUMMARY_SCHEMA)
     mem = SUMMARY_SCHEMA["properties"]["memories"]["items"]["properties"]
     assert mem["text"]["type"] == "string" and mem["importance"]["type"] == "number"
 
@@ -682,4 +687,47 @@ async def test_memory_saver_fallback_warns(build, caplog):
         await run_decisions(m, "P5", [10.0, 20.0])
     warns = [r for r in caplog.records if r.levelname == "WARNING"]
     assert len(warns) == 1 and "P5" in warns[0].getMessage()
+    await m.aclose()
+
+
+# ---------- final review fixes ----------
+
+async def test_newcomer_can_be_targeted_and_addressed(build):
+    """A person who arrives after the mind was built is a valid target and addressee."""
+    from wardzero_agents.world.stub_world import spawned_instance
+    loaded = load_scenario(V1)  # a private copy: this test adds a newcomer to it
+    gw = FakeGateway(policy=lambda r: decision("approach", "N1", say="Hello", addressee="N1"))
+    effects, runlog = RecordingEffects(), RecordingRunLog()
+    deps = MindDeps(inst=loaded.instances[0], loaded=loaded, gateway=gw, kb=None, ltm=None, run_id=RUN,
+                    run_index=1, effects=effects, runlog=runlog, checkpointer=MemorySaver())
+    m = Mind(deps)
+    await m.on_tick(5, obs(person="P1"), status(person="P1"), [nudge("P1", 5, "say hello")])
+    await m.drain()
+    assert runlog.last("decisions")["error"] == "invalid_target"  # N1 is not here yet
+    loaded.instances.append(spawned_instance(loaded, "N1", "ward_visitor", arrive_at_s=40.0))
+    await m.on_tick(45, obs(person="P1", t=45, visible=[seen("person", "N1")]), status(person="P1"),
+                    [nudge("P1", 45, "say hello")])
+    await m.drain()
+    assert runlog.last("decisions")["error"] is None
+    assert effects.intents[-1].target == "N1" and effects.intents[-1].addressee == "N1"
+    assert effects.says[-1].addressee == "N1"
+    await m.aclose()
+
+
+async def test_intent_stamped_with_clock_at_release(build):
+    gw = GatedGateway()
+    clock = {"t": 10.0}
+    effects, runlog = RecordingEffects(), RecordingRunLog()
+    deps = MindDeps(inst=P5, loaded=LOADED, gateway=gw, kb=None, ltm=None, run_id=RUN, run_index=1,
+                    effects=effects, runlog=runlog, checkpointer=MemorySaver(), clock=lambda: clock["t"])
+    m = Mind(deps)
+    await m.on_tick(10, obs_addressed("clinic_corridor is down there", t=10), SEATED, [])
+    await wait_for(lambda: gw.requests)
+    clock["t"] = 13.5  # the LLM took 3.5 s of sim time
+    gw.release.set()
+    await m.drain()
+    assert effects.intents[-1].t == 13.5 and effects.says[-1].t == 13.5
+    assert runlog.last("decisions")["t"] == 10  # the decision record keeps its start time
+    st = await m.state()
+    assert st["current_intent"]["t"] == 13.5
     await m.aclose()

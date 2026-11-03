@@ -4,12 +4,13 @@
            /sim/world_event as sim time passes. Run it with the stub sim (and the robot), without
            the agents or the director: the world is simulated again, so a new robot meets the same
            people doing the same things. It publishes /agents/pending = 0 as its ready signal.
+           With --record-dir it also writes what it sends to that (new) run folder.
 --exact    republishes the recorded statuses and audio and a timeline built from the cards, and
            is its own clock (/clock at --time-scale). No stub, no agents. It serves the panel
            read-only (every action is refused) unless --no-panel.
 
     python -m wardzero_agents.ros.replay_node --run-dir RECORDED_RUN (--intents | --exact)
-        [--time-scale F] [--scenario FILE] [--no-panel] [--panel-port 8765]
+        [--record-dir NEW_RUN] [--time-scale F] [--scenario FILE] [--no-panel] [--panel-port 8765]
 """
 from __future__ import annotations
 
@@ -25,6 +26,7 @@ from ..config.loader import LoadedScenario
 from ..contracts import Control, Intent, Say, Status, WorldEvent
 from ..panel.server import BadRequest
 from ..replay import ExactScript, IntentScript, load_meta
+from ..runlog import RunLog
 from .director_node import area_map, deck_list
 
 log = logging.getLogger("wardzero.replay")
@@ -43,6 +45,29 @@ def timeline_from_cards(cards: list[dict]) -> list[dict]:
             row["reason"] = c["error"]
         rows.append(row)
     return rows
+
+
+class IntentReplay:
+    """--intents: the recorded intents, says and world events due by sim time t. With a recorder
+    (the new run folder's RunLog), each one is written to it as it is sent, so the new run folder
+    holds them too and can itself be replayed."""
+
+    STREAM = {"Intent": "intents", "Say": "says", "WorldEvent": "world"}
+
+    def __init__(self, run_dir: Path, record: Optional[RunLog] = None):
+        self.script = IntentScript(Path(run_dir))
+        self.record = record
+
+    def step(self, t: float) -> list:
+        items = self.script.due(t)
+        if self.record is not None:
+            for item in items:
+                try:
+                    self.record.write(self.STREAM[type(item).__name__],
+                                      item.model_dump(mode="json", by_alias=True))
+                except Exception as exc:  # a recording failure must not stop the replay
+                    log.error("recording a replayed %s failed: %s", type(item).__name__, type(exc).__name__)
+        return items
 
 
 class ExactReplay:
@@ -135,6 +160,8 @@ def _parse(argv):
     mode.add_argument("--exact", action="store_true", help="republish the recorded world as it was")
     p.add_argument("--time-scale", type=float, default=1.0, help="--exact only: playback speed")
     p.add_argument("--scenario", help="--exact only: scenario for the panel map (default: from meta.json)")
+    p.add_argument("--record-dir", help="--intents only: the new run folder to record the re-sent "
+                                        "intents, says and world events in")
     p.add_argument("--no-panel", action="store_true")
     p.add_argument("--panel-port", type=int, default=8765)
     return p.parse_args(argv)
@@ -146,7 +173,7 @@ async def _intents(args, run_dir: Path) -> int:
     from . import topics
     from .rosutil import RosBridge, install_stop_signals, wait_or_sleep
 
-    script = IntentScript(run_dir)
+    replay = IntentReplay(run_dir, RunLog(Path(args.record_dir)) if args.record_dir else None)
     loop = asyncio.get_running_loop()
     stop = asyncio.Event()
     install_stop_signals(loop, stop)
@@ -158,7 +185,7 @@ async def _intents(args, run_dir: Path) -> int:
     last_beat = 0.0
     try:
         while not stop.is_set():
-            for item in script.due(ros.now()):
+            for item in replay.step(ros.now()):
                 if isinstance(item, Intent):
                     ros.publish_json(topics.intent(item.person), item)
                 elif isinstance(item, Say):

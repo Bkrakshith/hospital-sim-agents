@@ -41,6 +41,12 @@ Store the key in one of these ways, in this order of preference:
    `WARDZERO_KEY_FILE` at it.
 
 Check with `hhumans keys status claude`. Remove a key with `hhumans keys clear claude`.
+Before a run starts, the key is checked against each model the run uses: decide, summarise,
+and vision when perception is `full`.
+
+Only the agent service gets the key. The other processes (the stub sim, the director and the
+robot) start without `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_AUTH_TOKEN` or
+`WARDZERO_KEY_FILE` in their environment.
 
 No key, no run. The one exception is `WARDZERO_TEST_FAKE_LLM=1`, which swaps in a fake model.
 It is for tests only, prints `TEST MODE: no AI provider` and marks the run as a test.
@@ -100,9 +106,13 @@ To test a real G1 stack, point its speech output at `/g1/speech/say` and its spe
 `/g1/audio/heard`, then run with `--bot none`. `wardzero_agents/examples/reception_bot.py` is
 a small placeholder that shows the pattern. It is not the real robot's behaviour.
 
+The robot's microphone cannot tell who spoke, so on `/g1/audio/heard` the `source_id` is
+always `unknown`. `source_kind` still says whether it was a person, the PA, a cough or an alarm.
+
 The audit `hhumans audit` checks the live ROS graph once. It flags any node whose name does
 not start with `wardzero_` that is subscribed to `/humans/`, `/scenario/`,
-`/sim/audio/events` or `/sim/world_event`. Use `--wait SECONDS` to allow more discovery time.
+`/sim/audio/events`, `/sim/world_event` or `/agents/pending`. Use `--wait SECONDS` to allow
+more discovery time.
 
 Topic names, types and rates are in `docs/interfaces.md` ("Persona agents").
 
@@ -142,6 +152,12 @@ remembers it.
   run while a run is active.
 - Snapshots: `hhumans memory snapshot save|restore|list [NAME]`.
 - Every run saves `run-<id>-start` and `run-<id>-end` snapshots on its own.
+- A restore replaces the whole memory db, for everyone. So before any restore (a `rerun`, a
+  scenario with `memory_snapshot`, or `hhumans memory snapshot restore`) the current memory is
+  saved first, as `pre-restore-<run id>` (or `pre-restore-manual-<time>` for a restore by
+  hand). The name is printed. Restore it to get back what the later runs had learned.
+- Names starting with `run-` or `pre-restore-` are reserved for these automatic snapshots.
+  `snapshot save` and the panel refuse them.
 
 ## Knowledge base
 
@@ -167,6 +183,13 @@ Three ways to go again, from a recorded run folder:
 | `hhumans rerun RUN` | Runs the same scenario again from the run's start memory. The minds decide again. | full |
 
 Exact physical repeat holds only on the same machine and build.
+
+`rerun` restores the run's start snapshot over the long-term memory, so memories made by any
+later run would be lost. It saves them first as `pre-restore-<new run id>` and prints that
+name; `hhumans memory snapshot restore pre-restore-<new run id>` brings them back.
+
+`replay --intents` records into a new run folder: the sim's streams, and the intents, speech
+and world events it re-sent. That folder can itself be replayed.
 
 ## Perception modes
 
@@ -223,6 +246,15 @@ reflexes and the minds stop deciding. The panel shows the cost against the budge
 | `WARDZERO_TEST_FAKE_LLM` | `1` for tests only |
 
 ## Troubleshooting
+
+If the AI provider rejects requests (a bad key, a model the account cannot use, a request that
+is too large), the agent service logs a warning with the HTTP status the first time each kind
+happens and shows it on the panel. After 5 rejected requests in a row it stops calling the AI
+for the rest of the run: the panel shows "AI provider rejecting requests: <kind> (status N)".
+The people carry on with their reflexes and what they were already doing. Check the key with
+`hhumans keys status`, check the model names in the scenario, and start a new run. The kinds
+are `auth` (401/403: the key), `model_not_found` (404: the model name or account access),
+`bad_request` (400) and `too_large` (413). Network errors and 5xx are not counted.
 
 ROS 2 installs pytest plugins that clash with pytest 8. `pyproject.toml` switches them off.
 If you still see plugin errors, run `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -q -m "not ros"`.

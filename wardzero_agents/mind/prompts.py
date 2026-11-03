@@ -64,7 +64,12 @@ SUMMARY_FIXED = (
     "0 and 1. Return an empty list if nothing is worth keeping."
 )
 
-_NULLABLE = {"type": ["string", "null"]}
+
+def _nullable() -> dict:
+    """A string or null. anyOf, not a type array: Claude structured outputs and OpenAI strict
+    mode both accept anyOf."""
+    return {"anyOf": [{"type": "string"}, {"type": "null"}]}
+
 
 DECISION_SCHEMA: dict = {
     "type": "object",
@@ -73,14 +78,14 @@ DECISION_SCHEMA: dict = {
             "type": "object",
             "properties": {
                 "kind": {"type": "string", "enum": INTENT_KINDS},
-                "target": dict(_NULLABLE),
-                "text": dict(_NULLABLE),
+                "target": _nullable(),
+                "text": _nullable(),
             },
             "required": ["kind", "target", "text"],
             "additionalProperties": False,
         },
-        "say": dict(_NULLABLE),
-        "addressee": dict(_NULLABLE),
+        "say": _nullable(),
+        "addressee": _nullable(),
         "mood": {"type": "string", "enum": MOODS},
         "patience_delta": {"type": "number"},
         "reason": {"type": "string"},

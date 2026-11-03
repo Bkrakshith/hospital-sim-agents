@@ -49,9 +49,11 @@ EPS = 1e-9
 log = logging.getLogger(__name__)
 
 
-def spawned_instance(loaded: LoadedScenario, pid: str, persona_id: str) -> PersonInstance:
+def spawned_instance(loaded: LoadedScenario, pid: str, persona_id: str,
+                     arrive_at_s: float = 0.0) -> PersonInstance:
     """The instance of spawned person N<n>, exactly as StubWorld.spawn samples it.
 
+    arrive_at_s is the sim time the person appeared (the roster's t for another process).
     Other processes (the agent service) rebuild a newcomer from its roster entry with this.
     """
     m = re.fullmatch(r"N([1-9][0-9]*)", pid)
@@ -61,7 +63,7 @@ def spawned_instance(loaded: LoadedScenario, pid: str, persona_id: str) -> Perso
         raise ValueError(f"unknown persona '{persona_id}'")
     n = int(m.group(1))
     seed = loaded.scenario.seed * 1000 + 100 + n
-    cast = CastEntry(id=pid, persona=persona_id, seed=seed)
+    cast = CastEntry(id=pid, persona=persona_id, seed=seed, arrive_at_s=max(0.0, float(arrive_at_s)))
     return sample_instance(loaded.personas[persona_id], cast, loaded.scenario.seed, n)
 
 
@@ -176,7 +178,10 @@ class StubWorld:
         return self._event(t, "cough", person, p.x, p.y, PERSON_Z, audio.COUGH_DB[severity])
 
     def robot_heard(self, ev: AudioEvent) -> Optional[Heard]:
-        return audio.route(ev, self.robot_pose, ROBOT_ID, 0.0, self.rng)
+        """What the robot's microphone hears. A microphone cannot tell who spoke, so the source
+        id (P1, N2, ...) is replaced by "unknown"; the kind of sound is kept."""
+        h = audio.route(ev, self.robot_pose, ROBOT_ID, 0.0, self.rng)
+        return None if h is None else h.model_copy(update={"source_id": "unknown"})
 
     # ---- intents -------------------------------------------------------------------------
     def _fail(self, p: _Person, intent: Intent, reason: str) -> None:
@@ -431,7 +436,7 @@ class StubWorld:
             raise ValueError(f"unknown persona '{persona_id}'")
         self._spawned += 1
         pid = f"N{self._spawned}"
-        self.people[pid] = self._at_entrance(spawned_instance(self.loaded, pid, persona_id))
+        self.people[pid] = self._at_entrance(spawned_instance(self.loaded, pid, persona_id, t))
         return pid
 
     def apply_world_event(self, ev: WorldEvent) -> list[AudioEvent]:

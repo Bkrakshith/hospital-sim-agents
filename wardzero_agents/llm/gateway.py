@@ -12,7 +12,23 @@ from ..config.models import ModelRoles
 log = logging.getLogger(__name__)
 
 Role = Literal["decide", "summarise", "vision"]
-ErrorKind = Literal["refusal", "invalid_json", "timeout", "rate_limited", "budget", "provider_error"]
+ErrorKind = Literal["refusal", "invalid_json", "timeout", "rate_limited", "budget", "provider_error",
+                    "bad_request", "auth", "model_not_found", "too_large", "max_tokens", "llm_disabled"]
+# Errors that retrying cannot fix: the request, the key or the model is wrong.
+PERMANENT_ERRORS = ("bad_request", "auth", "model_not_found", "too_large")
+
+
+def status_error(status: Optional[int]) -> ErrorKind:
+    """The error kind for an HTTP error status (429 is handled by the caller as rate_limited)."""
+    if status == 400:
+        return "bad_request"
+    if status in (401, 403):
+        return "auth"
+    if status == 404:
+        return "model_not_found"
+    if status == 413:
+        return "too_large"
+    return "provider_error"
 
 
 @dataclass
@@ -38,6 +54,7 @@ class LLMResult:
     cache_write_tokens: int = 0
     cost_usd: Optional[float] = None
     latency_s: float = 0.0
+    status: Optional[int] = None  # the HTTP status of a failed call, when there was one
 
 
 class Gateway(Protocol):

@@ -1,12 +1,17 @@
 """Agent service node (wardzero_agents): one LangGraph mind and one reflex engine per person.
 
-Start-up, in order: log redaction, scenario, key check (skipped only with
-WARDZERO_TEST_FAKE_LLM=1), run lock, long-term memory (restore the scenario's snapshot, seed every
-person, begin the run, save run-<id>-start), knowledge base (rebuilt when missing or stale), then
-one Mind per person. Every 0.1 s of sim time each person's reflexes run, reflex actions go out as
+Start-up, in order: log redaction, scenario, key check of every model the run uses (skipped only
+with WARDZERO_TEST_FAKE_LLM=1), run lock, long-term memory (save the memory as pre-restore-<id>
+and restore the scenario's snapshot, if it names one; seed every person, begin the run, save
+run-<id>-start), knowledge base (rebuilt when missing or stale), then one Mind per person.
+Newcomers on the roster get a mind and their seed memories when they appear. Every 0.1 s of sim time each person's reflexes run, reflex actions go out as
 overlay intents, and the mind gets the latest status and observation plus any nudges. On stop
 (SIGINT, SIGTERM or a "stop" on /scenario/control) the minds are drained, run-<id>-end is saved,
 the run meta is written and the lock released.
+
+Requests the AI provider rejects for good (bad request, auth, unknown model, too large) are
+logged and posted on /scenario/events the first time each happens; after LLM_OFF_AFTER of them in
+a row the minds get no more ticks and no call reaches the provider for the rest of the run.
 
     python -m wardzero_agents.ros.agent_node --run-dir DIR --scenario FILE [--embedder hash]
 """
@@ -28,7 +33,7 @@ from typing import Any, Callable, Optional, Protocol
 from ..config.loader import LoadedScenario
 from ..config.models import PersonInstance
 from ..contracts import Control, Heard, Intent, Nudge, Observation, ReflexOverride, Roster, Say, Status
-from ..llm.gateway import LLMRequest, LLMResult
+from ..llm.gateway import PERMANENT_ERRORS, LLMRequest, LLMResult
 from ..reflex import ReflexEngine
 from ..runlog import RunLog
 from ..world.stub_world import spawned_instance
@@ -42,6 +47,7 @@ DURABLE = ("sit_idle", "use_phone", "wait_standing")
 DRAIN_TIMEOUT_S = 60.0
 ERROR_LOG_EVERY_S = 30.0  # per person: a failing tick is reported at most this often
 PENDING_HEARTBEAT_S = 1.0
+LLM_OFF_AFTER = 5  # consecutive permanent provider failures before the agents stop calling the LLM
 _SNAP_BAD = re.compile(r"[^A-Za-z0-9_.-]")
 
 
@@ -50,6 +56,12 @@ def snapshot_name(run_id: str, which: str) -> str:
     rid = _SNAP_BAD.sub("_", run_id)
     room = 64 - len("run-") - len(which) - 1
     return f"run-{rid[:room]}-{which}"
+
+
+def pre_restore_name(run_id: str) -> str:
+    """pre-restore-<id>, cleaned to the snapshot name rules and at most 64 characters."""
+    prefix = "pre-restore-"
+    return prefix + _SNAP_BAD.sub("_", run_id)[:64 - len(prefix)]
 
 
 class Publisher(Protocol):
@@ -81,7 +93,8 @@ class AgentService:
     def __init__(self, loaded: LoadedScenario, runlog: RunLog, publisher: Publisher,
                  mind_factory: Callable[[PersonInstance, "AgentService"], Any],
                  reflex_factory: Optional[Callable[[PersonInstance, int], Any]] = None,
-                 now: Callable[[], float] = lambda: 0.0, wall: Callable[[], float] = time.monotonic):
+                 now: Callable[[], float] = lambda: 0.0, wall: Callable[[], float] = time.monotonic,
+                 ltm: Any = None, events: Optional[Callable[[dict], None]] = None):
         self.loaded = loaded
         self.runlog = runlog
         self.out = publisher
@@ -89,7 +102,12 @@ class AgentService:
         self.reflex_factory = reflex_factory or ReflexEngine
         self.now = now
         self.wall = wall
+        self.ltm = ltm  # long-term memory, to seed newcomers
+        self.events = events  # panel-visible events (/scenario/events)
         self._tick_errors: dict[str, list] = {}  # person -> [wall time last reported, suppressed since]
+        self._permanent_seen: set[str] = set()
+        self._permanent_streak = 0
+        self.llm_off = False  # set after LLM_OFF_AFTER permanent failures in a row
         self.cost_usd = 0.0
         self.people: dict[str, _Person] = {}
         for inst in loaded.instances:
@@ -111,15 +129,25 @@ class AgentService:
             if entry.id in self.people:
                 continue
             try:
-                inst = spawned_instance(self.loaded, entry.id, entry.persona)
+                inst = spawned_instance(self.loaded, entry.id, entry.persona, roster.t)
             except ValueError as exc:
                 log.warning("roster: cannot create a mind for %s: %s", entry.id, exc)
                 continue
+            self._seed(inst)
             self.loaded.instances.append(inst)  # so later decisions may name the newcomer
             self._add(inst)
             new.append(entry.id)
             log.info("new person %s (%s)", entry.id, entry.persona)
         return new
+
+    def _seed(self, inst: PersonInstance) -> None:
+        """Give a newcomer their persona's seed memories, as start-up does for the cast."""
+        if self.ltm is None:
+            return
+        try:
+            self.ltm.ensure_seed(inst.memory_key, self.loaded.personas[inst.persona_id].seed_memories)
+        except Exception as exc:  # a person without seed memories is better than no person
+            log.error("%s: seeding long-term memory failed: %s", inst.person_id, type(exc).__name__)
 
     def _get(self, pid: str) -> Optional[_Person]:
         p = self.people.get(pid)
@@ -204,6 +232,8 @@ class AgentService:
         base = p.obs if p.obs is not None else Observation(person=pid, t=t)
         obs = base.model_copy(update={"heard": heard})
         nudges, p.nudges = p.nudges, []
+        if self.llm_off:
+            return  # the provider rejects every request: reflexes and current intents only
         await p.mind.on_tick(t, obs, st, nudges)
 
     # ---- effects -------------------------------------------------------------------------
@@ -233,9 +263,46 @@ class AgentService:
         self.cost_usd += res.cost_usd or 0.0
         self.runlog.write("tokens", {
             "t": self.now(), "person": req.person, "role": req.role, "model": res.model, "ok": res.ok,
-            "error": res.error, "input_tokens": res.input_tokens, "output_tokens": res.output_tokens,
-            "cache_read_tokens": res.cache_read_tokens, "cache_write_tokens": res.cache_write_tokens,
-            "cost_usd": res.cost_usd, "latency_s": res.latency_s})
+            "error": res.error, "status": res.status, "input_tokens": res.input_tokens,
+            "output_tokens": res.output_tokens, "cache_read_tokens": res.cache_read_tokens,
+            "cache_write_tokens": res.cache_write_tokens, "cost_usd": res.cost_usd,
+            "latency_s": res.latency_s})
+        self._track_provider(res)
+
+    def _event(self, kind: str, text: str) -> None:
+        if self.events is None:
+            return
+        try:
+            self.events({"schema": "wz.v1", "kind": kind, "source": "agents", "t": self.now(),
+                         "text": text})
+        except Exception as exc:
+            log.error("publishing a panel event failed: %s", type(exc).__name__)
+
+    def _track_provider(self, res: LLMResult) -> None:
+        """Make permanent provider failures visible, and stop calling a provider that rejects
+        every request. Only the error kind and HTTP status are reported, never the prompt or key."""
+        if res.error == "budget":
+            return  # no call was made
+        if res.error not in PERMANENT_ERRORS:
+            self._permanent_streak = 0
+            return
+        self._permanent_streak += 1
+        status = f"status {res.status}" if res.status is not None else "no status"
+        if res.error not in self._permanent_seen:
+            self._permanent_seen.add(res.error)
+            log.warning("AI provider rejected a request: %s (%s)", res.error, status)
+            self._event("ai_provider", f"AI provider rejected a request: {res.error} ({status})")
+        if self._permanent_streak >= LLM_OFF_AFTER and not self.llm_off:
+            self.llm_off = True
+            msg = (f"AI provider rejecting requests: {res.error} ({status}). Check the key and model; "
+                   "see the README.")
+            log.error("%s The people carry on with their reflexes and current intents; no more AI "
+                      "calls this run.", msg)
+            self._event("ai_provider", msg)
+
+    def guard(self, gateway: Any) -> Any:
+        """Wrap a gateway so that no call reaches the provider once llm_off is set."""
+        return _GuardedGateway(gateway, self)
 
     def pending_count(self) -> int:
         return sum(1 for p in self.people.values() if p.mind.pending)
@@ -246,6 +313,16 @@ class AgentService:
                 await p.mind.aclose()
             except Exception as exc:
                 log.error("%s: closing the mind failed: %s", p.inst.person_id, type(exc).__name__)
+
+
+class _GuardedGateway:
+    def __init__(self, inner: Any, svc: AgentService):
+        self.inner, self.svc = inner, svc
+
+    async def complete(self, req: LLMRequest) -> LLMResult:
+        if self.svc.llm_off:
+            return LLMResult(False, None, "llm_disabled", "none")
+        return await self.inner.complete(req)
 
 
 # ---- ROS wrapper ---------------------------------------------------------------------------
@@ -263,6 +340,13 @@ def _hg1_root() -> Path:
     return Path(env) if env else Path(__file__).resolve().parents[3]
 
 
+def models_in_use(loaded: LoadedScenario) -> list[str]:
+    """The models a run calls: decide and summarise, and vision when perception is full."""
+    m = loaded.scenario.models
+    want = [m.decide, m.summarise] + ([m.vision] if loaded.scenario.perception == "full" else [])
+    return list(dict.fromkeys(want))
+
+
 def _key_check(loaded: LoadedScenario) -> Optional[int]:
     """None when the key works (or in test mode), else the exit code after printing the fix."""
     from .. import keys
@@ -272,7 +356,8 @@ def _key_check(loaded: LoadedScenario) -> Optional[int]:
     provider = loaded.scenario.provider
     try:
         client = keys.make_client(provider)
-        asyncio.run(keys.check(provider, client, loaded.scenario.models.decide))
+        for model in models_in_use(loaded):
+            asyncio.run(keys.check(provider, client, model))
     except (keys.KeyMissing, keys.KeyRejected, keys.ModelUnavailable) as exc:
         print(str(exc), file=sys.stderr)
         return 2
@@ -286,18 +371,21 @@ def _key_check(loaded: LoadedScenario) -> Optional[int]:
 def _prepare_memory(loaded: LoadedScenario, run_id: str, embedder):
     from ..memory import data_dir, memory_path
     from ..memory.longterm import LongTermMemory
-    from ..memory.snapshots import restore_snapshot, save_snapshot
+    from ..memory.snapshots import restore_snapshot, save_pre_restore, save_snapshot
     mem = memory_path(data_dir())
-    if loaded.scenario.memory_snapshot:
-        restore_snapshot(mem, loaded.scenario.memory_snapshot)
-        log.info("memory restored from snapshot %s", loaded.scenario.memory_snapshot)
+    pre = None
+    snap = loaded.scenario.memory_snapshot
+    if snap:
+        pre = save_pre_restore(mem, pre_restore_name(run_id), snap)
+        restore_snapshot(mem, snap)
+        log.info("memory restored from snapshot %s", snap)
     ltm = LongTermMemory(mem, embedder)
     for inst in loaded.instances:
         ltm.ensure_seed(inst.memory_key, loaded.personas[inst.persona_id].seed_memories)
     run_index = ltm.begin_run(run_id)
     snap_in = snapshot_name(run_id, "start")
     save_snapshot(mem, snap_in)
-    return ltm, mem, run_index, snap_in
+    return ltm, mem, run_index, snap_in, pre
 
 
 def _prepare_kb(loaded: LoadedScenario, embedder):
@@ -340,7 +428,8 @@ async def _serve(args, loaded: LoadedScenario, run_dir: Path, run_id: str, test_
     from std_msgs.msg import Int32
 
     embedder = get_embedder(args.embedder)
-    ltm, mem, run_index, snap_in = await asyncio.to_thread(_prepare_memory, loaded, run_id, embedder)
+    ltm, mem, run_index, snap_in, snap_pre = await asyncio.to_thread(_prepare_memory, loaded, run_id,
+                                                                     embedder)
     kb = await asyncio.to_thread(_prepare_kb, loaded, embedder)
     runlog = RunLog(run_dir)
     runlog.copy_configs(loaded)
@@ -351,8 +440,8 @@ async def _serve(args, loaded: LoadedScenario, run_dir: Path, run_id: str, test_
         "seed": loaded.scenario.seed, "provider": loaded.scenario.provider,
         "models": models.model_dump(), "test_mode": test_mode, "embedder": embedder.name,
         "run_index": run_index, "memory_snapshot_restored": loaded.scenario.memory_snapshot,
-        "snapshot_in": snap_in, "snapshot_out": None, "budget_usd": loaded.scenario.budget_usd,
-        "cost_usd": 0.0, "started_at": started, "kb_sources_sha256": kb.sources_sha256,
+        "snapshot_pre_restore": snap_pre, "snapshot_in": snap_in, "snapshot_out": None,
+        "budget_usd": loaded.scenario.budget_usd, "cost_usd": 0.0, "started_at": started, "kb_sources_sha256": kb.sources_sha256,
     }
     _write_meta(runlog, run_dir, {"mode": "live", **base_meta} if not (run_dir / "meta.json").exists()
                 else base_meta)
@@ -374,13 +463,16 @@ async def _serve(args, loaded: LoadedScenario, run_dir: Path, run_id: str, test_
     gateway = make_gateway(loaded.scenario.provider, models, budget,
                            lambda req, res: holder["svc"].on_usage(req, res))
 
+    def publish_event(ev: dict) -> None:
+        ros.publish_text(topics.SCEN_EVENTS, json.dumps(ev))
+
     async with open_shortterm(run_dir) as saver:
         def mind_factory(inst: PersonInstance, effects: AgentService) -> Mind:
-            return Mind(MindDeps(inst=inst, loaded=loaded, gateway=gateway, kb=kb, ltm=ltm, run_id=run_id,
-                                 run_index=run_index, effects=effects, runlog=runlog, run_dir=run_dir,
-                                 checkpointer=saver))
+            return Mind(MindDeps(inst=inst, loaded=loaded, gateway=effects.guard(gateway), kb=kb, ltm=ltm,
+                                 run_id=run_id, run_index=run_index, effects=effects, runlog=runlog,
+                                 run_dir=run_dir, checkpointer=saver, clock=effects.now))
 
-        svc = AgentService(loaded, runlog, _Out(), mind_factory, now=ros.now)
+        svc = AgentService(loaded, runlog, _Out(), mind_factory, now=ros.now, ltm=ltm, events=publish_event)
         holder["svc"] = svc
 
         def subscribe_person(pid: str) -> None:
@@ -405,6 +497,7 @@ async def _serve(args, loaded: LoadedScenario, run_dir: Path, run_id: str, test_
         ros.subscribe_json(Roster, topics.ROSTER, on_roster, QOS_LATCHED)
         ros.subscribe_json(Control, topics.CONTROL, on_control)
         pending_pub = ros.publisher(topics.PENDING, Int32)
+        ros.publisher(topics.SCEN_EVENTS)
         ros.start()
         log.info("agent service up: %d people, run %s (index %d)", len(svc.people), run_id, run_index)
 

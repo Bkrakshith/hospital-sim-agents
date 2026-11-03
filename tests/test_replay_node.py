@@ -93,3 +93,20 @@ def test_intent_script_items_for_the_intents_mode(tmp_path):
         mode="json", by_alias=True))
     s = IntentScript(tmp_path)
     assert [type(x).__name__ for x in s.due(2.0)] == ["WorldEvent", "Intent", "Say"]
+
+
+def test_intent_replay_records_what_it_sends_so_the_replay_is_replayable(tmp_path):
+    from wardzero_agents.ros.replay_node import IntentReplay
+    src, new = tmp_path / "src", tmp_path / "new"
+    log = RunLog(src)
+    i = Intent(id="i", person="P5", t=2.0, kind="walk_to", target="toilets")
+    say = Say(person="P5", t=2.0, text="Excuse me")
+    w = WorldEvent(id="w", t=1.0, kind="arrival", persona="ward_visitor")
+    for stream, m in (("intents", i), ("says", say), ("world", w)):
+        log.write(stream, m.model_dump(mode="json", by_alias=True))
+    r = IntentReplay(src, RunLog(new))
+    assert [type(x).__name__ for x in r.step(1.5)] == ["WorldEvent"]
+    assert [type(x).__name__ for x in r.step(3.0)] == ["Intent", "Say"]
+    again = IntentScript(new)  # the new folder replays the same items
+    assert again.due(10.0) == [w, i, say]
+    assert IntentReplay(src).step(10.0) == [w, i, say]  # without a recorder it only reads

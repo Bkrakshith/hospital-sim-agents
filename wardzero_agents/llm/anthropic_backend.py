@@ -8,7 +8,7 @@ import json
 import anthropic
 
 from .images import media_type
-from .gateway import BaseGateway, LLMRequest, LLMResult
+from .gateway import BaseGateway, LLMRequest, LLMResult, status_error
 from .pricing import Usage, cost
 
 FALLBACK = {"betas": ["server-side-fallback-2026-07-01"], "fallbacks": "default"}
@@ -44,7 +44,11 @@ class AnthropicGateway(BaseGateway):
             return fail("timeout")
         except anthropic.RateLimitError:
             return fail("rate_limited")
-        except anthropic.APIError:
+        except anthropic.APIStatusError as exc:
+            res = fail(status_error(exc.status_code))
+            res.status = exc.status_code
+            return res
+        except anthropic.APIError:  # connection errors and the like
             return fail("provider_error")
 
         u = msg.usage
@@ -56,6 +60,9 @@ class AnthropicGateway(BaseGateway):
                         usage.cache_read, usage.cache_write, cost(model, usage))
         if msg.stop_reason == "refusal":
             res.error = "refusal"
+            return res
+        if msg.stop_reason == "max_tokens":  # the JSON was cut off
+            res.error = "max_tokens"
             return res
         text = next((b.text for b in (msg.content or []) if getattr(b, "type", None) == "text"), None)
         try:

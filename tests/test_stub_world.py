@@ -168,7 +168,9 @@ def test_talk_returns_event_and_heard_addressed():
     ev = evs[0]
     assert ev.source_kind == "person" and ev.z == 1.6 and ev.loudness_db == 60 and ev.addressee == "g1"
     h = w.robot_heard(ev)
-    assert h is not None and h.addressed_to_me and h.source_id == "P5"
+    # the robot hears a person, not who it was: the microphone cannot tell P5 from anyone else
+    assert h is not None and h.addressed_to_me and h.source_kind == "person" and h.source_id == "unknown"
+    assert h.text == "Excuse me"
     assert w.observation("P5", 0, [ev]).heard == []  # own speech
 
 
@@ -331,7 +333,8 @@ def test_spawned_instance_matches_the_world_spawn():
     w = make()
     w.spawn("anxious_first_timer", 1.0)
     w.spawn("companion", 2.0)
-    assert spawned_instance(w.loaded, "N2", "companion") == inst(w, "N2")
-    assert spawned_instance(w.loaded, "N1", "anxious_first_timer") == inst(w, "N1")
+    assert spawned_instance(w.loaded, "N2", "companion", 2.0) == inst(w, "N2")
+    assert spawned_instance(w.loaded, "N1", "anxious_first_timer", 1.0) == inst(w, "N1")
+    assert inst(w, "N2").arrive_at_s == 2.0  # arrival time is when they appeared, not 0
     with pytest.raises(ValueError):
         spawned_instance(w.loaded, "P9", "companion")

@@ -110,6 +110,7 @@ def test_robot_hears_and_speech_is_addressed_to_the_nearest_person(tmp_path):
     s.on_intent(Intent(id="c", person="P1", t=0.0, kind="cough", overlay=True))
     out = s.step(0.01)
     assert [h.source_kind for h in out.robot_heard] == ["cough"]
+    assert [h.source_id for h in out.robot_heard] == ["unknown"]  # not P1: the robot cannot tell who
     # nobody near the robot: speech is addressed to no one
     s.on_robot_say("Hello everyone")
     out = s.step(0.01)

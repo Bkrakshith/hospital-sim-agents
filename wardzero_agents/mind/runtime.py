@@ -6,7 +6,7 @@ import logging
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, AsyncIterator, Optional, Protocol
+from typing import Any, AsyncIterator, Callable, Optional, Protocol
 
 import aiosqlite
 from langgraph.checkpoint.memory import MemorySaver
@@ -57,6 +57,8 @@ class MindDeps:
     run_dir: Optional[Path] = None
     checkpointer: Any = None
     robot_id: str = "g1"
+    # The sim clock; intents and speech are stamped with it when sent. None: the decision's start.
+    clock: Optional[Callable[[], float]] = None
 
 
 @asynccontextmanager

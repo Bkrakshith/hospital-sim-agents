@@ -106,14 +106,22 @@ class Child:
     argv: list[str]
     kill_after_s: Optional[float] = None  # SIGTERM to SIGKILL grace; None: the supervise default
     ends_run: bool = False  # its clean exit is the normal end of the run (the stub sim)
+    env: Optional[dict] = None  # this child's environment; None: the env given to supervise
 
 
 def _module(mod: str, *args: str) -> list[str]:
     return [sys.executable, "-m", mod, *args]
 
 
-def _child_env() -> dict:
+# Credentials only the agent node needs. Every other child (the robot above all) runs without them.
+KEY_ENV = ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_AUTH_TOKEN", "WARDZERO_KEY_FILE")
+
+
+def _child_env(with_keys: bool = False) -> dict:
     env = dict(os.environ, PYTHONUNBUFFERED="1")
+    if not with_keys:
+        for k in KEY_ENV:
+            env.pop(k, None)
     # the children import the same wardzero_agents as this process
     env["PYTHONPATH"] = os.pathsep.join(p for p in (str(AGENTS_ROOT), env.get("PYTHONPATH", "")) if p)
     return env
@@ -164,7 +172,8 @@ def supervise(children: list[Child], *, term_after_s: float = TERM_AFTER_S, kill
     try:
         for c in children:
             try:
-                procs[c.name] = subprocess.Popen(c.argv, env=env, start_new_session=True)
+                procs[c.name] = subprocess.Popen(c.argv, env=c.env if c.env is not None else env,
+                                                 start_new_session=True)
             except OSError as exc:
                 err(f"could not start {c.name}: {exc}")
                 code = 2
@@ -314,7 +323,7 @@ def _start_live(args, loaded, overrides: dict, meta: dict) -> int:
                                   "--wait-for", "agents,director", *(["--lockstep"] if args.lockstep else [])),
               ends_run=True),
         Child("agents", _module("wardzero_agents.ros.agent_node", "--run-dir", rd, "--scenario", sp),
-              kill_after_s=AGENT_KILL_AFTER_S),
+              kill_after_s=AGENT_KILL_AFTER_S, env=_child_env(with_keys=True)),
         Child("director", _module("wardzero_agents.ros.director_node", "--run-dir", rd, "--scenario", sp,
                                   *(["--no-panel"] if args.no_panel else ["--panel-port", str(args.panel_port)]))),
     ]
@@ -431,7 +440,8 @@ def cmd_replay(args) -> int:
         Child("stub_sim", _module("wardzero_agents.ros.stub_sim_node", "--run-dir", str(out_dir), "--scenario", sp,
                                   "--time-scale", str(ts), "--ready-timeout", str(ready), "--wait-for", "agents"),
               ends_run=True),
-        Child("replay", _module("wardzero_agents.ros.replay_node", "--run-dir", rd, "--intents")),
+        Child("replay", _module("wardzero_agents.ros.replay_node", "--run-dir", rd, "--intents",
+                                "--record-dir", str(out_dir))),
     ]
     if bot == "reception":
         children.append(Child("reception_bot", _module("wardzero_agents.examples.reception_bot", "--scenario", sp)))
@@ -520,7 +530,7 @@ def cmd_memory_reset(args) -> int:
 def cmd_snapshot(args) -> int:
     from .memory import data_dir, memory_path
     from .memory.runlock import RunActive
-    from .memory.snapshots import guarded_restore, list_snapshots, save_snapshot
+    from .memory.snapshots import check_user_name, guarded_restore, list_snapshots, save_snapshot
 
     d = data_dir()
     if args.action == "list":
@@ -534,11 +544,12 @@ def cmd_snapshot(args) -> int:
         raise CliError(f"memory snapshot {args.action} needs a NAME")
     try:
         if args.action == "save":
+            check_user_name(args.name)
             _refuse_if_active()
             path = save_snapshot(memory_path(d), args.name)
             print(f"Saved snapshot {args.name}: {path}")
         else:
-            guarded_restore(d, args.name)
+            guarded_restore(d, args.name, keep_as=f"pre-restore-manual-{datetime.now():%Y%m%d-%H%M%S}")
             print(f"Restored the long-term memory from snapshot {args.name}.")
     except RunActive as exc:
         raise CliError(f"Refused: {exc}") from None

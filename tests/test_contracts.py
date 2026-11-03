@@ -335,6 +335,7 @@ def test_forbidden_for_robot_prefixes():
         "/scenario/",
         "/sim/audio/events",
         "/sim/world_event",
+        "/agents/pending",
     )
 
 
