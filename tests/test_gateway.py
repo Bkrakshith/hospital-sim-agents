@@ -149,7 +149,7 @@ def test_pricing():
     assert cost("claude-opus-5-5", Usage(input=1_000_000, output=0, cache_read=0, cache_write=0)) == pytest.approx(4.0)
     assert cost("claude-sonnet-5-5", Usage(0, 1_000_000, 0, 0)) == pytest.approx(10.0)
     assert cost("claude-haiku-5-5", Usage(0, 0, 1_000_000, 0)) == pytest.approx(0.01)
-    assert cost("claude-opus-5-5", Usage(0, 0, 0, 1_000_000)) == pytest.approx(5.0)
+    assert cost("claude-opus-5-5", Usage(0, 0, 0, 1_000_000)) == pytest.approx(8.0)
     assert cost("gpt-x", Usage(1, 1, 1, 1)) is None
 
 
@@ -240,3 +240,48 @@ async def test_fake_gateway_calls_on_usage_once(monkeypatch):
     gw = make_gateway("claude", ROLES, Budget(1.0), lambda r, x: seen.append(x))
     await gw.complete(req())
     assert len(seen) == 1
+
+
+async def test_nothing_escapes_anthropic():
+    err = anthropic.APIResponseValidationError(_resp(200), None)
+    gw, _, seen = make_anthropic(raises=err)
+    assert (await gw.complete(req())).error == "provider_error" and len(seen) == 1
+    for content in ([], None):
+        m = message()
+        m.content = content
+        gw, _, _ = make_anthropic(result=m)
+        assert (await gw.complete(req())).error == "invalid_json"
+    gw, _, seen = make_anthropic(raises=RuntimeError("secret prompt text"))
+    r = await gw.complete(req())
+    assert r.error == "provider_error" and not r.ok and len(seen) == 1
+
+
+async def test_nothing_escapes_openai():
+    roles = ModelRoles(decide="gpt-x", summarise="gpt-y", vision="gpt-x")
+    seen = []
+    gw = OpenAIGateway(FakeOpenAI(raises=openai.OpenAIError("x")), roles, Budget(1.0),
+                       lambda r, x: seen.append(x))
+    assert (await gw.complete(req())).error == "provider_error" and len(seen) == 1
+    gw = OpenAIGateway(FakeOpenAI(raises=RuntimeError("x")), roles, Budget(1.0), lambda r, x: None)
+    assert (await gw.complete(req())).error == "provider_error"
+
+
+async def test_openai_image_media_type():
+    client = FakeOpenAI()
+    roles = ModelRoles(decide="gpt-x", summarise="gpt-y", vision="gpt-x")
+    await OpenAIGateway(client, roles, Budget(1.0), lambda r, x: None).complete(
+        req(role="vision", images=[b"\xff\xd8\xff"]))
+    url = client.calls[0]["input"][0]["content"][0]["image_url"]
+    assert url.startswith("data:image/jpeg;base64,")
+
+
+async def test_fake_robot_speech_ignores_scene_context():
+    u = "Scene: you are near the entrance.\nROBOT SAID TO YOU: clinic_corridor is down there\nmore entrance"
+    d = (await FakeGateway().complete(req(user=u))).data
+    assert d["intent"]["target"] == "clinic_corridor"
+
+
+def test_make_gateway_unknown_provider(monkeypatch):
+    monkeypatch.delenv("WARDZERO_TEST_FAKE_LLM", raising=False)
+    with pytest.raises(ValueError):
+        make_gateway("bogus", ROLES, Budget(1.0), lambda r, x: None)

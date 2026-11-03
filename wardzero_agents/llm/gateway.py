@@ -1,12 +1,15 @@
 """Gateway types shared by every backend, the spend budget and the factory."""
 from __future__ import annotations
 
+import logging
 import os
 import time
 from dataclasses import dataclass, field
 from typing import Callable, Literal, Optional, Protocol
 
 from ..config.models import ModelRoles
+
+log = logging.getLogger(__name__)
 
 Role = Literal["decide", "summarise", "vision"]
 ErrorKind = Literal["refusal", "invalid_json", "timeout", "rate_limited", "budget", "provider_error"]
@@ -79,7 +82,11 @@ class BaseGateway:
         if self.budget.exhausted:
             res = LLMResult(False, None, "budget", model)
         else:
-            res = await self._call(req, model)
+            try:
+                res = await self._call(req, model)
+            except Exception as exc:  # last resort: nothing escapes complete()
+                log.error("gateway call failed: %s", type(exc).__name__)
+                res = LLMResult(False, None, "provider_error", model)
             self.budget.charge(res.cost_usd)
         res.latency_s = time.monotonic() - t0
         self.on_usage(req, res)
@@ -91,6 +98,8 @@ def make_gateway(provider: str, roles: ModelRoles, budget: Budget,
     if os.environ.get("WARDZERO_TEST_FAKE_LLM") == "1":
         from .fake import FakeGateway
         return FakeGateway(on_usage=on_usage)
+    if provider not in ("claude", "openai"):
+        raise ValueError(f"unknown provider {provider!r}")
     from .. import keys
     client = keys.make_client(provider)
     if provider == "claude":

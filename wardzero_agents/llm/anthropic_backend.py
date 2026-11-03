@@ -7,19 +7,12 @@ import json
 
 import anthropic
 
+from .images import media_type
 from .gateway import BaseGateway, LLMRequest, LLMResult
 from .pricing import Usage, cost
 
 FALLBACK = {"betas": ["server-side-fallback-2026-07-01"], "fallbacks": "default"}
 FALLBACK_MODELS = {"claude-opus-5-5", "claude-sonnet-5-5"}
-
-
-def _media_type(b: bytes) -> str:
-    if b.startswith(b"\xff\xd8"):
-        return "image/jpeg"
-    if b[:4] == b"RIFF":
-        return "image/webp"
-    return "image/png"
 
 
 class AnthropicGateway(BaseGateway):
@@ -29,7 +22,7 @@ class AnthropicGateway(BaseGateway):
 
     async def _call(self, req: LLMRequest, model: str) -> LLMResult:
         decide = req.role == "decide"
-        blocks = [{"type": "image", "source": {"type": "base64", "media_type": _media_type(i),
+        blocks = [{"type": "image", "source": {"type": "base64", "media_type": media_type(i),
                                                "data": base64.b64encode(i).decode()}}
                   for i in req.images]
         blocks.append({"type": "text", "text": req.user})
@@ -51,7 +44,7 @@ class AnthropicGateway(BaseGateway):
             return fail("timeout")
         except anthropic.RateLimitError:
             return fail("rate_limited")
-        except (anthropic.APIStatusError, anthropic.APIConnectionError):
+        except anthropic.APIError:
             return fail("provider_error")
 
         u = msg.usage
@@ -64,7 +57,7 @@ class AnthropicGateway(BaseGateway):
         if msg.stop_reason == "refusal":
             res.error = "refusal"
             return res
-        text = next((b.text for b in msg.content if getattr(b, "type", None) == "text"), None)
+        text = next((b.text for b in (msg.content or []) if getattr(b, "type", None) == "text"), None)
         try:
             res.data = json.loads(text)
             res.ok = True

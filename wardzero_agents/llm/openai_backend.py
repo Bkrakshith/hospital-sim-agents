@@ -7,6 +7,7 @@ import json
 
 import openai
 
+from .images import media_type
 from .gateway import BaseGateway, LLMRequest, LLMResult
 
 
@@ -18,7 +19,7 @@ class OpenAIGateway(BaseGateway):
     async def _call(self, req: LLMRequest, model: str) -> LLMResult:
         if req.images:
             content = [{"type": "input_image",
-                        "image_url": "data:image/png;base64," + base64.b64encode(i).decode()}
+                        "image_url": "data:" + media_type(i) + ";base64," + base64.b64encode(i).decode()}
                        for i in req.images]
             content.append({"type": "input_text", "text": req.user})
             inp = [{"role": "user", "content": content}]
@@ -37,7 +38,7 @@ class OpenAIGateway(BaseGateway):
             return fail("timeout")
         except openai.RateLimitError:
             return fail("rate_limited")
-        except (openai.APIStatusError, openai.APIConnectionError):
+        except openai.OpenAIError:
             return fail("provider_error")
 
         u = r.usage
