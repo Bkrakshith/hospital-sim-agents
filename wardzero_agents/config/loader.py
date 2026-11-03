@@ -1,6 +1,7 @@
 """Load a scenario file and its sibling configs, cross-check them and sample the cast."""
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
@@ -8,7 +9,7 @@ from typing import Any, Optional
 import yaml
 from pydantic import ValidationError
 
-from .models import ModelRoles, Persona, PersonInstance, Scenario, Sign, WaitingArea
+from .models import CardDef, ModelRoles, Persona, PersonInstance, Scenario, Sign, Storyboard, WaitingArea
 from .sampling import sample_instance
 
 
@@ -22,8 +23,8 @@ class LoadedScenario:
     personas: dict[str, Persona]
     area: WaitingArea
     signs: list[Sign]
-    storyboard: Optional[Any]  # Storyboard model arrives in Task 11
-    deck: Optional[dict]  # dict[str, CardDef] arrives in Task 11
+    storyboard: Optional[Storyboard]  # None when the scenario's storyboard file is missing
+    deck: Optional[dict[str, CardDef]]  # None when the scenario's deck file is missing
     instances: list[PersonInstance]
     root: Path = field(default_factory=Path)
     scenario_path: Path = field(default_factory=Path)
@@ -78,9 +79,8 @@ def load_scenario(path: "str | Path") -> LoadedScenario:
 
     _cross_check(scenario, personas, area)
 
-    # Task 11 adds the Storyboard and CardDef models; until then the loader leaves them None.
-    storyboard = None
-    deck = None
+    deck = _load_deck(path.parent / scenario.deck)
+    storyboard = _load_storyboard(path.parent / scenario.storyboard, deck, scenario)
 
     instances = [sample_instance(personas[c.persona], c, scenario.seed, i) for i, c in enumerate(scenario.cast)]
     return LoadedScenario(scenario, personas, area, signs, storyboard, deck, instances, root, path)
@@ -108,3 +108,48 @@ def _cross_check(scenario: Scenario, personas: dict[str, Persona], area: Waiting
     for name in [area.entrance, area.nurse_call_point, *area.exits]:
         if name not in area.landmarks:
             raise ConfigError(f"{scenario.area}: unknown landmark '{name}'")
+
+
+def _load_deck(path: Path) -> Optional[dict[str, CardDef]]:
+    """Load the card deck. A missing file gives None so partial configs still load."""
+    if not path.exists():
+        return None
+    raw = (_read_yaml(path) or {}).get("cards", [])
+    deck: dict[str, CardDef] = {}
+    for i, entry in enumerate(raw):
+        card = _validate(CardDef, entry, path)
+        if card.id in deck:
+            raise ConfigError(f"deck.cards[{i}].id: duplicate card id '{card.id}'")
+        deck[card.id] = card
+    return deck
+
+
+def _load_storyboard(path: Path, deck: Optional[dict[str, CardDef]], scenario: Scenario) -> Optional[Storyboard]:
+    """Load and cross-check the storyboard. A missing file gives None."""
+    if not path.exists():
+        return None
+    raw = _read_yaml(path)
+    for i, b in enumerate((raw or {}).get("beats", []) or []):
+        if isinstance(b, dict) and sum(b.get(k) is not None for k in ("at", "when", "after")) != 1:
+            raise ConfigError(f"storyboard.beats[{i}]: exactly one of at, when, after")
+        if isinstance(b, dict) and b.get("at") is not None and not re.match(r"^t\+\d{2}:\d{2}$", str(b["at"])):
+            raise ConfigError(f"storyboard.beats[{i}].at: '{b['at']}' must look like t+MM:SS")
+    sb = _validate(Storyboard, raw, path)
+    people = {c.id for c in scenario.cast}
+    seen: dict[str, int] = {}
+    for i, b in enumerate(sb.beats):
+        if b.id in seen:
+            raise ConfigError(f"storyboard.beats[{i}].id: duplicate beat id '{b.id}'")
+        if b.target is not None and b.target not in people:
+            raise ConfigError(f"storyboard.beats[{i}].target: unknown person '{b.target}'")
+        if b.when is not None and b.when.person not in people:
+            raise ConfigError(f"storyboard.beats[{i}].when.person: unknown person '{b.when.person}'")
+        if deck is not None:
+            if b.card not in deck:
+                raise ConfigError(f"storyboard.beats[{i}].card: unknown card '{b.card}'")
+            if deck[b.card].target_kind == "person" and b.target is None:
+                raise ConfigError(f"storyboard.beats[{i}].target: card '{b.card}' needs a target person")
+        if b.after is not None and b.after not in seen:
+            raise ConfigError(f"storyboard.beats[{i}].after: '{b.after}' must name an earlier beat")
+        seen[b.id] = i
+    return sb

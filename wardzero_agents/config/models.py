@@ -1,9 +1,10 @@
 """Pydantic v2 schemas for personas, scenarios, the waiting area and sampled person instances."""
 from __future__ import annotations
 
+import re
 from typing import Annotated, Literal, Optional
 
-from pydantic import AfterValidator, BaseModel, ConfigDict, Field
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validator
 
 
 def _ordered(r: tuple[float, float]) -> tuple[float, float]:
@@ -165,3 +166,58 @@ class PersonInstance(_Model):
     entrance: Optional[str]
 
 
+
+
+_AT_RE = re.compile(r"^t\+\d{2}:\d{2}$")
+
+
+class Condition(_Model):
+    kind: Literal["robot_within", "waited_longer_than", "posture_is"]
+    person: str
+    value: float | str
+
+
+class Beat(_Model):
+    id: str
+    at: Optional[str] = None
+    when: Optional[Condition] = None
+    after: Optional[str] = None
+    card: str
+    target: Optional[str] = None
+    params: dict = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _one_trigger(self):
+        if sum(x is not None for x in (self.at, self.when, self.after)) != 1:
+            raise ValueError("exactly one of at, when, after")
+        if self.at is not None and not _AT_RE.match(self.at):
+            raise ValueError(f"at '{self.at}' must look like t+MM:SS")
+        return self
+
+
+class Storyboard(_Model):
+    id: str
+    beats: list[Beat]
+
+
+class CardDef(_Model):
+    id: str
+    label: str
+    channels: list[Literal["nudge", "reflex", "world"]]
+    target_kind: Literal["person", "none", "new", "all"]
+    nudge: Optional[str] = None
+    companion_nudge: Optional[str] = None
+    reflex: Optional[dict] = None
+    world: Optional[dict] = None
+    tests: str
+    weight: float = Field(default=1.0, gt=0)
+
+    @model_validator(mode="after")
+    def _channels_have_content(self):
+        if "nudge" in self.channels and self.nudge is None and self.companion_nudge is None:
+            raise ValueError("channel 'nudge' needs a nudge or companion_nudge")
+        if "reflex" in self.channels and not self.reflex:
+            raise ValueError("channel 'reflex' needs a reflex")
+        if "world" in self.channels and not (self.world and "kind" in self.world):
+            raise ValueError("channel 'world' needs a world with a kind")
+        return self
