@@ -1,0 +1,322 @@
+"""Stub sim node (wardzero_stub_sim): the kinematic StubWorld on ROS, standing in for Isaac.
+
+It owns the world and the sim clock. Each wall step it advances sim time by time_scale x wall dt
+(not while paused, not while it waits for the other nodes to come up, and in lockstep not while
+any decision is pending), then publishes /clock, the roster (on change), statuses (10 Hz sim),
+observations (2 Hz sim, and at once when there is new audio), every audio event and what the
+robot's microphone hears.
+
+    python -m wardzero_agents.ros.stub_sim_node --run-dir DIR --scenario FILE [--time-scale F]
+        [--lockstep] [--wait-for agents,director]
+"""
+from __future__ import annotations
+
+import asyncio
+import logging
+import math
+import sys
+import time
+from collections import deque
+from dataclasses import dataclass, field
+from typing import Iterable, Optional
+
+from ..config.loader import ConfigError, LoadedScenario, load_scenario
+from ..contracts import AudioEvent, Control, Heard, Intent, Observation, Roster, Say, Status, WorldEvent
+from ..runlog import RunLog
+from ..world import audio
+from ..world.oracle import Pose
+from ..world.stub_world import StubWorld
+
+log = logging.getLogger("wardzero.stub_sim")
+
+STEP_HZ = 100.0
+STATUS_PERIOD_S = 0.1
+STATUS_RECORD_PERIOD_S = 0.5
+OBS_PERIOD_S = 0.5
+OBS_WINDOW_S = 2.0
+MAX_WALL_DT = 0.5  # a stalled loop does not make the sim jump further than this
+ROBOT_ADDRESS_M = 2.5  # robot speech is addressed to the nearest person within this distance
+READY_TIMEOUT_S = 180.0
+WAIT_TOKENS = ("agents", "director")
+
+
+@dataclass
+class SimOutputs:
+    clock: float
+    roster: Optional[Roster] = None
+    statuses: list[Status] = field(default_factory=list)
+    observations: list[Observation] = field(default_factory=list)
+    audio: list[AudioEvent] = field(default_factory=list)
+    robot_heard: list[Heard] = field(default_factory=list)
+    stop: bool = False
+
+
+class StubSimService:
+    """The stub sim without ROS: feed it messages, call step(wall_dt), publish what it returns."""
+
+    def __init__(self, loaded: LoadedScenario, runlog: RunLog, time_scale: float = 1.0,
+                 lockstep: bool = False, wait_for: Iterable[str] = WAIT_TOKENS, seed: Optional[int] = None):
+        if not (time_scale > 0 and math.isfinite(time_scale)):
+            raise ValueError("time_scale must be a positive number")
+        self.loaded = loaded
+        self.runlog = runlog
+        self.time_scale = float(time_scale)
+        self.lockstep = lockstep
+        self.world = StubWorld(loaded, loaded.scenario.seed if seed is None else seed)
+        self.robot = loaded.scenario.robot.enabled
+        self.duration_s = loaded.scenario.duration_min * 60.0
+        self.t = 0.0
+        self.paused = False
+        self.pending = 0
+        self.waiting: set[str] = set(wait_for)
+        self._stop = False
+        self._roster_key: Optional[tuple] = None
+        self._next_status = 0.0
+        self._next_status_record = 0.0
+        self._next_obs = 0.0
+        self._obs_now = False
+        self._audio_out: list[AudioEvent] = []
+        self._heard_out: list[Heard] = []
+        # (emit time, event, {person: what they heard}) for the observation window
+        self._recent: deque[tuple[float, AudioEvent, dict[str, Heard]]] = deque()
+        self._last_spoken: dict[str, tuple[float, str]] = {}
+
+    # ---- inputs --------------------------------------------------------------------------
+    def ready(self, what: str) -> None:
+        if what in self.waiting:
+            self.waiting.discard(what)
+            log.info("%s ready", what)
+
+    def set_pending(self, n: int) -> None:
+        self.pending = max(0, int(n))
+
+    def control(self, ctl: Control) -> None:
+        if ctl.action == "pause":
+            self.paused = True
+        elif ctl.action in ("resume", "start"):
+            self.paused = False
+        elif ctl.action == "stop":
+            self._stop = True
+        elif ctl.action == "reset":
+            log.warning("reset is not supported during a run; stop it and start a new one")
+
+    def _emit(self, events: Iterable[AudioEvent]) -> None:
+        for ev in events:
+            heard: dict[str, Heard] = {}
+            for pid, p in self.world.people.items():
+                if p.posture == "gone":
+                    continue
+                h = audio.route(ev, Pose(p.x, p.y, p.yaw), pid, p.inst.hearing_loss_db, self.world.rng)
+                if h is not None:
+                    heard[pid] = h
+            self._recent.append((self.t, ev, heard))
+            self._audio_out.append(ev)
+            self.runlog.write("audio", ev.model_dump(mode="json", by_alias=True))
+            rh = self.world.robot_heard(ev) if self.robot else None
+            if rh is not None:
+                self._heard_out.append(rh)
+            self._obs_now = True
+
+    def _spoken_before(self, person: str, t: float, text: str) -> bool:
+        """A talk intent and a Say for the same utterance arrive separately: speak it once."""
+        key = (t, text)
+        if self._last_spoken.get(person) == key:
+            return True
+        self._last_spoken[person] = key
+        return False
+
+    def on_intent(self, intent: Intent) -> None:
+        if intent.person not in self.world.people:
+            log.warning("intent for unknown person %s ignored", intent.person)
+            return
+        if intent.kind == "talk" and self._spoken_before(intent.person, intent.t, intent.text or ""):
+            return
+        try:
+            events = self.world.apply_intent(intent.model_copy(update={"t": self.t}))
+        except ValueError as exc:
+            log.warning("intent %s for %s ignored: %s", intent.kind, intent.person, exc)
+            return
+        self._emit(events)
+
+    def on_say(self, say: Say) -> None:
+        if say.person not in self.world.people or self.world.people[say.person].posture == "gone":
+            log.warning("speech from unknown or absent person %s ignored", say.person)
+            return
+        if self._spoken_before(say.person, say.t, say.text):
+            return
+        self._emit([self.world.say(say.person, say.text, say.addressee, self.t)])
+
+    def on_robot_say(self, text: str) -> None:
+        text = (text or "").strip()
+        if not text:
+            return
+        if not self.robot:
+            log.warning("robot speech ignored: this scenario has no robot")
+            return
+        ev = self.world.robot_say(text, self.t)
+        r = self.world.robot_pose
+        near = [(math.hypot(p.x - r.x, p.y - r.y), pid) for pid, p in self.world.people.items()
+                if p.posture != "gone"]
+        near = [x for x in near if x[0] <= ROBOT_ADDRESS_M]
+        if near:
+            ev = ev.model_copy(update={"addressee": min(near)[1]})
+        self._emit([ev])
+
+    def on_world_event(self, ev: WorldEvent) -> None:
+        self._emit(self.world.apply_world_event(ev.model_copy(update={"t": self.t})))
+
+    # ---- stepping ------------------------------------------------------------------------
+    def _observation(self, pid: str) -> Observation:
+        obs = self.world.observation(pid, self.t, [])
+        heard = [h[pid] for _, _, h in self._recent if pid in h]
+        return obs.model_copy(update={"heard": heard})
+
+    def step(self, wall_dt: float) -> SimOutputs:
+        wall_dt = min(max(0.0, wall_dt), MAX_WALL_DT)
+        held = (self.paused or bool(self.waiting) or (self.lockstep and self.pending > 0)
+                or self.t >= self.duration_s)
+        if not held and not self._stop:
+            self.t = min(self.duration_s, self.t + self.time_scale * wall_dt)
+            self.world.step(self.t)
+        out = SimOutputs(clock=self.t)
+
+        roster = self.world.roster(self.t)
+        key = tuple((p.id, p.persona) for p in roster.people)
+        if key != self._roster_key:
+            self._roster_key = key
+            out.roster = roster
+
+        if self.t >= self._next_status:
+            out.statuses = self.world.statuses()
+            self._next_status = self.t + STATUS_PERIOD_S
+            if self.t >= self._next_status_record:
+                for st in out.statuses:
+                    self.runlog.write("status", st.model_dump(mode="json", by_alias=True))
+                self._next_status_record = self.t + STATUS_RECORD_PERIOD_S
+
+        while self._recent and self._recent[0][0] < self.t - OBS_WINDOW_S:
+            self._recent.popleft()
+        if self._obs_now or self.t >= self._next_obs:
+            out.observations = [self._observation(pid) for pid, p in self.world.people.items()
+                                if p.posture != "gone"]
+            self._obs_now = False
+            self._next_obs = self.t + OBS_PERIOD_S
+
+        out.audio, self._audio_out = self._audio_out, []
+        out.robot_heard, self._heard_out = self._heard_out, []
+        out.stop = self._stop or self.t >= self.duration_s
+        return out
+
+
+# ---- ROS wrapper ---------------------------------------------------------------------------
+def _parse(argv):
+    from .rosutil import base_args
+    p = base_args("Kinematic stub sim on ROS 2 (stands in for the Isaac sim host).")
+    p.add_argument("--scenario", required=True)
+    p.add_argument("--time-scale", type=float, default=1.0)
+    p.add_argument("--lockstep", action="store_true")
+    p.add_argument("--wait-for", default=",".join(WAIT_TOKENS),
+                   help="comma list of nodes to wait for before the clock starts: agents, director, or none")
+    return p.parse_args(argv)
+
+
+async def _run(args) -> int:
+    from rosgraph_msgs.msg import Clock
+    from std_msgs.msg import Int32, String
+
+    from . import topics
+    from .rosutil import QOS, QOS_LATCHED, RosBridge, install_stop_signals, wait_or_sleep
+
+    try:
+        loaded = load_scenario(args.scenario)
+    except ConfigError as exc:
+        print(f"Scenario error: {exc}", file=sys.stderr)
+        return 2
+    wait_for = [] if args.wait_for.strip() in ("", "none") else [w.strip() for w in args.wait_for.split(",")]
+    unknown = [w for w in wait_for if w not in WAIT_TOKENS]
+    if unknown:
+        print(f"--wait-for: unknown {', '.join(unknown)} (use agents, director or none)", file=sys.stderr)
+        return 2
+    lockstep = args.lockstep or loaded.scenario.lockstep
+    svc = StubSimService(loaded, RunLog(args.run_dir), args.time_scale, lockstep, wait_for)
+
+    loop = asyncio.get_running_loop()
+    stop = asyncio.Event()
+    install_stop_signals(loop, stop)
+    ros = RosBridge("wardzero_stub_sim", loop, use_sim_time=False)
+    clock_pub = ros.publisher("/clock", Clock, QOS)
+
+    def subscribe_person(pid: str) -> None:
+        ros.subscribe_json(Intent, topics.intent(pid), svc.on_intent)
+        ros.subscribe_json(Say, topics.say(pid), svc.on_say)
+
+    for pid in svc.world.people:
+        subscribe_person(pid)
+    ros.subscribe(String, topics.G1_SAY, svc.on_robot_say, QOS, convert=lambda m: m.data)
+    ros.subscribe_json(WorldEvent, topics.WORLD_EVENT, svc.on_world_event)
+    ros.subscribe_json(Control, topics.CONTROL, svc.control)
+
+    def on_pending(n: int) -> None:
+        svc.ready("agents")
+        svc.set_pending(n)
+
+    ros.subscribe(Int32, topics.PENDING, on_pending, QOS, convert=lambda m: int(m.data))
+    ros.subscribe(String, topics.TIMELINE, lambda _m: svc.ready("director"), QOS)
+    ros.start()
+    log.info("stub sim up: %s, time scale %.1f%s, waiting for %s", loaded.scenario.id, args.time_scale,
+             ", lockstep" if lockstep else "", ", ".join(sorted(svc.waiting)) or "nothing")
+
+    period = 1.0 / STEP_HZ
+    last = time.monotonic()
+    started = last
+    last_wait_log = last
+    code = 0
+    try:
+        while not stop.is_set():
+            now = time.monotonic()
+            out = svc.step(now - last)
+            last = now
+            msg = Clock()
+            msg.clock.sec = int(out.clock)
+            msg.clock.nanosec = int(round((out.clock - int(out.clock)) * 1e9)) % 1_000_000_000
+            clock_pub.publish(msg)
+            if out.roster is not None:
+                for p in out.roster.people:
+                    subscribe_person(p.id)
+                ros.publish_json(topics.ROSTER, out.roster, QOS_LATCHED)
+            for st in out.statuses:
+                ros.publish_json(topics.status(st.person), st)
+            for ev in out.audio:
+                ros.publish_json(topics.AUDIO_EVENTS, ev)
+            for obs in out.observations:
+                ros.publish_json(topics.observation(obs.person), obs)
+            for h in out.robot_heard:
+                ros.publish_json(topics.G1_HEARD, h)
+            if out.stop:
+                log.info("scenario over at t=%.1f s; stopping the run", out.clock)
+                ros.publish_json(topics.CONTROL, Control(action="stop"))
+                await asyncio.sleep(0.5)  # let the stop reach the other nodes
+                break
+            if svc.waiting:
+                if now - started > READY_TIMEOUT_S:
+                    log.error("gave up waiting for %s after %.0f s", ", ".join(sorted(svc.waiting)),
+                              READY_TIMEOUT_S)
+                    code = 3
+                    break
+                if now - last_wait_log > 10.0:
+                    log.info("waiting for %s", ", ".join(sorted(svc.waiting)))
+                    last_wait_log = now
+            await wait_or_sleep(stop, max(0.0, period - (time.monotonic() - now)))
+    finally:
+        ros.close()
+    return code
+
+
+def main(argv=None) -> int:
+    from .rosutil import setup_logging
+    setup_logging()
+    return asyncio.run(_run(_parse(argv)))
+
+
+if __name__ == "__main__":
+    sys.exit(main())
