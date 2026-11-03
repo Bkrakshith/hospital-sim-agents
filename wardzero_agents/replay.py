@@ -11,6 +11,14 @@ from .contracts import Intent, Say, WorldEvent, from_json
 log = logging.getLogger(__name__)
 
 
+def _t(r: dict, where: object = "") -> float:
+    v = r.get("t")
+    if isinstance(v, (int, float)) and not isinstance(v, bool):
+        return float(v)
+    log.warning("%s: record has missing or non-numeric t, using 0.0", where)
+    return 0.0
+
+
 def iter_stream(run_dir: Path, stream: str) -> Iterator[dict]:
     path = Path(run_dir) / f"{stream}.jsonl"
     if not path.exists():
@@ -28,7 +36,7 @@ def iter_stream(run_dir: Path, stream: str) -> Iterator[dict]:
                 log.warning("%s: skipping truncated last line", path)
             else:
                 raise
-    records.sort(key=lambda r: r.get("t", 0.0))  # stable
+    records.sort(key=lambda r: _t(r, path))  # stable
     return iter(records)
 
 
@@ -54,7 +62,7 @@ class IntentScript(_Script):
         items: list[tuple[float, object]] = []
         for stream, cls in (("intents", Intent), ("says", Say), ("world", WorldEvent)):
             for r in iter_stream(run_dir, stream):
-                items.append((r.get("t", 0.0), from_json(cls, json.dumps(r))))
+                items.append((_t(r, stream), from_json(cls, json.dumps(r))))
         super().__init__(items)
 
 
@@ -63,5 +71,5 @@ class ExactScript(_Script):
         items: list[tuple[float, object]] = []
         for stream in ("status", "audio", "cards"):
             for r in iter_stream(run_dir, stream):
-                items.append((r.get("t", 0.0), (stream, r)))
+                items.append((_t(r, stream), (stream, r)))
         super().__init__(items)

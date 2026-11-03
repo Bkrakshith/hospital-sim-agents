@@ -108,3 +108,33 @@ def test_copy_configs(tmp_path):
     RunLog(tmp_path).copy_configs(loaded)
     names = {p.name for p in (tmp_path / "config").iterdir()}
     assert {"waiting_area_v1.yaml", "personas.yaml", "waiting_area.yaml", "signs.yaml"} <= names
+
+
+def test_redacts_str_of_objects_and_keys(tmp_path):
+    key = "sk-ant-" + "api03-abcdefghijk"
+
+    class Box:
+        def __str__(self):
+            return "box " + key
+
+    rl = RunLog(tmp_path)
+    rl.write("decisions", {"t": 0, "e": Exception(key), "b": Box(), "p": Path("/x/" + key), (1, key): 1})
+    rl.write_meta({"b": Box(), "e": ValueError(key)})
+    assert "abcdefghijk" not in (tmp_path / "decisions.jsonl").read_text()
+    assert "abcdefghijk" not in (tmp_path / "meta.json").read_text()
+    assert [p.name for p in tmp_path.iterdir() if p.suffix == ".tmp"] == []
+
+
+def test_missing_or_bad_t_is_zero(tmp_path):
+    rl = RunLog(tmp_path)
+    rl.write("intents", {"t": 2.0, "person": "a"})
+    rl.write("intents", {"person": "b"})
+    rl.write("intents", {"t": "x", "person": "c"})
+    assert [r["person"] for r in iter_stream(tmp_path, "intents")] == ["b", "c", "a"]
+
+
+def test_exact_script_ties_across_streams(tmp_path):
+    rl = RunLog(tmp_path)
+    for s in ("cards", "audio", "status"):
+        rl.write(s, {"t": 1.0})
+    assert [n for n, _ in ExactScript(tmp_path).due(1.0)] == ["status", "audio", "cards"]

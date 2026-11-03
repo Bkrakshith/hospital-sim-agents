@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import tempfile
 import threading
 from datetime import datetime
 from pathlib import Path
@@ -21,7 +22,7 @@ def _redact_all(value: Any) -> Any:
     if isinstance(value, str):
         return redact(value)
     if isinstance(value, dict):
-        return {(redact(k) if isinstance(k, str) else k): _redact_all(v) for k, v in value.items()}
+        return {(k if isinstance(k, (str, int, float, bool)) or k is None else str(k)): _redact_all(v) for k, v in value.items()}
     if isinstance(value, (list, tuple)):
         return [_redact_all(v) for v in value]
     return value
@@ -36,17 +37,20 @@ class RunLog:
     def write(self, stream: str, record: dict) -> None:
         if stream not in STREAMS:
             raise ValueError(f"unknown run log stream '{stream}'")
-        line = json.dumps(_redact_all(record), sort_keys=True, default=str)
+        line = redact(json.dumps(_redact_all(record), sort_keys=True, default=str))
         with self._lock:
             with open(self.dir / f"{stream}.jsonl", "a", encoding="utf-8") as f:
                 f.write(line + "\n")
                 f.flush()
 
     def write_meta(self, meta: dict) -> None:
-        text = json.dumps(_redact_all(meta), sort_keys=True, indent=2, default=str)
+        text = redact(json.dumps(_redact_all(meta), sort_keys=True, indent=2, default=str))
         with self._lock:
-            tmp = self.dir / "meta.json.tmp"
-            tmp.write_text(text, encoding="utf-8")
+            with tempfile.NamedTemporaryFile(
+                "w", dir=self.dir, prefix="meta.", suffix=".tmp", delete=False, encoding="utf-8"
+            ) as f:
+                f.write(text)
+                tmp = f.name
             os.replace(tmp, self.dir / "meta.json")
 
     def copy_configs(self, loaded) -> None:
