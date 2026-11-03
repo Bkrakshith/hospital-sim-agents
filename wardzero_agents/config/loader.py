@@ -26,6 +26,7 @@ class LoadedScenario:
     deck: Optional[dict]  # dict[str, CardDef] arrives in Task 11
     instances: list[PersonInstance]
     root: Path = field(default_factory=Path)
+    scenario_path: Path = field(default_factory=Path)
 
 
 def default_models(provider: str) -> ModelRoles:
@@ -82,7 +83,7 @@ def load_scenario(path: "str | Path") -> LoadedScenario:
     deck = None
 
     instances = [sample_instance(personas[c.persona], c, scenario.seed, i) for i, c in enumerate(scenario.cast)]
-    return LoadedScenario(scenario, personas, area, signs, storyboard, deck, instances, root)
+    return LoadedScenario(scenario, personas, area, signs, storyboard, deck, instances, root, path)
 
 
 def _cross_check(scenario: Scenario, personas: dict[str, Persona], area: WaitingArea) -> None:
