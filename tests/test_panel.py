@@ -90,7 +90,7 @@ async def test_fire_rejected_shows_error(client, api):
 
 
 async def test_fire_null_target_ok(client, api):
-    r = await client.post("/api/cards/fire", json={"card": "fire_alarm", "target": None, "params": {}}, headers=H)
+    r = await client.post("/api/cards/fire", json={"card": "wet_floor", "target": None, "params": {}}, headers=H)
     assert r.status == 200 and api.fired[-1][1] is None
 
 

@@ -5,6 +5,7 @@ import yaml
 
 from tests.test_config import CFG, V1, write_patched
 from wardzero_agents.config.loader import ConfigError, load_scenario
+from wardzero_agents.config.models import CardDef
 from wardzero_agents.contracts import Nudge, ReflexOverride, Roster, RosterEntry, Status, WorldEvent
 from wardzero_agents.director.cards import CardExecutor, CardRejected
 from wardzero_agents.director.chaos import Chaos
@@ -33,6 +34,16 @@ def engine():
     return StoryboardEngine(LS.storyboard, LS.deck)
 
 
+def after_engine():
+    """Test-only storyboard that exercises `after` ordering (the v1 storyboard has none)."""
+    from wardzero_agents.config.models import Beat, Storyboard
+    sb = Storyboard(id="x", beats=[
+        Beat(id="a", at="t+20:00", card="name_called", target="P1"),
+        Beat(id="b", after="a", card="new_arrival"),
+    ])
+    return StoryboardEngine(sb, LS.deck)
+
+
 def executor():
     return CardExecutor(LS.deck, {i.person_id: i for i in LS.instances})
 
@@ -42,8 +53,9 @@ def firing(card, target=None, params=None, source="panel"):
 
 
 def test_v1_storyboard_loads():
-    assert [b.id for b in LS.storyboard.beats] == ["b1", "b2", "b3", "b4", "b5", "b6"]
-    assert len(LS.deck) == 10
+    assert [b.id for b in LS.storyboard.beats] == ["b1", "b2", "b3", "b4", "b5", "b6", "b7", "b8"]
+    assert len(LS.deck) == 12
+    assert "fire_alarm" not in LS.deck
     assert all(c.tests for c in LS.deck.values())
 
 
@@ -56,9 +68,7 @@ def test_beat_at_time():
 
 
 def test_after_beat():
-    e = engine()
-    e.tick(view(t=300))
-    e.tick(view(t=720))
+    e = after_engine()
     got = e.tick(view(t=1200))
     assert [f.card for f in got] == ["name_called"]
     assert [f.card for f in e.tick(view(t=1201))] == ["new_arrival"]
@@ -88,12 +98,13 @@ def test_missing_target_skipped_and_rerun():
     e = engine()
     e.tick(view(t=720, present=ALL - {"P5"}))
     tl = {r["id"]: r for r in e.timeline()}
-    assert tl["b2"]["state"] == "skipped" and "P5" in tl["b2"]["reason"]
-    e.skip("b5")
-    assert {r["id"]: r for r in e.timeline()}["b5"]["state"] == "skipped"
-    e.rerun("b2")
+    assert tl["b3"]["state"] == "skipped" and "P5" in tl["b3"]["reason"]
+    assert tl["b2"]["state"] == "fired"
+    e.skip("b6")
+    assert {r["id"]: r for r in e.timeline()}["b6"]["state"] == "skipped"
+    e.rerun("b3")
     assert [f.card for f in e.tick(view(t=730))] == ["lost_visitor"]
-    assert {r["id"]: r for r in e.timeline()}["b2"]["state"] == "fired"
+    assert {r["id"]: r for r in e.timeline()}["b3"]["state"] == "fired"
 
 
 def test_timeline_shape():
@@ -117,12 +128,34 @@ def test_name_called_and_templates():
     assert w.id == "panel-1"
 
 
-def test_fire_alarm_all_and_new_arrival():
-    outs = executor().execute(firing("fire_alarm"), view(present={"P1", "P2"}), roster())
+def test_all_target_kind_and_new_arrival():
+    everyone = CardDef(id="everyone", label="Everyone", channels=["nudge", "world"], target_kind="all",
+                       nudge="Something happens.", world={"kind": "alarm", "text": "A test alarm."}, tests="test-only")
+    ex = CardExecutor({**LS.deck, "everyone": everyone}, {i.person_id: i for i in LS.instances})
+    outs = ex.execute(firing("everyone"), view(present={"P1", "P2"}), roster())
     assert sorted(o.person for o in outs if isinstance(o, Nudge)) == ["P1", "P2"]
     assert any(isinstance(o, WorldEvent) and o.kind == "alarm" for o in outs)
     outs = executor().execute(firing("new_arrival", params={"persona": "companion"}), view(), roster())
     assert [(o.kind, o.persona) for o in outs] == [("arrival", "companion")]
+
+
+def test_ward_visitor_card_spawns_persona():
+    outs = executor().execute(firing("ward_visitor"), view(), roster())
+    assert [(o.kind, o.persona) for o in outs if isinstance(o, WorldEvent)] == [("arrival", "ward_visitor")]
+    assert "ward_visitor" in LS.personas
+
+
+def test_direction_nudges_never_name_the_robot():
+    for c in LS.deck.values():
+        text = " ".join(str(x) for x in (c.nudge, c.companion_nudge, c.world) if x).lower()
+        assert "robot" not in text and "g1" not in text, c.id
+
+
+def test_direction_cards_present():
+    for cid in ("toilet_request", "way_out"):
+        assert LS.deck[cid].target_kind == "person" and LS.deck[cid].nudge
+        o = executor().execute(firing(cid, "P4"), view(), roster())
+        assert [type(x) for x in o] == [Nudge] and o[0].person == "P4"
 
 
 def test_wet_floor_and_params_override():
@@ -196,7 +229,7 @@ def test_bad_beat_rejected(tmp_path):
 @pytest.mark.parametrize("edit,msg", [
     (lambda d: d["beats"][1].update(card="nope"), r"storyboard\.beats\[1\]\.card: unknown card 'nope'"),
     (lambda d: d["beats"][1].update(target="P9"), r"storyboard\.beats\[1\]\.target: unknown person 'P9'"),
-    (lambda d: d["beats"][3].update(after="b5"), r"storyboard\.beats\[3\]\.after: .*earlier beat"),
+    (lambda d: d["beats"][3].update(at=None, after="b5"), r"storyboard\.beats\[3\]\.after: .*earlier beat"),
     (lambda d: d["beats"][0].update(at="5 min"), r"storyboard\.beats\[0\]\.at"),
 ])
 def test_storyboard_cross_checks(tmp_path, edit, msg):
@@ -256,31 +289,31 @@ def test_unknown_template_key_rejected_at_load(tmp_path):
 
 
 def test_condition_value_validated_at_load(tmp_path):
-    p = _sb_patch(tmp_path / "a", lambda d: d["beats"][5]["when"].update(value="soon"))
-    with pytest.raises(ConfigError, match=r"beats\[5\]\.when\.value"):
+    p = _sb_patch(tmp_path / "a", lambda d: d["beats"][7]["when"].update(value="soon"))
+    with pytest.raises(ConfigError, match=r"beats\[7\]\.when\.value"):
         load_scenario(p)
-    p = _sb_patch(tmp_path / "b", lambda d: d["beats"][5].update(when={"kind": "posture_is", "person": "P4", "value": "flying"}))
-    with pytest.raises(ConfigError, match=r"beats\[5\]\.when\.value"):
+    p = _sb_patch(tmp_path / "b", lambda d: d["beats"][7].update(when={"kind": "posture_is", "person": "P4", "value": "flying"}))
+    with pytest.raises(ConfigError, match=r"beats\[7\]\.when\.value"):
         load_scenario(p)
 
 
 def test_skip_cascades_to_after_dependents():
-    e = engine()
-    e.skip("b3")
+    e = after_engine()
+    e.skip("a")
     tl = {r["id"]: r for r in e.timeline()}
-    assert tl["b4"]["state"] == "skipped" and tl["b4"]["reason"] == "predecessor b3 skipped"
-    e.rerun("b3")
+    assert tl["b"]["state"] == "skipped" and tl["b"]["reason"] == "predecessor a skipped"
+    e.rerun("a")
     tl = {r["id"]: r for r in e.timeline()}
-    assert tl["b3"]["state"] == "pending" and tl["b4"]["state"] == "pending"
+    assert tl["a"]["state"] == "pending" and tl["b"]["state"] == "pending"
     assert [f.card for f in e.tick(view(t=1200)) if f.card == "name_called"] == ["name_called"]
     assert [f.card for f in e.tick(view(t=1201)) if f.card == "new_arrival"] == ["new_arrival"]
 
 
 def test_missing_target_skip_cascades():
-    e = engine()
+    e = after_engine()
     e.tick(view(t=1200, present=ALL - {"P1"}))
     tl = {r["id"]: r for r in e.timeline()}
-    assert tl["b3"]["state"] == "skipped" and tl["b4"]["reason"] == "predecessor b3 skipped"
+    assert tl["a"]["state"] == "skipped" and tl["b"]["reason"] == "predecessor a skipped"
 
 
 def test_chaos_cap_of_three_per_tick():

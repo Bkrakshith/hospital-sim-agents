@@ -158,3 +158,32 @@ personas:
       - UK hospital visitor personas/ae_outpatient_flows.md
       - UK hospital visitor personas/visitor_behaviour.md
       - UK hospital visitor personas/robot_interaction.md
+  ward_visitor:
+    id: ward_visitor
+    label: Visitor looking for a relative on the ward
+    role: visitor
+    age: [30, 70]
+    sex: [female, male]
+    condition: Not a patient. Visiting a relative who was admitted overnight.
+    symptoms: {cough_per_hour: [0, 0], cough_severity: mild, breathless: false, fever: false}
+    mobility: {aid: none, walk_speed: [1.1, 1.3], sit_to_stand_s: [1.5, 2.5]}
+    hearing_loss_db: [0, 10]
+    english_fluency: fluent
+    patience_min: [10, 25]
+    anxiety: [0.4, 0.8]
+    sociability: [0.4, 0.7]
+    phone_use: [0.2, 0.5]
+    attitude_to_robots: neutral
+    goals:
+      - Find a relative on Ward B.
+      - Ask someone the way if the signs are unclear.
+    backstory: >
+      A relative was admitted overnight and the visitor has come in as soon as visiting started.
+      Has not been on the wards before, is worried about what they will find, and would rather
+      ask someone than wander the corridors reading signs.
+    seed_memories:
+      - The phone call said the relative is on Ward B and visiting starts at two.
+      - Was told to use hand gel at the ward door and to ask at the desk if unsure.
+    sources:
+      - UK hospital visitor personas/visitor_profiles_uk.md
+      - UK hospital visitor personas/visitor_behaviour.md

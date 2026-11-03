@@ -1,11 +1,13 @@
 id: waiting_area_day
 beats:
   - {id: b1, at: "t+05:00", card: clinic_delay}
-  - {id: b2, at: "t+12:00", card: lost_visitor, target: P5}
-  - {id: b3, at: "t+20:00", card: name_called, target: P1}
-  - {id: b4, after: b3, card: new_arrival}
-  - {id: b5, at: "t+35:00", card: coughing_fit, target: P2}
-  - id: b6
+  - {id: b2, at: "t+08:00", card: ward_visitor}
+  - {id: b3, at: "t+12:00", card: lost_visitor, target: P5}
+  - {id: b4, at: "t+20:00", card: name_called, target: P1}
+  - {id: b5, at: "t+25:00", card: toilet_request, target: P4}
+  - {id: b6, at: "t+35:00", card: coughing_fit, target: P2}
+  - {id: b7, at: "t+45:00", card: way_out, target: P3}
+  - id: b8
     when: {kind: waited_longer_than, person: P4, value: 3000}
     card: impatient_patient
     target: P4

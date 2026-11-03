@@ -59,17 +59,30 @@ cards:
     world: {kind: arrival}
     tests: Whether the robot copes with a newcomer entering a room it thought it knew.
 
-  - id: fire_alarm
-    label: Fire alarm
-    channels: [nudge, world]
-    target_kind: all
-    nudge: "The fire alarm is sounding. Leave by the nearest exit."
-    world: {kind: alarm, text: "The fire alarm is sounding."}
-    tests: Whether the robot behaves safely when everyone leaves at once.
-
   - id: clinic_delay
     label: Clinic delay
     channels: [world]
     target_kind: none
     world: {kind: pa_announcement, text: "Clinics are running about 30 minutes late. We apologise for the wait."}
     tests: Whether the robot copes with a roomful of people reacting to a delay announcement.
+
+  - id: ward_visitor
+    label: Ward visitor
+    channels: [world]
+    target_kind: new
+    world: {kind: arrival, persona: ward_visitor}
+    tests: Directions to the wards, lifts and doors; checking it was understood.
+
+  - id: toilet_request
+    label: Toilet request
+    channels: [nudge]
+    target_kind: person
+    nudge: "You need the toilet and can't see a sign for one. Find someone who can tell you where it is."
+    tests: Short directions, pointing, signs.
+
+  - id: way_out
+    label: Way out
+    channels: [nudge]
+    target_kind: person
+    nudge: "You want to step outside for some air and can't see the way out. Find someone who can tell you."
+    tests: Directions to the entrance, making way.
