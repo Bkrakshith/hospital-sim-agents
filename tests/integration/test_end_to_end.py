@@ -59,7 +59,7 @@ def test_end_to_end(tmp_path):
     scenario = write_variant(tmp_path)
     runs_root = tmp_path / "runs"
     env = dict(os.environ, WARDZERO_TEST_FAKE_LLM="1", WARDZERO_DATA_DIR=str(tmp_path / "data"),
-               WARDZERO_RUNS_DIR=str(runs_root), ROS_DOMAIN_ID=str(random.randint(100, 200)),
+               WARDZERO_RUNS_DIR=str(runs_root), ROS_DOMAIN_ID=str(random.randint(1, 101)),
                PYTHONUNBUFFERED="1")
     started = time.time()
     cli = "import sys; from wardzero_agents.cli import main; sys.exit(main(sys.argv[1:]))"
