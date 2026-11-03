@@ -219,3 +219,31 @@ async def test_run_panel_serves_local(api):
 def test_index_is_packaged():
     from importlib import resources
     assert resources.files("wardzero_agents.panel").joinpath("static/index.html").is_file()
+
+
+async def test_ws_foreign_origin_refused(client):
+    import aiohttp
+    port = client.port
+    with pytest.raises(aiohttp.WSServerHandshakeError) as e:
+        await client.ws_connect("/ws", headers={"Origin": "http://evil.example:%d" % port})
+    assert e.value.status == 403
+    with pytest.raises(aiohttp.WSServerHandshakeError) as e:
+        await client.ws_connect("/ws", headers={"Origin": "http://127.0.0.1:1"})
+    assert e.value.status == 403
+
+
+async def test_state_foreign_origin_refused(client):
+    r = await client.get("/api/state", headers={"Origin": "https://evil.example"})
+    assert r.status == 403 and await r.json() == {"error": "cross-site request refused"}
+    r = await client.post("/api/control", json={"action": "stop"},
+                          headers={**H, "Origin": "http://evil.example:%d" % client.port})
+    assert r.status == 403
+
+
+async def test_same_origin_ok(client, api):
+    o = {"Origin": "http://127.0.0.1:%d" % client.port}
+    assert (await client.get("/api/state", headers=o)).status == 200
+    assert (await client.post("/api/control", json={"action": "stop"}, headers={**H, **o})).status == 200
+    ws = await client.ws_connect("/ws", headers=o)
+    assert "cast" in await ws.receive_json(timeout=2)
+    await ws.close()

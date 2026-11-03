@@ -37,7 +37,10 @@ fire(card, target, params) -> {"ok": True, "firing_id"} or {"ok": False, "error"
 set_chaos(enabled, rate_per_hour); beat("skip"|"rerun", beat_id); snapshot(name) -> dict.
 All are plain sync methods and must return quickly: handlers call them on the event loop.
 
-Security: POST routes need the header X-WardZero-Panel: 1 (CSRF); the Host header must
+Security: a request with an Origin header (every browser page, including the WebSocket
+upgrade) must come from a loopback host on the same port as Host, else 403. An SSH tunnel
+(ssh -L 8765:127.0.0.1:8765) works because the browser's Host and Origin stay localhost.
+POST routes need the header X-WardZero-Panel: 1 (CSRF); the Host header must
 be a loopback name (DNS rebinding); API exceptions give a generic 500 and only the
 exception type is logged.
 """
@@ -114,6 +117,15 @@ def _str(data: dict, key: str, maxlen: int = 200, nullable: bool = False) -> Opt
     return v
 
 
+def _same_origin(origin: str, host: str) -> bool:
+    try:
+        o, h = urlsplit(origin), urlsplit("//" + host)
+        default = {"http": 80, "https": 443}.get(o.scheme)
+        return (o.hostname in ALLOWED_HOSTS and (o.port or default) == (h.port or default))
+    except ValueError:
+        return False
+
+
 @web.middleware
 async def _guard(request: web.Request, handler):
     try:
@@ -122,6 +134,9 @@ async def _guard(request: web.Request, handler):
         host = None
     if host not in ALLOWED_HOSTS:
         return _err(403, "This panel only answers on localhost.")
+    origin = request.headers.get("Origin")
+    if origin is not None and not _same_origin(origin, request.headers.get("Host", "")):
+        return _err(403, "cross-site request refused")
     if request.method == "POST" and request.headers.get(CSRF_HEADER) != "1":
         return _err(403, f"Missing the {CSRF_HEADER}: 1 header.")
     try:
