@@ -80,9 +80,25 @@ def test_models_build_in_python_without_schema_argument():
     assert i.schema_ == "wz.v1"
 
 
-def test_missing_schema_defaults_to_wz_v1():
-    i = from_json(Intent, json.dumps({"id": "a", "person": "P1", "t": 0, "kind": "sit_idle"}))
+def test_missing_schema_rejected():
+    with pytest.raises(ContractError, match="schema"):
+        from_json(Intent, json.dumps({"id": "a", "person": "P1", "t": 0, "kind": "sit_idle"}))
+
+
+def test_python_construction_without_schema_still_defaults():
+    i = Intent(id="a", person="P1", t=0.0, kind="sit_idle")
     assert i.schema_ == "wz.v1"
+
+
+def test_wrong_schema_message_names_the_value():
+    with pytest.raises(ContractError, match="wz.v0"):
+        from_json(Intent, '{"schema":"wz.v0","id":"a","person":"P1","t":0,"kind":"sit_idle"}')
+
+
+def test_deeply_nested_json_raises_contract_error():
+    deep = "[" * 200_000 + "]" * 200_000
+    with pytest.raises(ContractError):
+        from_json(Intent, deep)
 
 
 def test_wrong_schema_rejected():

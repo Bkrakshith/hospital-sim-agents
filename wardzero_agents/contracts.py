@@ -165,8 +165,16 @@ def from_json(cls: type[_M], text: str) -> _M:
     """Parse and validate JSON text as cls. Raises ContractError on any failure."""
     try:
         data = json.loads(text)
-    except (json.JSONDecodeError, TypeError) as exc:
+    except (ValueError, RecursionError) as exc:
         raise ContractError(f"invalid JSON for {cls.__name__}: {exc}") from exc
+    if not isinstance(data, dict):
+        raise ContractError(f"{cls.__name__} payload must be a JSON object")
+    if "schema" not in data:
+        raise ContractError(f"{cls.__name__} payload is missing 'schema' (expected {SCHEMA!r})")
+    if data["schema"] != SCHEMA:
+        raise ContractError(
+            f"{cls.__name__} payload has schema {data['schema']!r}, expected {SCHEMA!r}"
+        )
     try:
         return cls.model_validate(data)
     except ValidationError as exc:
