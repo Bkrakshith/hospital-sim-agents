@@ -10,7 +10,7 @@ from wardzero_agents.contracts import AudioEvent, Heard
 from wardzero_agents.world.oracle import Pose
 
 SPEECH_DB = 60
-ROBOT_SPEECH_DB = 65
+ROBOT_SPEECH_DB = 72
 COUGH_DB = {"mild": 62, "moderate": 68, "severe": 74}
 PA_RECEIVED_DB = 62
 ALARM_RECEIVED_DB = 85
@@ -42,6 +42,8 @@ def route(
     hearing_loss_db: float,
     rng: np.random.Generator,
 ) -> Optional[Heard]:
+    if ev.source_id == listener_id:
+        return None
     if ev.source_kind in _FIXED:
         level = float(_FIXED[ev.source_kind])
     else:

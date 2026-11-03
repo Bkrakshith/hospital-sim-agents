@@ -58,7 +58,7 @@ def test_los_blocks():
 
 def test_quiet_speech_partial_for_hearing_loss():
     h = route(ev(ROBOT_SPEECH_DB, at=(4, 0), text="clinic three is down the corridor"),
-              Pose(0, 0, 0), "P4", 20, rng(1))
+              Pose(0, 0, 0), "P4", 25, rng(1))
     assert h.partial and "…" in h.text
     assert any(w != "…" for w in h.text.split())
 
@@ -92,3 +92,28 @@ def test_cough_has_no_text():
 def test_received_db_distance():
     assert received_db(60, 10) == 40
     assert received_db(60, 0.2) == 60
+
+
+def test_hard_of_hearing_hears_robot_close_not_far():
+    near = route(ev(ROBOT_SPEECH_DB, at=(1, 0)), Pose(0, 0, 0), "P4", 40, rng(1))
+    assert near is not None
+    assert route(ev(ROBOT_SPEECH_DB, at=(4, 0)), Pose(0, 0, 0), "P4", 40, rng(1)) is None
+
+
+def test_no_self_hearing():
+    assert route(ev(70, at=(0, 0), source_id="P1", kind="person"), Pose(0, 0, 0), "P1", 0, rng(1)) is None
+
+
+def test_entity_at_viewer_position_seen_with_zero_bearing():
+    seen = visible(Pose(1, 1, 2.0), [Entity("person", "P2", 1, 1, None)], [])
+    assert len(seen) == 1 and seen[0].bearing_deg == 0.0
+
+
+def test_bearing_wraps_at_180():
+    from wardzero_agents.world.oracle import bearing_deg
+    assert bearing_deg(Pose(0, 0, 0), -1, 0) == 180.0
+    assert -180.0 < bearing_deg(Pose(0, 0, 3.0), 1, -0.01) <= 180.0
+    # target at bearing 0 with yaw -3.0 rad: raw -(-3.0) rad = +171.9 deg, stays positive
+    assert 171 < bearing_deg(Pose(0, 0, -3.0), 1, 0) < 173
+    # yaw +3.0 rad: raw -171.9 deg, stays negative
+    assert -173 < bearing_deg(Pose(0, 0, 3.0), 1, 0) < -171

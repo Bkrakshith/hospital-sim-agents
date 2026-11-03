@@ -37,6 +37,8 @@ def wrap_deg(a: float) -> float:
 
 def bearing_deg(viewer: Pose, x: float, y: float) -> float:
     """Signed bearing of (x, y) from the viewer's heading; left (counter-clockwise) is positive."""
+    if math.hypot(x - viewer.x, y - viewer.y) < 1e-6:
+        return 0.0
     return wrap_deg(math.degrees(math.atan2(y - viewer.y, x - viewer.x) - viewer.yaw))
 
 

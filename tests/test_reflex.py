@@ -92,3 +92,24 @@ def test_deterministic():
     a = run(ReflexEngine(inst(), seed=9), 0, 3600, 1.0)
     b = run(ReflexEngine(inst(), seed=9), 0, 3600, 1.0)
     assert a == b
+
+
+def test_cough_count_independent_of_tick_spacing():
+    end = 35990.0
+    fine = ReflexEngine(inst(cough_per_hour=30), seed=3)
+    n_fine = 0
+    for i in range(int(end / 0.1) + 1):
+        n_fine += sum(a.kind == "cough" for a in fine.tick(i * 0.1, status(), [], True))
+    coarse = ReflexEngine(inst(cough_per_hour=30), seed=3)
+    n_coarse = 0
+    for i in range(int(end / 10.0) + 1):
+        acts = coarse.tick(i * 10.0, status(), [], True)
+        n_coarse += sum(a.kind == "cough" for a in acts)
+        assert sum(a.kind == "cough" for a in acts) < 5  # cap not hit
+    assert n_fine == n_coarse
+
+
+def test_cough_cap_per_tick():
+    e = ReflexEngine(inst(cough_per_hour=3600), seed=3)
+    e.tick(0.0, status(), [], True)
+    assert sum(a.kind == "cough" for a in e.tick(1000.0, status(), [], True)) == 5

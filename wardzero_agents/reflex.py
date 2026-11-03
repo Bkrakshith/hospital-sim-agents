@@ -12,6 +12,7 @@ from wardzero_agents.contracts import Heard, Status
 GAZE_MIN_GAP_S = 3.0
 COUGH_DURATION_S = 1.0
 FIDGET_DURATION_S = 2.0
+MAX_COUGHS_PER_TICK = 5
 
 
 @dataclass(frozen=True)
@@ -25,7 +26,9 @@ class ReflexAction:
 class ReflexEngine:
     def __init__(self, instance: PersonInstance, seed: int):
         self.inst = instance
-        self.rng = np.random.default_rng(seed)
+        # Independent streams so one reflex's draws never depend on another's timing.
+        ss = np.random.SeedSequence(seed)
+        self.rng, self._fidget_rng, self._bout_rng = (np.random.default_rng(c) for c in ss.spawn(3))
         self._next_cough: Optional[float] = None
         self._next_fidget: Optional[float] = None
         self._last_gaze = -1e18
@@ -52,22 +55,22 @@ class ReflexEngine:
         if self._bout_end is not None:
             if t >= self._next_bout_cough:
                 acts.append(ReflexAction("cough", None, COUGH_DURATION_S, self._bout_severity))
-                self._next_bout_cough = t + float(self.rng.uniform(2.0, 4.0))
+                self._next_bout_cough = t + float(self._bout_rng.uniform(2.0, 4.0))
         elif rate > 0:
             if self._next_cough is None:
                 self._next_cough = t + self._cough_gap()
-            if t >= self._next_cough:
+            emitted = 0
+            while self._next_cough <= t and emitted < MAX_COUGHS_PER_TICK:
                 acts.append(ReflexAction("cough", None, COUGH_DURATION_S, self.inst.cough_severity))
                 self._next_cough += self._cough_gap()
-                if self._next_cough < t:
-                    self._next_cough = t + self._cough_gap()
+                emitted += 1
 
         if status.posture == "seated" and idle:
             if self._next_fidget is None:
-                self._next_fidget = t + float(self.rng.uniform(45.0, 120.0))
+                self._next_fidget = t + float(self._fidget_rng.uniform(45.0, 120.0))
             elif t >= self._next_fidget:
                 acts.append(ReflexAction("fidget", None, FIDGET_DURATION_S, None))
-                self._next_fidget = t + float(self.rng.uniform(45.0, 120.0))
+                self._next_fidget = t + float(self._fidget_rng.uniform(45.0, 120.0))
         else:
             self._next_fidget = None
 
