@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 _HEADING = re.compile(r"^(#{1,3})\s+(.*?)\s*#*\s*$")
-_URL = re.compile(r"https?://[^\s<>()\[\]\"']+")
+_URL = re.compile(r"https?://[^\s<>\[\]\"']+")
 
 
 @dataclass
@@ -18,10 +18,22 @@ class Chunk:
     links: list[str] = field(default_factory=list)
 
 
+def _trim_url(url: str) -> str:
+    """Drop trailing punctuation and unbalanced closing parentheses, keep balanced ones."""
+    while url:
+        if url[-1] in ".,;:!?*_`":
+            url = url[:-1]
+        elif url[-1] == ")" and url.count(")") > url.count("("):
+            url = url[:-1]
+        else:
+            break
+    return url
+
+
 def _links(text: str) -> list[str]:
     seen: list[str] = []
     for m in _URL.findall(text):
-        url = m.rstrip(".,;:!?*_`")
+        url = _trim_url(m)
         if url not in seen:
             seen.append(url)
     return seen
@@ -64,7 +76,11 @@ def chunk_markdown(path: Path, root: Path, max_chars: int = 1200) -> list[Chunk]
     sections: list[tuple[list[str], list[str]]] = [([], [])]
     stack: list[tuple[int, str]] = []
     in_fence = False
-    for line in path.read_text(encoding="utf-8").splitlines():
+    try:
+        text = path.read_text(encoding="utf-8-sig")
+    except UnicodeDecodeError as e:
+        raise ValueError(f"{rel}: not valid UTF-8 ({e.reason} at byte {e.start})") from None
+    for line in text.splitlines():
         if line.lstrip().startswith(("```", "~~~")):
             in_fence = not in_fence
         m = None if in_fence else _HEADING.match(line)

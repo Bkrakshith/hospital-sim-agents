@@ -142,3 +142,87 @@ def test_sources_hash_changes_with_notes(tmp_path):
     (notes / "a.md").write_text("# A\nhello again\n")
     h2 = build_default_kb(tmp_path, loaded, HashEmbedder()).sources_sha256
     assert h1 != h2
+
+
+def test_sources_hash_changes_with_landmark_label(tmp_path):
+    (tmp_path / "research_notes").mkdir()
+    loaded = load_scenario(V1)
+    h1 = build_default_kb(tmp_path, loaded, HashEmbedder()).sources_sha256
+    lid = next(iter(loaded.area.landmarks))
+    loaded.area.landmarks[lid].label += " renamed"
+    assert build_default_kb(tmp_path, loaded, HashEmbedder()).sources_sha256 != h1
+
+
+def test_sources_hash_changes_with_max_chars(tmp_path):
+    (tmp_path / "research_notes").mkdir()
+    loaded = load_scenario(V1)
+    h1 = build_default_kb(tmp_path, loaded, HashEmbedder()).sources_sha256
+    assert build_default_kb(tmp_path, loaded, HashEmbedder(), max_chars=500).sources_sha256 != h1
+
+
+def test_load_rejects_truncated_chunks(tmp_path):
+    make_kb().save(tmp_path)
+    lines = (tmp_path / "chunks.jsonl").read_text().splitlines()
+    (tmp_path / "chunks.jsonl").write_text(lines[0] + "\n")
+    with pytest.raises(ValueError, match="shape"):
+        KnowledgeBase.load(tmp_path, HashEmbedder())
+    (tmp_path / "chunks.jsonl").write_text(lines[0] + "\n" + lines[1][:10])
+    with pytest.raises(ValueError, match="corrupt"):
+        KnowledgeBase.load(tmp_path, HashEmbedder())
+
+
+def test_load_rejects_wrong_shape_vectors(tmp_path):
+    make_kb().save(tmp_path)
+    np.save(tmp_path / "vectors.npy", np.zeros((2, 7), dtype=np.float32))
+    with pytest.raises(ValueError, match="shape"):
+        KnowledgeBase.load(tmp_path, HashEmbedder())
+
+
+def test_load_casts_vectors_to_float32(tmp_path):
+    make_kb().save(tmp_path)
+    v = np.load(tmp_path / "vectors.npy").astype(np.float64)
+    np.save(tmp_path / "vectors.npy", v)
+    assert KnowledgeBase.load(tmp_path, HashEmbedder()).vectors.dtype == np.float32
+
+
+def test_save_is_atomic_and_overwrites(tmp_path):
+    d = tmp_path / "kb"
+    make_kb().save(d)
+    make_kb().save(d)
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["kb"]
+    assert KnowledgeBase.load(d, HashEmbedder()).search("dialysis", 1)
+
+
+def test_bom_file_keeps_first_heading(tmp_path):
+    p = tmp_path / "n.md"
+    p.write_bytes(b"\xef\xbb\xbf# A\nbody\n")
+    assert chunk_markdown(p, tmp_path)[0].heading_path == ["A"]
+
+
+def test_non_utf8_raises_value_error_naming_file(tmp_path):
+    p = tmp_path / "bad.md"
+    p.write_bytes(b"# A\n\xff\xfe\xfa body\n")
+    with pytest.raises(ValueError, match="bad.md"):
+        chunk_markdown(p, tmp_path)
+
+
+def test_default_kb_skips_bad_note_with_warning(tmp_path, caplog):
+    notes = tmp_path / "research_notes"
+    notes.mkdir()
+    (notes / "good.md").write_text("# G\nfine\n")
+    (notes / "bad.md").write_bytes(b"# B\n\xff\xfe\xfa\n")
+    with caplog.at_level("WARNING"):
+        kb = build_default_kb(tmp_path, load_scenario(V1), HashEmbedder())
+    assert any("bad.md" in r.getMessage() for r in caplog.records)
+    assert any("good.md" in c.file for c in kb.chunks)
+    assert not any("bad.md" in c.file for c in kb.chunks)
+
+
+def test_search_k_zero_or_negative_is_empty():
+    assert make_kb().search("dialysis", k=0) == [] and make_kb().search("dialysis", k=-1) == []
+
+
+def test_url_keeps_balanced_parentheses(tmp_path):
+    md = "# A\nsee https://en.wikipedia.org/wiki/Foo_(bar) and [x](https://a.org/b), also (https://c.org/d).\n"
+    c = chunk_markdown(write(tmp_path, md), tmp_path)[0]
+    assert c.links == ["https://en.wikipedia.org/wiki/Foo_(bar)", "https://a.org/b", "https://c.org/d"]
