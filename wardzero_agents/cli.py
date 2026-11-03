@@ -55,7 +55,9 @@ DEFAULT_READY_TIMEOUT_S = 600.0
 TERM_AFTER_S = 10.0  # SIGINT, then SIGTERM after this long
 KILL_AFTER_S = 5.0  # SIGTERM, then SIGKILL after this long
 AGENT_KILL_AFTER_S = 80.0  # the agent node drains its minds for up to 60 s, then saves the snapshot
+EARLY_EXIT_GRACE_S = 5.0  # a clean exit of another child this long before the run's end is an early exit
 KEY_LABELS = ("stored in keyring", "from key file", "from ant profile or environment", "not set")
+KEY_UNVERIFIED = "ant profile or ANTHROPIC_API_KEY (not verified)"
 
 
 class CliError(Exception):
@@ -103,6 +105,7 @@ class Child:
     name: str
     argv: list[str]
     kill_after_s: Optional[float] = None  # SIGTERM to SIGKILL grace; None: the supervise default
+    ends_run: bool = False  # its clean exit is the normal end of the run (the stub sim)
 
 
 def _module(mod: str, *args: str) -> list[str]:
@@ -135,20 +138,29 @@ def _code(rc: int) -> int:
 
 
 def supervise(children: list[Child], *, term_after_s: float = TERM_AFTER_S, kill_after_s: float = KILL_AFTER_S,
-              poll_s: float = 0.1, env: Optional[dict] = None,
+              poll_s: float = 0.1, early_exit_grace_s: float = EARLY_EXIT_GRACE_S, env: Optional[dict] = None,
               on_start: Optional[Callable[[dict], None]] = None) -> int:
-    """Start the children, wait until one exits or Ctrl+C, then stop the rest.
+    """Start the children, wait until the run ends or Ctrl+C, then stop the rest.
 
-    Returns the exit code of the first child to exit (0 at a normal scenario end), or 130 on
-    Ctrl+C/SIGTERM. Each child runs in its own process group and is only ever signalled by pid
-    or process group.
+    The run ends when a child marked ends_run exits (0 is a clean end), when any child exits
+    non-zero, or when another child exits 0 and no ends_run child follows within
+    early_exit_grace_s (at a normal end the agents and director may exit on the stop message
+    just before the stub sim does). With no child marked ends_run, any exit ends the run.
+
+    Returns the first non-zero exit code, 130 on Ctrl+C/SIGTERM, 1 when a child other than the
+    run's end exited early, and 1 after a clean end when a child failed or had to be killed while
+    stopping (its memory snapshot or run meta may be missing); otherwise 0. Each child runs in
+    its own process group and is only ever signalled by pid or process group.
     """
     signals: list[int] = []
     handled = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
     old = {s: signal.signal(s, lambda signum, frame: signals.append(signum)) for s in handled}
     procs: dict[str, subprocess.Popen] = {}
     by_name = {c.name: c for c in children}
+    enders = {c.name for c in children if c.ends_run}
     code: Optional[int] = None
+    clean = False
+    early: Optional[tuple[str, float]] = None  # a child that exited 0 before the run's end, and when
     try:
         for c in children:
             try:
@@ -164,16 +176,33 @@ def supervise(children: list[Child], *, term_after_s: float = TERM_AFTER_S, kill
                 print("Stopping the run (Ctrl+C again to hurry).", flush=True)
                 code = 130
                 break
-            for name, p in procs.items():
-                rc = p.poll()
-                if rc is not None:
-                    code = _code(rc)
-                    if rc != 0:
-                        err(f"{name} exited with code {code}; stopping the run")
+            exited = {n: p.returncode for n, p in procs.items() if p.poll() is not None}
+            failed = [(n, rc) for n, rc in exited.items() if rc != 0]
+            if failed:
+                name, rc = failed[0]
+                code = _code(rc)
+                err(f"{name} exited with code {code}; stopping the run")
+                break
+            if exited and (not enders or enders & exited.keys()):
+                code, clean = 0, True
+                break
+            if exited:
+                now = time.monotonic()
+                if early is None:
+                    early = (next(iter(exited)), now)
+                elif now - early[1] >= early_exit_grace_s:
+                    err(f"{early[0]} stopped on its own before the scenario finished, so the scenario did "
+                        "not finish; stopping the run")
+                    code = 1
                     break
-            else:
-                time.sleep(poll_s)
-        _stop_all(procs, by_name, signals, term_after_s, kill_after_s, poll_s)
+            time.sleep(poll_s)
+        problems = _stop_all(procs, by_name, signals, term_after_s, kill_after_s, poll_s)
+        for name, why in problems:
+            if clean or code == 130:
+                err(f"{name} {why} while the run was stopping; its memory snapshot or run record may be "
+                    "incomplete")
+        if clean and problems:
+            code = 1
     finally:
         for p in procs.values():  # only reached alive on an unexpected error
             _signal(p, signal.SIGKILL)
@@ -187,7 +216,9 @@ def supervise(children: list[Child], *, term_after_s: float = TERM_AFTER_S, kill
 
 
 def _stop_all(procs: dict, by_name: dict, signals: list, term_after_s: float, kill_after_s: float,
-              poll_s: float) -> None:
+              poll_s: float) -> list[tuple[str, str]]:
+    """SIGINT, SIGTERM, SIGKILL the children still running. Returns (child, what went wrong)
+    for each that had to be killed or exited non-zero."""
     live = {n: p for n, p in procs.items() if p.poll() is None}
     for p in live.values():
         _signal(p, signal.SIGINT)
@@ -212,11 +243,13 @@ def _stop_all(procs: dict, by_name: dict, signals: list, term_after_s: float, ki
                     _signal(p, signal.SIGKILL)
                     killed.append(name)
         time.sleep(poll_s)
+    problems = []
     for name, p in live.items():
-        if p.returncode not in (0, None) and name not in killed:
-            rc = _code(p.returncode)
-            if rc not in (130, 143):
-                err(f"{name} exited with code {rc} while stopping")
+        if name in killed:
+            problems.append((name, "did not stop and was killed"))
+        elif p.returncode != 0:
+            problems.append((name, f"exited with code {_code(p.returncode)}"))
+    return problems
 
 
 # ---- run, rerun ----------------------------------------------------------------------------
@@ -278,7 +311,8 @@ def _start_live(args, loaded, overrides: dict, meta: dict) -> int:
     children = [
         Child("stub_sim", _module("wardzero_agents.ros.stub_sim_node", "--run-dir", rd, "--scenario", sp,
                                   "--time-scale", str(ts), "--ready-timeout", str(ready),
-                                  "--wait-for", "agents,director", *(["--lockstep"] if args.lockstep else []))),
+                                  "--wait-for", "agents,director", *(["--lockstep"] if args.lockstep else [])),
+              ends_run=True),
         Child("agents", _module("wardzero_agents.ros.agent_node", "--run-dir", rd, "--scenario", sp),
               kill_after_s=AGENT_KILL_AFTER_S),
         Child("director", _module("wardzero_agents.ros.director_node", "--run-dir", rd, "--scenario", sp,
@@ -380,7 +414,7 @@ def cmd_replay(args) -> int:
             scen = ["--scenario", str(copy)]
         panel = ["--no-panel"] if args.no_panel else ["--panel-port", str(args.panel_port)]
         children = [Child("replay", _module("wardzero_agents.ros.replay_node", "--run-dir", rd, "--exact",
-                                            "--time-scale", str(ts), *scen, *panel))]
+                                            "--time-scale", str(ts), *scen, *panel), ends_run=True)]
         print(f"Replaying {src.name} exactly at x{ts:g}.", flush=True)
         if not args.no_panel:
             print(f"Control panel (read-only): http://127.0.0.1:{args.panel_port}/", flush=True)
@@ -395,7 +429,8 @@ def cmd_replay(args) -> int:
     sp = str(staged.scenario_path)
     children = [
         Child("stub_sim", _module("wardzero_agents.ros.stub_sim_node", "--run-dir", str(out_dir), "--scenario", sp,
-                                  "--time-scale", str(ts), "--ready-timeout", str(ready), "--wait-for", "agents")),
+                                  "--time-scale", str(ts), "--ready-timeout", str(ready), "--wait-for", "agents"),
+              ends_run=True),
         Child("replay", _module("wardzero_agents.ros.replay_node", "--run-dir", rd, "--intents")),
     ]
     if bot == "reception":
@@ -429,6 +464,10 @@ def cmd_memory_reset(args) -> int:
 
     if (args.person or args.persona) and not args.scenario:
         raise CliError("--person and --persona need --scenario to know who that is")
+    try:
+        _refuse_if_active()  # before asking; guarded_reset checks again
+    except CliError as exc:
+        raise CliError(f"Refused: {exc}") from None
     loaded = _load(args.scenario) if args.scenario else None
     who: dict[str, str] = {}  # memory key -> who it is
     seeds: dict[str, list[str]] = {}
@@ -532,17 +571,25 @@ def cmd_kb_build(args) -> int:
 
 
 # ---- keys ----------------------------------------------------------------------------------
-def _claude_ambient() -> bool:
-    """A Claude credential the SDK finds by itself: the environment or an `ant auth login` profile."""
+def _claude_ambient() -> Optional[bool]:
+    """Whether the Claude SDK finds a credential by itself (environment or `ant auth login` profile).
+
+    True for ANTHROPIC_API_KEY/ANTHROPIC_AUTH_TOKEN, or when the SDK resolves a profile into
+    `client.credentials` (anthropic 2.x resolves env, profile and federation credentials at
+    construction and leaves it None when there are none). None when the SDK cannot tell.
+    Nothing here checks that the credential works.
+    """
     if os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN"):
         return True
     try:
         import anthropic
         client = anthropic.Anthropic()
-        return bool(getattr(client, "credentials", None) is not None or getattr(client, "api_key", None)
+        if not hasattr(client, "credentials"):
+            return None
+        return bool(client.credentials is not None or getattr(client, "api_key", None)
                     or getattr(client, "auth_token", None))
     except Exception:
-        return False
+        return None
 
 
 def key_source(provider: str) -> str:
@@ -558,7 +605,12 @@ def key_source(provider: str) -> str:
             return KEY_LABELS[1]
     except keys.KeyMissing as exc:
         err(str(exc))  # the key file is unusable; the message never holds its contents
-    ambient = _claude_ambient() if provider == "claude" else bool(os.environ.get("OPENAI_API_KEY"))
+    if provider == "claude":
+        ambient = _claude_ambient()
+        if ambient is None:
+            return KEY_UNVERIFIED
+    else:
+        ambient = bool(os.environ.get("OPENAI_API_KEY"))
     return KEY_LABELS[2] if ambient else KEY_LABELS[3]
 
 

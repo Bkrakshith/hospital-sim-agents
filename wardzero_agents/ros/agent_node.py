@@ -18,6 +18,7 @@ import logging
 import os
 import re
 import sys
+import time
 import uuid
 from collections import Counter
 from datetime import datetime, timezone
@@ -39,6 +40,7 @@ SPATIAL_SOURCES = ("robot", "person", "cough")  # a cough's source is the person
 # The sim finishes these at once, but the person carries on doing them until told otherwise.
 DURABLE = ("sit_idle", "use_phone", "wait_standing")
 DRAIN_TIMEOUT_S = 60.0
+ERROR_LOG_EVERY_S = 30.0  # per person: a failing tick is reported at most this often
 PENDING_HEARTBEAT_S = 1.0
 _SNAP_BAD = re.compile(r"[^A-Za-z0-9_.-]")
 
@@ -79,13 +81,15 @@ class AgentService:
     def __init__(self, loaded: LoadedScenario, runlog: RunLog, publisher: Publisher,
                  mind_factory: Callable[[PersonInstance, "AgentService"], Any],
                  reflex_factory: Optional[Callable[[PersonInstance, int], Any]] = None,
-                 now: Callable[[], float] = lambda: 0.0):
+                 now: Callable[[], float] = lambda: 0.0, wall: Callable[[], float] = time.monotonic):
         self.loaded = loaded
         self.runlog = runlog
         self.out = publisher
         self.mind_factory = mind_factory
         self.reflex_factory = reflex_factory or ReflexEngine
         self.now = now
+        self.wall = wall
+        self._tick_errors: dict[str, list] = {}  # person -> [wall time last reported, suppressed since]
         self.cost_usd = 0.0
         self.people: dict[str, _Person] = {}
         for inst in loaded.instances:
@@ -166,8 +170,19 @@ class AgentService:
             try:
                 await self._tick_person(pid, self.people[pid], t)
             except Exception as exc:  # one person failing must not starve the others
-                log.error("%s: tick failed: %s", pid, type(exc).__name__)
-                log.debug("%s: tick traceback", pid, exc_info=True)
+                self._tick_error(pid, exc)
+
+    def _tick_error(self, pid: str, exc: Exception) -> None:
+        """Log a failed tick at most once per ERROR_LOG_EVERY_S per person, counting the rest."""
+        now = self.wall()
+        seen = self._tick_errors.get(pid)
+        if seen is not None and now - seen[0] < ERROR_LOG_EVERY_S:
+            seen[1] += 1
+            return
+        more = f" ({seen[1]} more since the last report)" if seen is not None and seen[1] else ""
+        log.error("%s: tick failed: %s%s", pid, type(exc).__name__, more)
+        log.debug("%s: tick traceback", pid, exc_info=True)
+        self._tick_errors[pid] = [now, 0]
 
     async def _tick_person(self, pid: str, p: _Person, t: float) -> None:
         st = p.status

@@ -135,6 +135,7 @@ def test_run_spawns_the_nodes(fake_llm, launched, capsys, tmp_path):
     assert "http://127.0.0.1:8765/" in out
     (children,) = launched
     assert [c.name for c in children] == ["stub_sim", "agents", "director", "reception_bot"]
+    assert [c.name for c in children if c.ends_run] == ["stub_sim"]
     run_dir = Path(opt(argv_of(children, "stub_sim"), "--run-dir"))
     assert run_dir.parent == tmp_path / "runs" and run_dir.name.endswith("_waiting_area_v1")
     stub = argv_of(children, "stub_sim")
@@ -311,7 +312,7 @@ def test_supervise_stops_the_rest_when_one_ends(tmp_path):
               f"def h(*a): pathlib.Path({str(marker)!r}).write_text('x'); sys.exit(0)\n"
               "signal.signal(signal.SIGINT, h)\nwhile True: time.sleep(0.05)")
     t0 = time.monotonic()
-    code = cli.supervise([cli.Child("ender", py("import time; time.sleep(0.3)")),
+    code = cli.supervise([cli.Child("ender", py("import time; time.sleep(0.3)"), ends_run=True),
                           cli.Child("waiter", py(waiter))], term_after_s=5, kill_after_s=5)
     assert code == 0 and marker.exists() and time.monotonic() - t0 < 5
 
@@ -322,12 +323,50 @@ def test_supervise_returns_the_failing_childs_code():
     assert code == 4
 
 
-def test_supervise_escalates_to_sigkill():
+def test_supervise_escalates_to_sigkill_and_reports_it(capsys):
+    """A clean end still fails when a child had to be killed: its snapshot may be unsaved."""
     t0 = time.monotonic()
-    code = cli.supervise([cli.Child("ender", py("import time; time.sleep(0.2)")),
+    code = cli.supervise([cli.Child("ender", py("import time; time.sleep(0.2)"), ends_run=True),
                           cli.Child("stubborn", py(STUBBORN), kill_after_s=0.5)],
                          term_after_s=0.5, kill_after_s=0.5)
-    assert code == 0 and time.monotonic() - t0 < 5
+    assert code == 1 and time.monotonic() - t0 < 5
+    err = capsys.readouterr().err
+    assert "stubborn" in err and "killed" in err
+
+
+def test_supervise_clean_end_but_a_child_fails_while_stopping(capsys):
+    failer = ("import signal, sys, time\n"
+              "signal.signal(signal.SIGINT, lambda *a: sys.exit(5))\nwhile True: time.sleep(0.05)")
+    code = cli.supervise([cli.Child("ender", py("import time; time.sleep(0.3)"), ends_run=True),
+                          cli.Child("agents", py(failer))], term_after_s=5, kill_after_s=5)
+    assert code == 1
+    err = capsys.readouterr().err
+    assert "agents" in err and "code 5" in err
+
+
+def test_supervise_keeps_the_first_failure_code(capsys):
+    failer = ("import signal, sys, time\n"
+              "signal.signal(signal.SIGINT, lambda *a: sys.exit(5))\nwhile True: time.sleep(0.05)")
+    code = cli.supervise([cli.Child("ender", py("import sys, time; time.sleep(0.3); sys.exit(3)"), ends_run=True),
+                          cli.Child("agents", py(failer))], term_after_s=5, kill_after_s=5)
+    assert code == 3
+
+
+def test_supervise_early_clean_exit_of_another_child_fails_the_run(capsys):
+    code = cli.supervise([cli.Child("stub_sim", py(SLEEPER), ends_run=True),
+                          cli.Child("director", py("import time; time.sleep(0.2)"))],
+                         term_after_s=5, kill_after_s=5, early_exit_grace_s=0.5)
+    assert code == 1
+    err = capsys.readouterr().err
+    assert "director" in err and "did not finish" in err
+
+
+def test_supervise_others_may_stop_just_before_the_sim():
+    """At a normal end the agents and director can exit on the stop message before the stub sim."""
+    code = cli.supervise([cli.Child("stub_sim", py("import time; time.sleep(0.6)"), ends_run=True),
+                          cli.Child("director", py("import time; time.sleep(0.2)"))],
+                         term_after_s=5, kill_after_s=5, early_exit_grace_s=3)
+    assert code == 0
 
 
 def test_supervise_children_get_their_own_process_group():
@@ -405,6 +444,13 @@ def test_memory_reset_refused_during_a_run(capsys):
     assert main(["memory", "reset", "--all", "--yes"]) == 2
     assert "live1" in capsys.readouterr().err
     assert episodes(ltm, loaded.instances[0].memory_key) == 1
+
+
+def test_memory_reset_checks_the_lock_before_asking(monkeypatch, capsys):
+    seeded_memory()
+    (data_dir() / "active_run.json").write_text(json.dumps({"run_id": "live1", "pid": os.getpid()}))
+    monkeypatch.setattr("builtins.input", lambda prompt: pytest.fail("asked during an active run"))
+    assert main(["memory", "reset", "--all"]) == 2
 
 
 def test_memory_snapshot_save_list_restore(capsys):
@@ -485,3 +531,33 @@ def test_keys_clear_and_status_labels(memkeyring, monkeypatch, capsys, tmp_path)
 
 def test_entry_point_needs_a_command(capsys):
     assert main([]) == 2
+
+
+def test_keys_status_claude_unverifiable(memkeyring, monkeypatch, capsys):
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_AUTH_TOKEN", raising=False)
+    monkeypatch.setattr(cli, "_claude_ambient", lambda: None)
+    main(["keys", "status", "claude"])
+    assert "ant profile or ANTHROPIC_API_KEY (not verified)" in capsys.readouterr().out
+
+
+def test_claude_ambient_profile_detection(monkeypatch):
+    import anthropic
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_AUTH_TOKEN", raising=False)
+
+    class WithProfile:
+        credentials = object()
+
+    class Without:
+        credentials = None
+
+    class Broken:
+        def __init__(self):
+            raise RuntimeError("no idea")
+
+    for cls, want in ((WithProfile, True), (Without, False), (Broken, None)):
+        monkeypatch.setattr(anthropic, "Anthropic", cls)
+        assert cli._claude_ambient() is want
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
+    assert cli._claude_ambient() is True

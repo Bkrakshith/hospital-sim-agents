@@ -270,3 +270,79 @@ async def test_one_failing_reflex_does_not_starve_the_others(tmp_path):
     s.on_status(status("P2"))
     await s.tick(1.0)
     assert s.minds["P1"].ticks == [] and len(s.minds["P2"].ticks) == 1
+
+
+async def test_tick_errors_are_rate_limited_per_person(tmp_path, caplog):
+    import logging
+
+    class Broken(FakeMind):
+        async def on_tick(self, t, obs, status, nudges):
+            raise RuntimeError("boom")
+
+    wall = [0.0]
+    s = AgentService(load_scenario(V1), RunLog(tmp_path), Out(), Broken, reflex_factory=QuietReflex,
+                     wall=lambda: wall[0])
+    s.on_status(status("P1"))
+    caplog.set_level(logging.ERROR, logger="wardzero.agents")
+    for i in range(5):
+        await s.tick(1.0 + i)
+        wall[0] += 1.0
+    assert [r.getMessage() for r in caplog.records] == ["P1: tick failed: RuntimeError"]
+    wall[0] = 31.0
+    await s.tick(10.0)
+    msgs = [r.getMessage() for r in caplog.records]
+    assert len(msgs) == 2 and "4 more" in msgs[1]
+
+
+async def test_tick_does_not_wait_for_a_pending_decision(tmp_path):
+    """The node loop publishes the 1 Hz pending heartbeat between ticks; a tick must return while
+    a real Mind's decision is still waiting on the LLM, or the heartbeat would stop."""
+    import asyncio
+
+    from langgraph.checkpoint.memory import MemorySaver
+
+    from wardzero_agents.kb.embed import HashEmbedder
+    from wardzero_agents.kb.index import KnowledgeBase
+    from wardzero_agents.llm.fake import default_policy
+    from wardzero_agents.llm.gateway import LLMResult
+    from wardzero_agents.memory.longterm import LongTermMemory
+    from wardzero_agents.mind.runtime import Mind, MindDeps
+
+    class Gated:
+        def __init__(self):
+            self.release = asyncio.Event()
+
+        async def complete(self, req):
+            if req.role == "decide":
+                await self.release.wait()
+            return LLMResult(True, default_policy(req), None, "gated")
+
+    gw = Gated()
+    loaded = load_scenario(V1)
+    ltm = LongTermMemory(tmp_path / "mem.sqlite", HashEmbedder())
+    ltm.begin_run("r")
+    kb = KnowledgeBase.build([], HashEmbedder())
+    runlog = RunLog(tmp_path)
+
+    def factory(inst, effects):
+        return Mind(MindDeps(inst=inst, loaded=loaded, gateway=gw, kb=kb, ltm=ltm, run_id="r", run_index=1,
+                             effects=effects, runlog=runlog, run_dir=None, checkpointer=MemorySaver()))
+
+    s = AgentService(loaded, runlog, Out(), factory, reflex_factory=QuietReflex)
+    for pid in s.people:
+        s.on_status(status(pid))
+    s.on_nudge(Nudge(person="P1", t=0.0, card="c", message="Go and ask at reception"))
+    t = 0.0
+    for _ in range(50):  # until some decision is in flight on the gated gateway
+        t += 0.1
+        await asyncio.wait_for(s.tick(t), 1.0)
+        await asyncio.sleep(0.01)
+        if s.pending_count():
+            break
+    assert s.pending_count() > 0
+    for _ in range(5):  # ticks keep returning promptly while the decisions wait
+        t += 0.1
+        await asyncio.wait_for(s.tick(t), 1.0)
+    assert s.pending_count() > 0
+    gw.release.set()
+    await s.aclose()
