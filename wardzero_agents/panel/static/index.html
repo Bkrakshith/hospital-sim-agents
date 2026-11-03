@@ -1,0 +1,400 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WardZero scenario panel</title>
+<style>
+:root {
+  --bg: #f6f7f8; --panel: #ffffff; --text: #1b1f23; --muted: #55606b; --line: #c5ccd3;
+  --accent: #0b5cad; --accent-text: #ffffff; --ok: #1a6b2f; --warn: #8a5a00; --bad: #a52020;
+  --free: #ffffff; --taken: #55606b; --person: #0b5cad; --robot: #8a3fa0;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #14181c; --panel: #1d232a; --text: #e8ecef; --muted: #a3adb8; --line: #3a444e;
+    --accent: #6cb2f5; --accent-text: #0a1520; --ok: #6fd18a; --warn: #f0c060; --bad: #ff8a8a;
+    --free: #1d232a; --taken: #a3adb8; --person: #6cb2f5; --robot: #d29be6;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text);
+  font: 15px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+header { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; padding: 10px 12px;
+  background: var(--panel); border-bottom: 1px solid var(--line); }
+h1 { font-size: 18px; margin: 0; }
+h2 { font-size: 15px; margin: 0 0 8px; }
+main { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 12px; padding: 12px; }
+@media (max-width: 800px) { main { grid-template-columns: minmax(0, 1fr); } }
+section { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 10px;
+  min-width: 0; }
+.wide { grid-column: 1 / -1; }
+button, input, select { font: inherit; color: var(--text); background: var(--panel);
+  border: 1px solid var(--line); border-radius: 4px; padding: 6px 10px; min-height: 36px; }
+button { cursor: pointer; }
+button.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
+button:disabled { opacity: .5; cursor: not-allowed; }
+button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.badge { border: 1px solid var(--line); border-radius: 12px; padding: 2px 10px; font-size: 13px; }
+.muted { color: var(--muted); }
+.error { color: var(--bad); font-weight: 600; min-height: 1.2em; margin: 6px 0 0; }
+.okmsg { color: var(--ok); }
+canvas { width: 100%; height: auto; border: 1px solid var(--line); border-radius: 4px; display: block;
+  background: var(--bg); }
+.scroll { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-size: 13px; }
+th, td { text-align: left; padding: 4px 6px; border-bottom: 1px solid var(--line); vertical-align: top; }
+#timeline { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 6px; }
+.beat { flex: 0 0 auto; border: 1px solid var(--line); border-radius: 4px; padding: 4px 8px; font-size: 13px;
+  min-width: 140px; }
+.beat .st { font-weight: 700; }
+.beat.fired { border-style: solid; border-width: 2px; }
+.beat.pending { border-style: dashed; }
+.beat.skipped, .beat.rejected { text-decoration: line-through; }
+.beat button { min-height: 28px; padding: 2px 6px; font-size: 12px; margin-top: 4px; }
+#events { max-height: 220px; overflow-y: auto; font-size: 13px; font-family: ui-monospace, Menlo, Consolas, monospace; }
+#events div { padding: 2px 0; border-bottom: 1px solid var(--line); overflow-wrap: anywhere; }
+.deck { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 8px; }
+.card { border: 1px solid var(--line); border-radius: 4px; padding: 8px; }
+.card.sel { border: 2px solid var(--accent); padding: 7px; }
+.card p { margin: 4px 0; font-size: 13px; }
+.meter { height: 10px; border: 1px solid var(--line); border-radius: 5px; overflow: hidden; width: 160px; }
+.meter > div { height: 100%; background: var(--accent); width: 0; }
+</style>
+</head>
+<body>
+<header>
+  <h1>WardZero scenario panel</h1>
+  <span class="badge" id="conn">Connection: connecting</span>
+  <span class="badge" id="runstate">Run: unknown</span>
+  <span class="badge" id="rec">Recording: unknown</span>
+  <span class="badge" id="clock">t = 0 s</span>
+  <span class="row"><span id="costtxt">Cost: $0.00 of $0.00</span>
+    <span class="meter" aria-hidden="true"><div id="costbar"></div></span></span>
+  <span class="muted" id="runid"></span>
+</header>
+<main>
+  <section class="wide" aria-labelledby="h-tl">
+    <h2 id="h-tl">Storyboard timeline</h2>
+    <div id="timeline"><span class="muted">No beats yet.</span></div>
+    <p class="error" id="err-beat" role="alert"></p>
+  </section>
+
+  <section aria-labelledby="h-map">
+    <h2 id="h-map">Floor map</h2>
+    <canvas id="map" width="880" height="464" role="img"
+      aria-label="Floor map of the waiting area with seats, people and the robot"></canvas>
+    <p class="muted" id="maplegend">Squares are seats (empty or taken). Dots are landmarks. Circles are people, labelled with posture. The triangle is the robot, pointing the way it faces.</p>
+  </section>
+
+  <section aria-labelledby="h-ctl">
+    <h2 id="h-ctl">Run controls</h2>
+    <div class="row">
+      <button id="b-start" data-act="start" class="primary">Start</button>
+      <button data-act="pause">Pause</button>
+      <button data-act="resume">Resume</button>
+      <button data-act="stop">Stop</button>
+      <button data-act="reset">Reset</button>
+    </div>
+    <p class="error" id="err-ctl" role="alert"></p>
+    <h2>Chaos mode</h2>
+    <form id="chaosform" class="row">
+      <label><input type="checkbox" id="chaos-on"> Chaos on</label>
+      <label>Rate per hour <input type="number" id="chaos-rate" min="0" max="10000" step="any" value="6" style="width:6em"></label>
+      <button type="submit">Apply</button>
+    </form>
+    <p class="error" id="err-chaos" role="alert"></p>
+    <h2>Memory snapshot</h2>
+    <form id="snapform" class="row">
+      <label>Name <input type="text" id="snap-name" maxlength="64" pattern="[A-Za-z0-9_.\-]{1,64}" required></label>
+      <button type="submit">Save snapshot</button>
+    </form>
+    <p class="error" id="err-snap" role="alert"></p>
+  </section>
+
+  <section class="wide" aria-labelledby="h-deck">
+    <h2 id="h-deck">Scenario cards</h2>
+    <div class="row">
+      <label>Target <select id="target"></select></label>
+      <button id="fire" class="primary" disabled>Fire card</button>
+      <span id="selcard" class="muted">No card chosen.</span>
+    </div>
+    <p class="error" id="err-fire" role="alert"></p>
+    <div class="deck" id="deck"></div>
+  </section>
+
+  <section class="wide" aria-labelledby="h-cast">
+    <h2 id="h-cast">People</h2>
+    <div class="scroll">
+      <table>
+        <thead><tr><th>Person</th><th>Persona</th><th>Posture</th><th>Mood</th><th>Last decision</th><th>Reason</th><th>Last words</th></tr></thead>
+        <tbody id="cast"><tr><td colspan="7" class="muted">Nobody here yet.</td></tr></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="wide" aria-labelledby="h-ev">
+    <h2 id="h-ev">Event log</h2>
+    <div id="events"><span class="muted">No events yet.</span></div>
+  </section>
+</main>
+<script>
+(function () {
+  "use strict";
+  var $ = function (id) { return document.getElementById(id); };
+  var state = null, selected = null, deckKey = "", targetKey = "";
+  var css = function (n) { return getComputedStyle(document.documentElement).getPropertyValue(n).trim(); };
+
+  function clear(el) { while (el.firstChild) el.removeChild(el.firstChild); }
+  function el(tag, text, cls) {
+    var e = document.createElement(tag);
+    if (text !== undefined && text !== null) e.textContent = String(text);
+    if (cls) e.className = cls;
+    return e;
+  }
+  function fmt(n, d) { return (typeof n === "number" && isFinite(n)) ? n.toFixed(d) : "?"; }
+
+  function api(path, body) {
+    return fetch(path, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-WardZero-Panel": "1" },
+      body: JSON.stringify(body)
+    }).then(function (r) {
+      return r.json().catch(function () { return {}; }).then(function (j) {
+        if (!r.ok) throw new Error(j.error || ("The panel answered with status " + r.status + "."));
+        return j;
+      });
+    });
+  }
+  function setErr(id, msg, good) {
+    var e = $(id); e.textContent = msg || "";
+    e.className = good ? "error okmsg" : "error";
+  }
+  function post(errId, path, body, okMsg) {
+    setErr(errId, "");
+    return api(path, body).then(function (j) {
+      if (j && j.ok === false) { setErr(errId, j.error || "That did not work."); return j; }
+      if (okMsg) setErr(errId, okMsg, true);
+      return j;
+    }).catch(function (e) {
+      setErr(errId, e.message === "Failed to fetch" ? "Cannot reach the panel server." : e.message);
+    });
+  }
+
+  // controls
+  document.querySelectorAll("button[data-act]").forEach(function (b) {
+    b.addEventListener("click", function () {
+      post("err-ctl", "/api/control", { action: b.getAttribute("data-act") });
+    });
+  });
+  $("chaosform").addEventListener("submit", function (ev) {
+    ev.preventDefault();
+    var rate = parseFloat($("chaos-rate").value);
+    if (!isFinite(rate) || rate < 0) { setErr("err-chaos", "Enter a rate of zero or more."); return; }
+    post("err-chaos", "/api/chaos", { enabled: $("chaos-on").checked, rate_per_hour: rate }, "Chaos setting sent.");
+  });
+  $("snapform").addEventListener("submit", function (ev) {
+    ev.preventDefault();
+    var n = $("snap-name").value;
+    if (!/^[A-Za-z0-9_.-]{1,64}$/.test(n)) {
+      setErr("err-snap", "Use 1 to 64 letters, digits, dots, dashes or underscores."); return;
+    }
+    post("err-snap", "/api/snapshot", { name: n }, "Snapshot request sent.");
+  });
+  $("fire").addEventListener("click", function () {
+    if (!selected) return;
+    var card = (state.deck || []).filter(function (c) { return c.id === selected; })[0];
+    var t = $("target").value;
+    if (card && card.target_kind === "person" && !t) { setErr("err-fire", "Choose a person first."); return; }
+    post("err-fire", "/api/cards/fire",
+      { card: selected, target: (card && card.target_kind === "person") ? t : null, params: {} },
+      "Card fired.");
+  });
+
+  // render
+  function renderHeader(s) {
+    var run = !s.running ? "stopped" : (s.paused ? "paused" : "running");
+    $("runstate").textContent = "Run: " + run;
+    $("rec").textContent = "Recording: " + (s.recording ? "on" : "off");
+    $("clock").textContent = "t = " + fmt(s.t, 1) + " s";
+    $("costtxt").textContent = "Cost: $" + fmt(s.cost_usd, 2) + " of $" + fmt(s.budget_usd, 2);
+    var pct = s.budget_usd > 0 ? Math.min(100, 100 * s.cost_usd / s.budget_usd) : 0;
+    $("costbar").style.width = pct + "%";
+    $("runid").textContent = s.run_id ? "Run " + s.run_id : "";
+    if (s.chaos && document.activeElement !== $("chaos-rate") && document.activeElement !== $("chaos-on")) {
+      $("chaos-on").checked = !!s.chaos.enabled;
+      $("chaos-rate").value = s.chaos.rate_per_hour;
+    }
+  }
+  function renderTimeline(s) {
+    var box = $("timeline"); clear(box);
+    var tl = s.timeline || [];
+    if (!tl.length) { box.appendChild(el("span", "No beats yet.", "muted")); return; }
+    tl.forEach(function (b) {
+      var d = el("div", null, "beat " + b.state);
+      d.appendChild(el("div", b.id));
+      d.appendChild(el("div", b.card + (b.target ? " to " + b.target : "")));
+      d.appendChild(el("div", "State: " + b.state + (b.fired_t != null ? " at " + fmt(b.fired_t, 0) + " s" : ""), "st"));
+      if (b.reason) d.appendChild(el("div", b.reason, "muted"));
+      ["skip", "rerun"].forEach(function (a) {
+        var btn = el("button", a === "skip" ? "Skip" : "Run again");
+        btn.type = "button";
+        btn.addEventListener("click", function () { post("err-beat", "/api/beat", { action: a, beat_id: b.id }); });
+        d.appendChild(btn);
+      });
+      box.appendChild(d);
+    });
+  }
+  function renderCast(s) {
+    var tb = $("cast"); clear(tb);
+    var cast = s.cast || [];
+    if (!cast.length) {
+      var tr0 = el("tr"); var td0 = el("td", "Nobody here yet.", "muted"); td0.colSpan = 7; tr0.appendChild(td0); tb.appendChild(tr0); return;
+    }
+    cast.forEach(function (p) {
+      var tr = el("tr");
+      [p.display_name ? p.id + " " + p.display_name : p.id, p.persona, p.posture, p.mood,
+       p.last_decision, p.reason, p.last_said].forEach(function (v) { tr.appendChild(el("td", v == null ? "" : v)); });
+      tb.appendChild(tr);
+    });
+  }
+  function renderEvents(s) {
+    var box = $("events");
+    var atEnd = box.scrollTop + box.clientHeight >= box.scrollHeight - 8;
+    clear(box);
+    var ev = (s.events || []).slice(-200);
+    if (!ev.length) { box.appendChild(el("span", "No events yet.", "muted")); return; }
+    ev.forEach(function (e) {
+      var txt = (typeof e === "string") ? e : ((e.t != null ? fmt(e.t, 0) + " s  " : "") + (e.text || ""));
+      box.appendChild(el("div", txt));
+    });
+    if (atEnd) box.scrollTop = box.scrollHeight;
+  }
+  function renderDeck(s) {
+    var deck = s.deck || [];
+    var key = JSON.stringify(deck);
+    if (key !== deckKey) {
+      deckKey = key;
+      var box = $("deck"); clear(box);
+      deck.forEach(function (c) {
+        var d = el("div", null, "card" + (c.id === selected ? " sel" : ""));
+        d.appendChild(el("strong", c.label || c.id));
+        d.appendChild(el("p", "Aims at: " + c.target_kind, "muted"));
+        d.appendChild(el("p", c.tests || ""));
+        var b = el("button", c.id === selected ? "Chosen" : "Choose"); b.type = "button";
+        b.addEventListener("click", function () { selected = c.id; deckKey = ""; renderDeck(state); updateFire(); });
+        d.appendChild(b); box.appendChild(d);
+      });
+    }
+    var ids = (s.cast || []).map(function (p) { return p.id; }).join(",");
+    if (ids !== targetKey) {
+      targetKey = ids;
+      var sel = $("target"), keep = sel.value; clear(sel);
+      var o0 = el("option", "Choose a person"); o0.value = ""; sel.appendChild(o0);
+      (s.cast || []).forEach(function (p) {
+        var o = el("option", p.display_name ? p.id + " " + p.display_name : p.id); o.value = p.id; sel.appendChild(o);
+      });
+      sel.value = keep;
+    }
+    updateFire();
+  }
+  function updateFire() {
+    var card = state && (state.deck || []).filter(function (c) { return c.id === selected; })[0];
+    $("fire").disabled = !card;
+    $("target").disabled = !!card && card.target_kind !== "person";
+    $("selcard").textContent = card ? "Chosen: " + (card.label || card.id) : "No card chosen.";
+  }
+
+  // map
+  function drawMap(s) {
+    var m = s.map, cv = $("map"), ctx = cv.getContext("2d");
+    var W = cv.width, H = cv.height;
+    ctx.clearRect(0, 0, W, H);
+    if (!m || !m.bounds) return;
+    var b = m.bounds, pad = 24;
+    var sc = Math.min((W - 2 * pad) / (b[1] - b[0]), (H - 2 * pad) / (b[3] - b[2]));
+    var ox = pad, oy = H - pad;
+    function X(x) { return ox + (x - b[0]) * sc; }
+    function Y(y) { return oy - (y - b[2]) * sc; }
+    var text = css("--text"), muted = css("--muted"), line = css("--line");
+    ctx.strokeStyle = line; ctx.lineWidth = 1;
+    ctx.strokeRect(X(b[0]), Y(b[3]), (b[1] - b[0]) * sc, (b[3] - b[2]) * sc);
+    ctx.font = "12px system-ui, sans-serif"; ctx.textBaseline = "middle";
+    ctx.fillStyle = muted;
+    for (var gx = Math.ceil(b[0] / 2) * 2; gx <= b[1]; gx += 2) { ctx.fillText(String(gx), X(gx) - 6, Y(b[2]) + 12); }
+    var people = s.cast || [];
+    (m.seats || []).forEach(function (st) {
+      var taken = people.some(function (p) { return Math.hypot(p.x - st.x, p.y - st.y) < 0.4; });
+      ctx.fillStyle = taken ? css("--taken") : css("--free");
+      ctx.strokeStyle = text; ctx.lineWidth = 1.5;
+      ctx.fillRect(X(st.x) - 5, Y(st.y) - 5, 10, 10);
+      ctx.strokeRect(X(st.x) - 5, Y(st.y) - 5, 10, 10);
+      if (taken) { ctx.fillStyle = css("--bg"); ctx.fillText("x", X(st.x) - 3, Y(st.y) + 1); }
+    });
+    ctx.fillStyle = text;
+    (m.landmarks || []).forEach(function (l) {
+      ctx.beginPath(); ctx.arc(X(l.x), Y(l.y), 4, 0, 6.2832); ctx.fill();
+      ctx.fillStyle = muted; ctx.fillText(shortLabel(l.label || l.id), X(l.x) + 7, Y(l.y)); ctx.fillStyle = text;
+    });
+    (m.signs || []).forEach(function (sg) {
+      ctx.strokeStyle = text; ctx.lineWidth = 1.5;
+      ctx.strokeRect(X(sg.x) - 4, Y(sg.y) - 7, 8, 5);
+      ctx.fillStyle = muted; ctx.fillText("sign: " + shortLabel(sg.text || sg.id), X(sg.x) + 7, Y(sg.y) - 4);
+    });
+    people.forEach(function (p) {
+      if (typeof p.x !== "number") return;
+      ctx.beginPath(); ctx.arc(X(p.x), Y(p.y), 8, 0, 6.2832);
+      ctx.fillStyle = css("--person"); ctx.fill();
+      ctx.strokeStyle = text; ctx.lineWidth = 2; ctx.stroke();
+      ctx.fillStyle = text;
+      ctx.fillText(p.id + " " + (p.posture || ""), X(p.x) + 11, Y(p.y) - 9);
+    });
+    if (m.robot) {
+      var rx = X(m.robot.x), ry = Y(m.robot.y), a = -(m.robot.yaw || 0);
+      ctx.save(); ctx.translate(rx, ry); ctx.rotate(a);
+      ctx.beginPath(); ctx.moveTo(11, 0); ctx.lineTo(-8, -7); ctx.lineTo(-8, 7); ctx.closePath();
+      ctx.fillStyle = css("--robot"); ctx.fill(); ctx.strokeStyle = text; ctx.lineWidth = 2; ctx.stroke();
+      ctx.restore();
+      ctx.fillStyle = text; ctx.fillText("Robot", rx + 12, ry - 10);
+    }
+  }
+  function shortLabel(t) { t = String(t); return t.length > 26 ? t.slice(0, 25) + "..." : t; }
+
+  function render(s) {
+    state = s;
+    renderHeader(s); renderTimeline(s); renderCast(s); renderEvents(s); renderDeck(s); drawMap(s);
+  }
+  if (window.matchMedia) {
+    var mq = window.matchMedia("(prefers-color-scheme: dark)");
+    var redraw = function () { if (state) drawMap(state); };
+    if (mq.addEventListener) mq.addEventListener("change", redraw);
+  }
+
+  // websocket with backoff
+  var delay = 500, timer = null;
+  function connect() {
+    var proto = location.protocol === "https:" ? "wss://" : "ws://";
+    var ws;
+    try { ws = new WebSocket(proto + location.host + "/ws"); } catch (e) { retry(); return; }
+    ws.onopen = function () { delay = 500; $("conn").textContent = "Connection: live"; };
+    ws.onmessage = function (m) {
+      var s; try { s = JSON.parse(m.data); } catch (e) { return; }
+      if (s.error && !s.cast) { $("conn").textContent = "Connection: live, director state unavailable"; return; }
+      $("conn").textContent = "Connection: live";
+      render(s);
+    };
+    ws.onclose = retry;
+    ws.onerror = function () { try { ws.close(); } catch (e) {} };
+  }
+  function retry() {
+    $("conn").textContent = "Connection: lost, retrying in " + Math.round(delay / 1000 * 10) / 10 + " s";
+    clearTimeout(timer);
+    timer = setTimeout(connect, delay);
+    delay = Math.min(delay * 2, 10000);
+  }
+  connect();
+})();
+</script>
+</body>
+</html>
