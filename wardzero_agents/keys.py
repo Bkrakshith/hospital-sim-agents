@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import numbers
 import os
 import re
 import stat
@@ -139,9 +140,12 @@ def redact(text: str) -> str:
 
 
 def _redact_arg(arg: Any) -> Any:
-    if isinstance(arg, (int, float, bool)) or arg is None:
+    """Redact a log arg; keep the original object unless its text holds a key."""
+    if arg is None or isinstance(arg, (numbers.Number, bool)):
         return arg
-    return redact(arg if isinstance(arg, str) else str(arg))
+    text = arg if isinstance(arg, str) else str(arg)
+    clean = redact(text)
+    return arg if clean == text else clean
 
 
 class _RedactFilter(logging.Filter):

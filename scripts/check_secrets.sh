@@ -4,6 +4,8 @@
 set -u
 hit=0
 while IFS= read -r -d '' f; do
+  mode="$(git ls-files -s -- ":(literal)$f" | cut -c1-6)"
+  [ "$mode" = "160000" ] && continue  # submodule gitlink, no content to scan
   if ! content="$(git show ":$f" 2>/dev/null)"; then
     echo "check_secrets: could not read staged file: $f" >&2
     exit 1

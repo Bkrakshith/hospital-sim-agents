@@ -276,3 +276,19 @@ def test_check_secrets_script(tmp_path):
     assert r.returncode == 1
     assert "bad.txt" in r.stdout + r.stderr
     assert "abcdefghijk" not in r.stdout + r.stderr
+
+
+def test_check_secrets_skips_gitlink(tmp_path):
+    _git(tmp_path, "init", "-q")
+    _git(tmp_path, "update-index", "--add", "--cacheinfo", "160000," + "a" * 40 + ",sub")
+    r = subprocess.run(["bash", str(SCRIPT)], cwd=tmp_path, capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+
+
+def test_numeric_log_args_kept(caplog):
+    np = pytest.importorskip("numpy")
+    install_log_redaction()
+    logging.raiseExceptions = True
+    logging.getLogger("z").warning("%d items", np.int32(3))
+    assert "3 items" in caplog.text
+    assert "Logging error" not in caplog.text
