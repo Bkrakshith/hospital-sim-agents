@@ -12,6 +12,7 @@ Deviations from the task brief's signatures:
 """
 from __future__ import annotations
 
+import logging
 import math
 import uuid
 from dataclasses import dataclass, field
@@ -43,6 +44,8 @@ ROBOT_Z = 1.25
 OVERLAYS = ("cough", "fidget", "look_at")
 INSTANT = ("sit_idle", "use_phone", "wait_standing", "read_sign", "gesture")
 EPS = 1e-9
+
+log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -99,6 +102,12 @@ class StubWorld:
         lm = self.loaded.area.landmarks[inst.entrance or self.loaded.area.entrance]
         return _Person(inst, lm.x, lm.y, 0.0, "standing")
 
+    def _get(self, person: str) -> _Person:
+        p = self.people.get(person)
+        if p is None:
+            raise ValueError(f"unknown person '{person}'")
+        return p
+
     def _pos(self, ident: str) -> Optional[tuple[float, float]]:
         if ident == ROBOT_ID:
             return self.robot_pose.x, self.robot_pose.y
@@ -138,7 +147,7 @@ class StubWorld:
         )
 
     def say(self, person: str, text: str, addressee: Optional[str], t: float) -> AudioEvent:
-        p = self.people[person]
+        p = self._get(person)
         return self._event(t, "person", person, p.x, p.y, PERSON_Z, audio.SPEECH_DB, text, addressee)
 
     def robot_say(self, text: str, t: float) -> AudioEvent:
@@ -146,7 +155,7 @@ class StubWorld:
         return self._event(t, "robot", ROBOT_ID, r.x, r.y, ROBOT_Z, audio.ROBOT_SPEECH_DB, text)
 
     def cough(self, person: str, severity: str, t: float) -> AudioEvent:
-        p = self.people[person]
+        p = self._get(person)
         return self._event(t, "cough", person, p.x, p.y, PERSON_Z, audio.COUGH_DB[severity])
 
     def robot_heard(self, ev: AudioEvent) -> Optional[Heard]:
@@ -174,8 +183,8 @@ class StubWorld:
 
     def _stand_phase(self, p: _Person) -> list[_Phase]:
         if p.posture == "seated":
-            # the seat is released as soon as the person starts to rise
-            p.seat = None
+            # the seat is released when the stand phase completes (see _advance), so an
+            # interrupted stand-up leaves the person seated and the seat taken
             return [_Phase("stand", left=p.inst.sit_to_stand_s)]
         return []
 
@@ -186,8 +195,8 @@ class StubWorld:
             self._finish(p)
 
     def apply_intent(self, intent: Intent) -> list[AudioEvent]:
-        p = self.people.get(intent.person)
-        if p is None or p.posture == "gone":
+        p = self._get(intent.person)
+        if p.posture == "gone":
             return []
         kind = intent.kind
         if kind in OVERLAYS:
@@ -303,6 +312,7 @@ class StubWorld:
                     p.plan.pop(0)
                     if ph.kind == "stand":
                         p.posture = "standing"
+                        p.seat = None
                     else:
                         seat = self._seats[p.claim]
                         p.x, p.y, p.yaw, p.posture = seat.x, seat.y, seat.yaw, "seated"
@@ -340,10 +350,10 @@ class StubWorld:
                 p.progress = max(p.progress, min(0.999, 1.0 - self._remaining(p) / p.total_est))
 
     def step(self, t: float) -> None:
+        if t <= self.last_t:
+            return  # time never runs backwards; last_t is unchanged
         dt = t - self.last_t
         self.last_t = t
-        if dt <= 0:
-            return
         for pid, p in self.people.items():
             if p.plan:
                 self._advance(pid, p, dt)
@@ -372,7 +382,7 @@ class StubWorld:
         )
 
     def observation(self, person: str, t: float, recent_audio: list[AudioEvent]) -> Observation:
-        p = self.people[person]
+        p = self._get(person)
         if p.posture == "gone":
             return Observation(person=person, t=t)
         me = Pose(p.x, p.y, p.yaw)
@@ -388,6 +398,7 @@ class StubWorld:
         seats = [
             Entity("seat", sid, s.x, s.y, "taken" if self._seat_taken(sid, "") else "free")
             for sid, s in self._seats.items()
+            if sid not in (p.seat, p.claim)  # the viewer's own seat is not an observation
         ]
         seen += visible(me, seats, [], range_m=SEAT_VIEW_RANGE_M)
         heard = []
@@ -399,6 +410,8 @@ class StubWorld:
 
     # ---- world events and spawning -------------------------------------------------------
     def spawn(self, persona_id: str, t: float) -> str:
+        if persona_id not in self.loaded.personas:
+            raise ValueError(f"unknown persona '{persona_id}'")
         self._spawned += 1
         n = self._spawned
         pid = f"N{n}"
@@ -417,14 +430,10 @@ class StubWorld:
             return [self._event(ev.t, "alarm", "alarm", x, y, 2.5, 100.0, ev.text)]
         if ev.kind == "wet_floor":
             self._wet += 1
-            near = [(math.hypot(q.x - x, q.y - y), q) for _, q in self._present()]
-            facing = 0.0
-            if near:
-                q = min(near, key=lambda a: a[0])[1]
-                facing = math.atan2(q.y - y, q.x - x)
+            # facing_yaw is a placeholder: omni signs are re-faced towards each viewer in observation()
             sign = Sign(
                 id=f"wet_floor_{self._wet}", text="Caution: wet floor", x=x, y=y, z=0.6,
-                facing_yaw=facing, placeholder=True,
+                facing_yaw=0.0, placeholder=True,
             )
             self.signs.append(sign)
             self._omni.add(sign.id)
@@ -434,7 +443,10 @@ class StubWorld:
                 "anxious_first_timer" if "anxious_first_timer" in self.loaded.personas
                 else next(iter(self.loaded.personas))
             )
-            self.spawn(persona, ev.t)
+            try:
+                self.spawn(persona, ev.t)
+            except ValueError:
+                log.warning("arrival ignored: unknown persona '%s'", persona)
             return []
         if ev.kind == "person_exit" and ev.person:
             self.apply_intent(

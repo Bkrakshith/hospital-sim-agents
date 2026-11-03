@@ -249,3 +249,67 @@ def test_determinism():
             out.append([h.model_dump_json() for pid in ("P1", "P2", "P3") for h in w.observation(pid, k, [ev]).heard])
         return out
     assert run(3) == run(3)
+
+
+def test_unknown_persona_tolerated_in_event_raises_in_spawn(caplog):
+    w = make()
+    with caplog.at_level("WARNING"):
+        assert w.apply_world_event(WorldEvent(id="e", t=1, kind="arrival", persona="nope")) == []
+    assert "nope" in caplog.text
+    assert [p.id for p in w.roster(1).people] == ["P1", "P2", "P3", "P4", "P5"]
+    with pytest.raises(ValueError, match="unknown persona 'nope'"):
+        w.spawn("nope", 1.0)
+    assert w.spawn("companion", 2.0) == "N1"  # counter not consumed by failures
+
+
+def test_own_seat_not_in_own_observation():
+    w = make()
+    ids = {s.id for s in w.observation("P5", 0.0, []).visible if s.kind == "seat"}
+    assert "D2" not in ids
+    w.apply_intent(I("look_at", target="P1"))
+    w.apply_intent(I("sit_down", person="P1", target="A1", id="a"))
+    w.step(0.1)  # P1 claims A1
+    seats = {s.id: s.detail for s in w.observation("P5", 0.2, []).visible if s.kind == "seat"}
+    assert seats.get("A1", "taken") == "taken"
+    assert "A1" not in {s.id for s in w.observation("P1", 0.2, []).visible if s.kind == "seat"}
+
+
+def test_backwards_time_ignored():
+    w = make()
+    w.apply_intent(I("walk_to", target="clinic_corridor"))
+    step_until(w, 4.0)
+    a = st(w, "P5")
+    w.step(2.0)
+    assert w.last_t == pytest.approx(4.0)
+    w.step(4.0)
+    b = st(w, "P5")
+    assert (a.x, a.y) == (b.x, b.y)
+    w.step(5.0)
+    c = st(w, "P5")
+    assert math.hypot(c.x - b.x, c.y - b.y) == pytest.approx(inst(w, "P5").walk_speed, rel=0.01)
+
+
+def test_interrupted_stand_up_keeps_seat():
+    w = make()
+    w.apply_intent(I("stand_up", id="a"))
+    w.step(0.1)
+    w.apply_intent(I("sit_idle", id="b"))
+    w.step(10.0)
+    s = st(w, "P5")
+    assert s.posture == "seated" and s.state == "done"
+    seats = {x.id: x.detail for x in w.observation("P1", 10.0, []).visible if x.kind == "seat"}
+    w.apply_intent(I("sit_down", person="P4", target="D2", id="c"))
+    assert st(w, "P4").reason == "seat occupied"
+    assert seats.get("D2", "taken") == "taken"
+
+
+def test_unknown_person_raises_value_error():
+    w = make()
+    with pytest.raises(ValueError, match="unknown person 'ZZ'"):
+        w.observation("ZZ", 0, [])
+    with pytest.raises(ValueError, match="unknown person 'ZZ'"):
+        w.say("ZZ", "hi", None, 0)
+    with pytest.raises(ValueError, match="unknown person 'ZZ'"):
+        w.cough("ZZ", "mild", 0)
+    with pytest.raises(ValueError, match="unknown person 'ZZ'"):
+        w.apply_intent(I("walk_to", person="ZZ", target="entrance"))
