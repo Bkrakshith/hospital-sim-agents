@@ -258,3 +258,9 @@ are `auth` (401/403: the key), `model_not_found` (404: the model name or account
 
 ROS 2 installs pytest plugins that clash with pytest 8. `pyproject.toml` switches them off.
 If you still see plugin errors, run `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -q -m "not ros"`.
+
+## Licence
+
+Apache License, Version 2.0 (see `LICENSE`). This is part of WardZero
+([hospital-sim](https://github.com/Bkrakshith/hospital-sim)). WardZero is a simulation. Nothing here has run
+with a physical robot or in a real hospital.
