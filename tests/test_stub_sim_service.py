@@ -183,3 +183,17 @@ def test_no_robot_means_no_microphone_and_no_voice(tmp_path):
     s.on_robot_say("Hello")
     out = s.step(0.01)
     assert out.robot_heard == [] and [a.source_kind for a in out.audio] == ["cough"]
+
+
+def test_silent_pending_heartbeat_releases_the_clock(tmp_path):
+    """A dead agent node cannot hang a lockstep clock: after 5 s of silence pending counts as 0."""
+    wall = [100.0]
+    s = svc(tmp_path, lockstep=True, wall=lambda: wall[0])
+    s.set_pending(2)
+    assert s.step(0.1).clock == 0.0
+    wall[0] += 4.9
+    assert s.step(0.1).clock == 0.0
+    wall[0] += 0.2
+    assert s.step(0.1).clock == pytest.approx(0.1)
+    s.set_pending(1)  # the heartbeat is back: pending holds again
+    assert s.step(0.1).clock == pytest.approx(0.1)

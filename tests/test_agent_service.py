@@ -237,3 +237,36 @@ def test_dedupe_durable_intent_that_is_still_the_latest(tmp_path):
     s.on_status(status("P1", "done", "e", "walk_to", "standing"))
     s.publish_intent(intent("P1", "walk_to", "toilets", id="f"))  # a finished walk is not durable
     assert [i.id for i in out.intents][-2:] == ["e", "f"]
+
+
+async def test_one_failing_person_does_not_starve_the_others(tmp_path):
+    class Broken(FakeMind):
+        async def on_tick(self, t, obs, status, nudges):
+            if self.inst.person_id == "P1":
+                raise RuntimeError("boom")
+            await super().on_tick(t, obs, status, nudges)
+
+    out = Out()
+    s = AgentService(load_scenario(V1), RunLog(tmp_path), out, Broken, reflex_factory=QuietReflex)
+    for pid in ("P1", "P2", "P3"):
+        s.on_status(status(pid))
+    await s.tick(1.0)
+    assert len(s.minds["P2"].ticks) == 1 and len(s.minds["P3"].ticks) == 1
+
+
+async def test_one_failing_reflex_does_not_starve_the_others(tmp_path):
+    class BadReflex(QuietReflex):
+        def __init__(self, inst, seed):
+            super().__init__(inst, seed)
+            self.pid = inst.person_id
+
+        def tick(self, t, status, heard, idle):
+            if self.pid == "P1":
+                raise ValueError("bad reflex")
+            return super().tick(t, status, heard, idle)
+
+    s, _ = make(tmp_path, reflex=BadReflex)
+    s.on_status(status("P1"))
+    s.on_status(status("P2"))
+    await s.tick(1.0)
+    assert s.minds["P1"].ticks == [] and len(s.minds["P2"].ticks) == 1

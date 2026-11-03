@@ -10,6 +10,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 from .keys import redact
 
 STREAMS = (
@@ -53,23 +55,44 @@ class RunLog:
                 tmp = f.name
             os.replace(tmp, self.dir / "meta.json")
 
-    def copy_configs(self, loaded) -> None:
-        """Copy the scenario, personas, area, signs, storyboard and deck YAML into config/."""
+    def copy_configs(self, loaded, overrides: "dict | None" = None) -> Path:
+        """Copy the scenario, personas, area, signs, storyboard and deck YAML into config/.
+
+        The copy is self-contained: the copied scenario's storyboard and deck fields name the
+        copied files, so load_scenario(config/<scenario>.yaml) works from the run folder alone
+        (rerun relies on it). overrides are top-level scenario fields to set in the copy.
+        Copying a run's own copy onto itself changes nothing. Returns the copied scenario path.
+        """
         dest = self.dir / "config"
         dest.mkdir(exist_ok=True)
         sc = loaded.scenario
         spath = Path(loaded.scenario_path)
-        sources = [
-            spath,
-            loaded.root / "personas.yaml",
-            loaded.root / f"{sc.area}.yaml",
-            loaded.root / "signs.yaml",
-            (spath.parent / sc.storyboard),
-            (spath.parent / sc.deck),
-        ]
-        for src in sources:
-            if src.is_file():
-                shutil.copyfile(src, dest / src.name)
+        storyboard, deck = spath.parent / sc.storyboard, spath.parent / sc.deck
+        plain = [loaded.root / "personas.yaml", loaded.root / f"{sc.area}.yaml", loaded.root / "signs.yaml"]
+        taken = {spath.name, *(p.name for p in plain)}
+        names = {}
+        for kind, src in (("storyboard", storyboard), ("deck", deck)):
+            name = src.name if src.name not in taken else f"{kind}_{src.name}"
+            taken.add(name)
+            names[kind] = name
+        for src, name in [*((p, p.name) for p in plain), (storyboard, names["storyboard"]), (deck, names["deck"])]:
+            dst = dest / name
+            if src.is_file() and not (dst.exists() and os.path.samefile(src, dst)):
+                shutil.copyfile(src, dst)
+        raw = yaml.safe_load(spath.read_text(encoding="utf-8"))
+        want = dict(raw)
+        want.update(storyboard=names["storyboard"], deck=names["deck"])
+        want.update(overrides or {})
+        out = dest / spath.name
+        if out.exists() and os.path.samefile(spath, out) and want == raw:
+            return out  # the run's own copy, unchanged: never rewrite a file other nodes may be reading
+        text = yaml.safe_dump(want, sort_keys=False)
+        with tempfile.NamedTemporaryFile("w", dir=dest, prefix=".scenario.", suffix=".tmp", delete=False,
+                                         encoding="utf-8") as f:
+            f.write(text)
+            tmp = f.name
+        os.replace(tmp, out)
+        return out
 
 
 class RunTail:

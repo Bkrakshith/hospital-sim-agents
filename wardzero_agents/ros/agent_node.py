@@ -163,27 +163,33 @@ class AgentService:
 
     async def tick(self, t: float) -> None:
         for pid in sorted(self.people):
-            p = self.people[pid]
-            st = p.status
-            if st is None or st.posture == "gone":
-                p.nudges, p.bouts = [], []
+            try:
+                await self._tick_person(pid, self.people[pid], t)
+            except Exception as exc:  # one person failing must not starve the others
+                log.error("%s: tick failed: %s", pid, type(exc).__name__)
+                log.debug("%s: tick traceback", pid, exc_info=True)
+
+    async def _tick_person(self, pid: str, p: _Person, t: float) -> None:
+        st = p.status
+        if st is None or st.posture == "gone":
+            p.nudges, p.bouts = [], []
+            return
+        heard = self._new_heard(p)
+        bouts, p.bouts = p.bouts, []
+        for b in bouts:
+            p.reflex.start_bout(t, b.duration_s, b.severity)
+        idle = st.state != "running"
+        spatial = [h for h in heard if h.source_kind in SPATIAL_SOURCES]
+        for a in p.reflex.tick(t, st, spatial, idle):
+            target = a.target if a.kind == "look_at" else None
+            if a.kind == "look_at" and target is None:
                 continue
-            heard = self._new_heard(p)
-            for b in p.bouts:
-                p.reflex.start_bout(t, b.duration_s, b.severity)
-            p.bouts = []
-            idle = st.state != "running"
-            spatial = [h for h in heard if h.source_kind in SPATIAL_SOURCES]
-            for a in p.reflex.tick(t, st, spatial, idle):
-                target = a.target if a.kind == "look_at" else None
-                if a.kind == "look_at" and target is None:
-                    continue
-                self.publish_intent(Intent(id=uuid.uuid4().hex, person=pid, t=t, kind=a.kind,
-                                           target=target, overlay=True))
-            base = p.obs if p.obs is not None else Observation(person=pid, t=t)
-            obs = base.model_copy(update={"heard": heard})
-            nudges, p.nudges = p.nudges, []
-            await p.mind.on_tick(t, obs, st, nudges)
+            self.publish_intent(Intent(id=uuid.uuid4().hex, person=pid, t=t, kind=a.kind,
+                                       target=target, overlay=True))
+        base = p.obs if p.obs is not None else Observation(person=pid, t=t)
+        obs = base.model_copy(update={"heard": heard})
+        nudges, p.nudges = p.nudges, []
+        await p.mind.on_tick(t, obs, st, nudges)
 
     # ---- effects -------------------------------------------------------------------------
     def publish_intent(self, intent: Intent) -> None:

@@ -7,7 +7,7 @@ observations (2 Hz sim, and at once when there is new audio), every audio event 
 robot's microphone hears.
 
     python -m wardzero_agents.ros.stub_sim_node --run-dir DIR --scenario FILE [--time-scale F]
-        [--lockstep] [--wait-for agents,director]
+        [--lockstep] [--wait-for agents,director] [--ready-timeout 600]
 """
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ import sys
 import time
 from collections import deque
 from dataclasses import dataclass, field
-from typing import Iterable, Optional
+from typing import Callable, Iterable, Optional
 
 from ..config.loader import ConfigError, LoadedScenario, load_scenario
 from ..contracts import AudioEvent, Control, Heard, Intent, Observation, Roster, Say, Status, WorldEvent
@@ -36,7 +36,8 @@ OBS_PERIOD_S = 0.5
 OBS_WINDOW_S = 2.0
 MAX_WALL_DT = 0.5  # a stalled loop does not make the sim jump further than this
 ROBOT_ADDRESS_M = 2.5  # robot speech is addressed to the nearest person within this distance
-READY_TIMEOUT_S = 180.0
+READY_TIMEOUT_S = 600.0  # the first knowledge base build can be slow
+PENDING_SILENT_S = 5.0  # wall seconds without a pending heartbeat before lockstep stops waiting
 WAIT_TOKENS = ("agents", "director")
 
 
@@ -55,7 +56,8 @@ class StubSimService:
     """The stub sim without ROS: feed it messages, call step(wall_dt), publish what it returns."""
 
     def __init__(self, loaded: LoadedScenario, runlog: RunLog, time_scale: float = 1.0,
-                 lockstep: bool = False, wait_for: Iterable[str] = WAIT_TOKENS, seed: Optional[int] = None):
+                 lockstep: bool = False, wait_for: Iterable[str] = WAIT_TOKENS, seed: Optional[int] = None,
+                 wall: Callable[[], float] = time.monotonic):
         if not (time_scale > 0 and math.isfinite(time_scale)):
             raise ValueError("time_scale must be a positive number")
         self.loaded = loaded
@@ -68,6 +70,9 @@ class StubSimService:
         self.t = 0.0
         self.paused = False
         self.pending = 0
+        self.wall = wall
+        self._pending_at = wall()
+        self._pending_silent_logged = False
         self.waiting: set[str] = set(wait_for)
         self._stop = False
         self._roster_key: Optional[tuple] = None
@@ -89,6 +94,19 @@ class StubSimService:
 
     def set_pending(self, n: int) -> None:
         self.pending = max(0, int(n))
+        self._pending_at = self.wall()
+        self._pending_silent_logged = False
+
+    def _pending_now(self) -> int:
+        """The pending count, or 0 once the agent node's 1 Hz heartbeat has been silent for 5 s:
+        a dead agent node must not hang a lockstep clock."""
+        if self.pending and self.wall() - self._pending_at > PENDING_SILENT_S:
+            if not self._pending_silent_logged:
+                log.warning("no pending heartbeat for %.0f s; lockstep no longer waits for decisions",
+                            PENDING_SILENT_S)
+                self._pending_silent_logged = True
+            return 0
+        return self.pending
 
     def control(self, ctl: Control) -> None:
         if ctl.action == "pause":
@@ -173,7 +191,7 @@ class StubSimService:
 
     def step(self, wall_dt: float) -> SimOutputs:
         wall_dt = min(max(0.0, wall_dt), MAX_WALL_DT)
-        held = (self.paused or bool(self.waiting) or (self.lockstep and self.pending > 0)
+        held = (self.paused or bool(self.waiting) or (self.lockstep and self._pending_now() > 0)
                 or self.t >= self.duration_s)
         if not held and not self._stop:
             self.t = min(self.duration_s, self.t + self.time_scale * wall_dt)
@@ -215,6 +233,8 @@ def _parse(argv):
     p.add_argument("--scenario", required=True)
     p.add_argument("--time-scale", type=float, default=1.0)
     p.add_argument("--lockstep", action="store_true")
+    p.add_argument("--ready-timeout", type=float, default=READY_TIMEOUT_S,
+                   help="wall seconds to wait for the other nodes before giving up")
     p.add_argument("--wait-for", default=",".join(WAIT_TOKENS),
                    help="comma list of nodes to wait for before the clock starts: agents, director, or none")
     return p.parse_args(argv)
@@ -298,9 +318,9 @@ async def _run(args) -> int:
                 await asyncio.sleep(0.5)  # let the stop reach the other nodes
                 break
             if svc.waiting:
-                if now - started > READY_TIMEOUT_S:
+                if now - started > args.ready_timeout:
                     log.error("gave up waiting for %s after %.0f s", ", ".join(sorted(svc.waiting)),
-                              READY_TIMEOUT_S)
+                              args.ready_timeout)
                     code = 3
                     break
                 if now - last_wait_log > 10.0:

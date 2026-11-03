@@ -166,3 +166,24 @@ def test_scripts_report_last_t_and_exhausted(tmp_path):
     assert not s.exhausted
     s.due(3.0)
     assert s.exhausted and ExactScript(tmp_path / "none").last_t == 0.0
+
+
+def test_copied_scenario_loads_from_the_copy(tmp_path):
+    """The copy is self-contained: storyboard and deck point at the copied files."""
+    loaded = load_scenario(Path(__file__).resolve().parent.parent / "config/scenarios/waiting_area_v1.yaml")
+    out = RunLog(tmp_path).copy_configs(loaded)
+    assert out == tmp_path / "config" / "waiting_area_v1.yaml"
+    again = load_scenario(out)
+    assert again.root == tmp_path / "config"
+    assert [b.id for b in again.storyboard.beats] == [b.id for b in loaded.storyboard.beats]
+    assert set(again.deck) == set(loaded.deck)
+
+
+def test_copy_configs_overrides_and_is_idempotent_on_its_own_copy(tmp_path):
+    loaded = load_scenario(Path(__file__).resolve().parent.parent / "config/scenarios/waiting_area_v1.yaml")
+    out = RunLog(tmp_path).copy_configs(loaded, {"memory_snapshot": "snap1"})
+    staged = load_scenario(out)
+    assert staged.scenario.memory_snapshot == "snap1"
+    before = out.stat().st_mtime_ns
+    RunLog(tmp_path).copy_configs(staged)  # the agent node copies the run's own copy onto itself
+    assert out.stat().st_mtime_ns == before and load_scenario(out).scenario.memory_snapshot == "snap1"
