@@ -117,10 +117,11 @@ def ltm(tmp_path):
 def build(ltm):
     """Build a Mind with recording effects and runlog. Tests close it with `await m.aclose()`."""
 
-    def _build(inst, gateway, run_dir=None, checkpointer="memory"):
-        effects, runlog = RecordingEffects(), RecordingRunLog()
-        deps = MindDeps(inst=inst, loaded=LOADED, gateway=gateway, kb=make_kb(), ltm=ltm, run_id=RUN,
-                        run_index=1, effects=effects, runlog=runlog, run_dir=run_dir,
+    def _build(inst, gateway, run_dir=None, checkpointer="memory", memory=None, effects=None,
+               runlog=None):
+        effects, runlog = effects or RecordingEffects(), runlog or RecordingRunLog()
+        deps = MindDeps(inst=inst, loaded=LOADED, gateway=gateway, kb=make_kb(), ltm=memory or ltm,
+                        run_id=RUN, run_index=1, effects=effects, runlog=runlog, run_dir=run_dir,
                         checkpointer=MemorySaver() if checkpointer == "memory" else checkpointer)
         return Mind(deps), effects, runlog
 
@@ -322,6 +323,14 @@ async def test_nudge_triggers_decision_inside_debounce(build):
     await m.aclose()
 
 
+async def wait_for(cond, timeout=5.0):
+    loop = asyncio.get_running_loop()
+    end = loop.time() + timeout
+    while not cond():
+        assert loop.time() < end, "timed out"
+        await asyncio.sleep(0.005)
+
+
 class GatedGateway:
     """Holds every decide call until released, recording the requests it saw."""
 
@@ -340,19 +349,55 @@ async def test_pending_ignores_triggers_but_keeps_nudges(build):
     gw = GatedGateway()
     m, effects, runlog = build(P5, gw)
     await m.on_tick(10, obs_addressed("Hello there", t=10), SEATED, [])
-    for _ in range(5):
-        await asyncio.sleep(0)
+    await wait_for(lambda: gw.requests)  # the first decision is now waiting on the gateway
     assert m.pending
     await m.on_tick(11, obs_addressed("Hello again", t=11), SEATED, [nudge("P5", 11, "Ask for help")])
+    assert len([r for r in gw.requests if r.role == "decide"]) == 1  # still one in flight
     gw.release.set()
     await m.drain()
     assert not m.pending
-    assert len([r for r in gw.requests if r.role == "decide"]) == 1
-    # the held nudge drives the next decision even with no new trigger in that tick
-    await m.on_tick(12, obs(), SEATED, [])
-    await m.drain()
+    # the held nudge and robot speech drive a follow-up decision as soon as the first one ends
     decides = [r for r in gw.requests if r.role == "decide"]
-    assert len(decides) == 2 and "NUDGE: Ask for help" in decides[-1].user
+    assert len(decides) == 2
+    assert "NUDGE: Ask for help" in decides[-1].user
+    assert "ROBOT SAID TO YOU: Hello again" in decides[-1].user
+    assert [r["t"] for r in runlog.stream("decisions")] == [10, 11]
+    await m.aclose()
+
+
+async def test_robot_speech_during_pending_is_not_lost(build):
+    gw = GatedGateway()
+    m, effects, runlog = build(P5, gw)
+    await m.on_tick(10, obs(), SEATED, [nudge("P5", 10, "You feel restless")])
+    await wait_for(lambda: gw.requests)  # the first decision is now waiting on the gateway
+    assert m.pending
+    await m.on_tick(11, obs_addressed("clinic_corridor is down there", t=11), SEATED, [])
+    await m.on_tick(12, obs(), SEATED, [])  # the speech is gone from later ticks
+    gw.release.set()
+    await m.drain()
+    rec = runlog.last("decisions")
+    assert "ROBOT SAID TO YOU:" in rec["situation"] and "addressed_speech" in rec["triggers"]
+    assert effects.intents[-1].kind == "walk_to" and effects.intents[-1].target == "clinic_corridor"
+    assert effects.says[-1].text == "Thank you"
+    await m.aclose()
+
+
+async def test_nearby_robot_speech_held_through_debounce(build):
+    gw = GatedGateway()
+    m, effects, runlog = build(P5, gw)
+    await m.on_tick(10, obs(), SEATED, [nudge("P5", 10, "x")])
+    await wait_for(lambda: gw.requests)  # the first decision is now waiting on the gateway
+    await m.on_tick(11, obs(heard=[heard("robot", "g1", "Please take a seat")]), SEATED, [])
+    gw.release.set()
+    await m.drain()
+    assert len(runlog.stream("decisions")) == 1  # nearby speech waits out the 4 s debounce
+    await m.on_tick(13, obs(), SEATED, [])
+    assert not m.pending
+    await m.on_tick(14, obs(), SEATED, [])
+    await m.drain()
+    rec = runlog.last("decisions")
+    assert len(runlog.stream("decisions")) == 2 and rec["t"] == 14
+    assert "ROBOT SAID NEARBY: Please take a seat" in rec["situation"]
     await m.aclose()
 
 
@@ -459,3 +504,182 @@ async def test_sqlite_checkpointer_persists_short_term(build, tmp_path):
     s = await m2.state()
     assert len(s["short_term"]) == 2
     await m2.aclose()
+
+
+# ---------- fix round 1 ----------
+
+class FailingAddMemory(LongTermMemory):
+    def add(self, *a, **kw):
+        raise sqlite3.OperationalError("database is locked")
+
+
+def summarising(memories=None, fail=False):
+    calls = []
+
+    def policy(req):
+        if req.role == "summarise":
+            calls.append(req)
+            if fail:
+                raise FakeRefusal()
+            return {"memories": memories or [{"text": "Waited and fidgeted", "importance": 0.5}]}
+        return decision("fidget")
+
+    return calls, policy
+
+
+async def run_decisions(m, person, times):
+    for t in times:
+        await m.on_tick(t, obs(person=person), status(person=person), [nudge(person, t, f"event {t}")])
+        await m.drain()
+
+
+async def test_ltm_write_failure_still_trims_and_does_not_repeat(build, tmp_path):
+    bad = FailingAddMemory(tmp_path / "bad.sqlite", HashEmbedder())
+    bad.begin_run(RUN)
+    calls, policy = summarising()
+    m, effects, runlog = build(P1, FakeGateway(policy=policy), memory=bad)
+    await run_decisions(m, "P1", [10.0 + i for i in range(30)])
+    assert len(calls) == 1
+    rec = runlog.last("summaries")
+    assert rec["error"] == "ltm_write_failed" and rec["exception"] == "OperationalError"
+    assert "locked" not in str(rec)  # exception type only
+    assert len((await m.state())["short_term"]) == 5
+    before = len(runlog.stream("decisions"))
+    await run_decisions(m, "P1", [41.0])
+    assert len(calls) == 1  # no second summarise call
+    assert len(runlog.stream("decisions")) == before + 1
+    assert all(r["error"] != "mind_error" for r in runlog.stream("decisions"))
+    await m.aclose()
+
+
+async def test_summary_llm_failure_keeps_events_and_backs_off(build):
+    calls, policy = summarising(fail=True)
+    m, effects, runlog = build(P1, FakeGateway(policy=policy))
+    await run_decisions(m, "P1", [10.0 + i for i in range(30)])  # line 30 at t=39
+    assert len(calls) == 1 and runlog.last("summaries")["error"] == "refusal"
+    s = await m.state()
+    assert len(s["short_term"]) == 30 and s["last_summary_t"] == pytest.approx(39.0)
+    await run_decisions(m, "P1", [40.0 + i for i in range(40)])  # inside the 60 s back-off
+    assert len(calls) == 1
+    assert len((await m.state())["short_term"]) == 60  # capped
+    await run_decisions(m, "P1", [99.0])  # back-off over: retried
+    assert len(calls) == 2
+    await m.aclose()
+
+
+async def test_summary_retry_success_trims(build):
+    state = {"fail": True}
+    calls = []
+
+    def policy(req):
+        if req.role == "summarise":
+            calls.append(req)
+            if state["fail"]:
+                raise FakeRefusal()
+            return {"memories": [{"text": "a", "importance": 0.5}, {"text": "b", "importance": 0.5},
+                                 {"text": "c", "importance": 0.5}, {"text": "d", "importance": 0.5}]}
+        return decision("fidget")
+
+    m, effects, runlog = build(P1, FakeGateway(policy=policy))
+    await run_decisions(m, "P1", [10.0 + i for i in range(30)])
+    state["fail"] = False
+    await run_decisions(m, "P1", [100.0])
+    assert len(calls) == 2
+    assert len(runlog.last("summaries")["memories"]) == 3  # MAX_MEMORIES
+    assert len((await m.state())["short_term"]) == 5
+    await m.aclose()
+
+
+def test_summary_limit_consistent():
+    from wardzero_agents.mind.prompts import MAX_MEMORIES, SUMMARY_FIXED
+    assert MAX_MEMORIES == 3 and "at most 3 " in SUMMARY_FIXED
+
+
+async def test_background_is_behaviour_only(build):
+    users = []
+
+    def policy(req):
+        users.append(req.user)
+        return decision("sit_idle")
+
+    m, effects, runlog = build(P5, FakeGateway(policy=policy))
+    await run_decisions(m, "P5", [10.0])
+    assert ("Background on how people in this situation typically behave (for your behaviour only; "
+            "you do not know these as facts and never quote figures or studies):") in users[0]
+    assert "Things you know" not in users[0]
+    assert "Never quote statistics, studies or figures" in SYSTEM_FIXED
+    assert "ordinary member of the public" in SYSTEM_FIXED
+    await m.aclose()
+
+
+def test_situation_reports_position_from_status():
+    d2 = next(s for s in LOADED.area.seats if s.id == "D2")
+    a1 = next(s for s in LOADED.area.seats if s.id == "A1")
+    at_a1 = Status(person="P5", t=0, x=a1.x + 0.1, y=a1.y, yaw=0, posture="seated", progress=0, state="idle")
+    s = render_situation(P5, obs(), at_a1, [], [], 1.0, area=LOADED.area)
+    assert "seated at seat A1" in s and "D2" not in s
+    rf = LOADED.area.landmarks["reception_front"]
+    standing = Status(person="P5", t=0, x=rf.x + 0.2, y=rf.y, yaw=0, posture="standing", progress=0,
+                      state="idle")
+    s = render_situation(P5, obs(), standing, [], [], 1.0, area=LOADED.area)
+    assert "standing at (1.2, 0.6)" in s and "reception_front" in s
+    assert P5.seat == "D2" and d2 is not None
+
+
+def test_persona_card_has_only_starting_seat():
+    card = persona_card(P5, LOADED.area)
+    assert "You arrived and sat at seat D2." in card
+    assert "Your seat" not in card
+
+
+class FlakyEffects(RecordingEffects):
+    def __init__(self):
+        super().__init__()
+        self.fail_next = True
+
+    def publish_intent(self, intent):
+        if self.fail_next:
+            self.fail_next = False
+            raise RuntimeError("publisher gone")
+        super().publish_intent(intent)
+
+
+async def test_node_exception_logs_one_mind_error(build):
+    eff = FlakyEffects()
+    m, effects, runlog = build(P5, FakeGateway(), effects=eff)
+    await run_decisions(m, "P5", [10.0])
+    errs = [r for r in runlog.stream("decisions") if r["error"] == "mind_error"]
+    assert len(errs) == 1 and errs[0]["exception"] == "RuntimeError" and not m.pending
+    await run_decisions(m, "P5", [20.0])
+    assert len(effects.intents) == 1
+    assert len([r for r in runlog.stream("decisions") if r["error"] == "mind_error"]) == 1
+    await m.aclose()
+
+
+class BrokenRunLog(RecordingRunLog):
+    def write(self, stream, record):
+        raise OSError("disk full")
+
+
+async def test_runlog_failure_does_not_break_mind(build):
+    calls = []
+
+    def policy(req):
+        calls.append(req)
+        return decision("sit_idle")
+
+    m, effects, runlog = build(P5, FakeGateway(policy=policy), runlog=BrokenRunLog())
+    await run_decisions(m, "P5", [10.0])
+    assert not m.pending
+    await run_decisions(m, "P5", [20.0])
+    assert len(calls) == 2 and not m.pending
+    await m.aclose()
+
+
+async def test_memory_saver_fallback_warns(build, caplog):
+    m, effects, runlog = build(P5, FakeGateway(), checkpointer=None)
+    with caplog.at_level("WARNING", logger="wardzero_agents.mind.runtime"):
+        await run_decisions(m, "P5", [10.0, 20.0])
+    warns = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert len(warns) == 1 and "P5" in warns[0].getMessage()
+    await m.aclose()

@@ -3,11 +3,21 @@ from __future__ import annotations
 
 from typing import Optional, get_args
 
+import math
+
 from ..config.models import PersonInstance, WaitingArea
 from ..contracts import Heard, IntentKind, Nudge, Observation, Seen, Status
 
 INTENT_KINDS: list[str] = list(get_args(IntentKind))
 MOODS: list[str] = ["calm", "anxious", "frustrated", "distressed"]
+MAX_MEMORIES = 3
+SEAT_MATCH_M = 0.6  # a seated person this close to a seat is "at" that seat
+NEAR_LANDMARK_M = 1.5
+
+KB_HEADER = (
+    "Background on how people in this situation typically behave (for your behaviour only; you do "
+    "not know these as facts and never quote figures or studies):"
+)
 
 _INTENT_HELP = {
     "sit_idle": "sit and wait quietly",
@@ -39,6 +49,7 @@ SYSTEM_FIXED = (
     "Most of the time people in a waiting room say nothing.\n"
     "- You only know what the situation tells you. Do not invent things you have not seen, heard "
     "or remembered.\n"
+    "- Never quote statistics, studies or figures. Speak as an ordinary member of the public.\n"
     "- Lines starting ROBOT SAID TO YOU are the reception robot speaking to you. Lines starting "
     "NUDGE are a feeling or need you have right now; act on them in character.\n"
     "- mood is how you feel after this turn; patience_delta (between -1 and 1) is how much your "
@@ -48,7 +59,7 @@ SYSTEM_FIXED = (
 
 SUMMARY_FIXED = (
     "You keep the long-term memory of one person in a UK hospital waiting area. Given their "
-    "recent events, write at most three short first-person memories worth keeping for a later "
+    f"recent events, write at most {MAX_MEMORIES} short first-person memories worth keeping for a later "
     "visit (what they learned, how they were treated, what the robot did). importance is between "
     "0 and 1. Return an empty list if nothing is worth keeping."
 )
@@ -130,7 +141,7 @@ def persona_card(inst: PersonInstance, area: WaitingArea) -> str:
     ]
     if inst.companion_of:
         lines.append(f"You are here with {inst.companion_of} and are looking after them.")
-    lines.append(f"Your seat: {inst.seat}." if inst.seat else "You do not have a seat yet.")
+    lines.append(f"You arrived and sat at seat {inst.seat}." if inst.seat else "You arrived without a seat.")
     lines.append("Places in the waiting area (id: description):")
     lines += [f"- {lid}: {lm.label}" for lid, lm in area.landmarks.items()]
     lines.append("Seat ids: " + ", ".join(s.id for s in area.seats) + ".")
@@ -180,14 +191,30 @@ def _heard_line(h: Heard) -> str:
     return "An alarm is sounding."
 
 
+def _where(status: Status, area: Optional[WaitingArea]) -> str:
+    """Where the person is now, from Status: a seat id when seated at a known seat, else a position."""
+    if area is None:
+        return f"You are {status.posture}."
+    if status.posture == "seated":
+        seat = min(area.seats, key=lambda s: math.hypot(s.x - status.x, s.y - status.y), default=None)
+        if seat is not None and math.hypot(seat.x - status.x, seat.y - status.y) <= SEAT_MATCH_M:
+            return f"You are seated at seat {seat.id}."
+    near = min(area.landmarks.items(), key=lambda kv: math.hypot(kv[1].x - status.x, kv[1].y - status.y),
+               default=None)
+    out = f"You are {status.posture} at ({status.x:.1f}, {status.y:.1f})"
+    if near is not None and math.hypot(near[1].x - status.x, near[1].y - status.y) <= NEAR_LANDMARK_M:
+        out += f", near {near[0]} ({near[1].label})"
+    return out + "."
+
+
 def render_situation(inst: PersonInstance, obs: Observation, status: Status, triggers: list[str],
                      nudges: list[Nudge], clock_min: float, *, mood: str = "calm",
-                     patience_left: float = 1.0, current_intent: Optional[dict] = None) -> str:
+                     patience_left: float = 1.0, current_intent: Optional[dict] = None,
+                     area: Optional[WaitingArea] = None) -> str:
     """What this person perceives now. Nudges come last, one per line."""
     m = round(clock_min)
     lines = [f"You have been waiting about {m} minute{'' if m == 1 else 's'}."]
-    where = f" at seat {inst.seat}" if status.posture == "seated" and inst.seat else ""
-    lines.append(f"You are {status.posture}{where}.")
+    lines.append(_where(status, area))
     if current_intent:
         target = f" {current_intent['target']}" if current_intent.get("target") else ""
         state = current_intent.get("state") or status.state

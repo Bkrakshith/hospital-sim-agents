@@ -12,8 +12,8 @@ from langgraph.graph import END, START, StateGraph
 from ..contracts import Intent, Nudge, Observation, Say, Status
 from ..llm.gateway import LLMRequest
 from .prompts import (
-    DECISION_SCHEMA, INTENT_KINDS, MOODS, SUMMARY_FIXED, SUMMARY_SCHEMA, SYSTEM_FIXED, persona_card,
-    render_situation)
+    DECISION_SCHEMA, INTENT_KINDS, KB_HEADER, MAX_MEMORIES, MOODS, SUMMARY_FIXED, SUMMARY_SCHEMA,
+    SYSTEM_FIXED, persona_card, render_situation)
 
 if TYPE_CHECKING:
     from ..config.models import Sign, WaitingArea
@@ -21,12 +21,13 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
-SHORT_TERM_CAP = 30
+SUMMARY_AT_LINES = 30  # summarise once short-term memory holds this many lines
+SHORT_TERM_CAP = 60  # hard cap while summaries keep failing
 SHORT_TERM_KEEP = 5
 SUMMARY_EVERY_S = 300.0
+SUMMARY_RETRY_S = 60.0  # back-off after a failed summary call
 KB_K = 4
 LTM_K = 5
-MAX_MEMORIES = 5
 NEEDS_TARGET = {"walk_to", "approach", "sit_down", "read_sign", "look_at"}
 
 
@@ -45,6 +46,7 @@ class MindState(TypedDict, total=False):
     decision: Optional[dict]
     error: Optional[str]
     last_summary_t: float
+    summary_retry_t: float  # no summary before this time (set after a failed summary call)
 
 
 def _is_number(v: Any) -> bool:
@@ -152,7 +154,8 @@ def build_graph(deps: "MindDeps", checkpointer: Any = None):
         mood = state.get("mood", "calm")
         patience = state.get("patience_left", 1.0)
         situation = render_situation(inst, obs, status, state["triggers"], nudges, frame["clock_min"],
-                                     mood=mood, patience_left=patience, current_intent=current)
+                                     mood=mood, patience_left=patience, current_intent=current,
+                                     area=loaded.area)
         return {"situation": situation, "current_intent": current, "mood": mood,
                 "patience_left": patience, "short_term": state.get("short_term", []),
                 "last_summary_t": state.get("last_summary_t", state["t"]),
@@ -175,7 +178,7 @@ def build_graph(deps: "MindDeps", checkpointer: Any = None):
     def user_text(state: MindState) -> str:
         out = []
         if state.get("kb_hits"):
-            out.append("Things you know about hospitals like this:")
+            out.append(KB_HEADER)
             out += ["- " + h.strip().replace("\n", "\n  ") for h in state["kb_hits"]]
         if state.get("ltm_hits"):
             out.append("Things you remember:")
@@ -234,33 +237,40 @@ def build_graph(deps: "MindDeps", checkpointer: Any = None):
                          user="Recent events (oldest first):\n" + "\n".join(f"- {x}" for x in lines),
                          schema=SUMMARY_SCHEMA)
         res = await deps.gateway.complete(req)
-        written: list[dict] = []
-        error = res.error
-        if res.ok:
-            mems = res.data.get("memories") if isinstance(res.data, dict) else None
-            if not isinstance(mems, list):
-                error = "invalid_decision"
-                mems = []
+        mems = res.data.get("memories") if res.ok and isinstance(res.data, dict) else None
+        record = {"t": t, "person": person, "lines": len(lines), "memories": [], "error": res.error,
+                  "exception": None, "model": res.model, "latency_s": res.latency_s}
+        if not isinstance(mems, list):
+            # The summary call failed: keep the events and try again after a back-off.
+            record["error"] = res.error or "invalid_summary"
+            deps.runlog.write("summaries", record)
+            return {"last_summary_t": t, "summary_retry_t": t + SUMMARY_RETRY_S}
+        try:
             for m in mems[:MAX_MEMORIES]:
                 if not isinstance(m, dict) or not isinstance(m.get("text"), str) or not m["text"].strip():
                     continue
+                text = m["text"].strip()
                 imp = _clamp01(float(m["importance"])) if _is_number(m.get("importance")) else 0.5
                 if deps.ltm is not None:
                     await asyncio.to_thread(deps.ltm.add, inst.memory_key, deps.run_id, t, "episode",
-                                            m["text"].strip(), imp)
-                written.append({"text": m["text"].strip(), "importance": imp})
-        deps.runlog.write("summaries", {"t": t, "person": person, "lines": len(lines),
-                                        "memories": written, "error": error, "model": res.model,
-                                        "latency_s": res.latency_s})
-        # On failure the older lines are dropped too, so a broken summariser cannot stall every decision.
+                                            text, imp)
+                record["memories"].append({"text": text, "importance": imp})
+        except Exception as exc:
+            # The summary itself worked, so trim anyway; retrying would only repeat the same call.
+            log.error("%s: writing long-term memory failed: %s", person, type(exc).__name__)
+            record["error"], record["exception"] = "ltm_write_failed", type(exc).__name__
+        deps.runlog.write("summaries", record)
         return {"short_term": lines[-SHORT_TERM_KEEP:], "last_summary_t": t}
 
     def after_decide(state: MindState) -> str:
         return "act" if state.get("decision") else "keep"
 
     def after_remember(state: MindState) -> str:
-        due = (len(state.get("short_term", [])) >= SHORT_TERM_CAP
-               or state["t"] - state.get("last_summary_t", state["t"]) >= SUMMARY_EVERY_S)
+        t = state["t"]
+        if t < state.get("summary_retry_t", float("-inf")):
+            return END
+        due = (len(state.get("short_term", [])) >= SUMMARY_AT_LINES
+               or t - state.get("last_summary_t", t) >= SUMMARY_EVERY_S)
         return "summarise" if due else END
 
     g = StateGraph(MindState)
