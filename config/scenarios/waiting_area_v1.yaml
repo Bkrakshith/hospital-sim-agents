@@ -1,0 +1,13 @@
+id: waiting_area_v1
+area: waiting_area
+duration_min: 60
+seed: 7
+provider: claude
+storyboard: ../storyboards/waiting_area_day.yaml
+deck: ../cards/starter.yaml
+cast:
+  - {id: P1, persona: coughing_adult, seat: B2}
+  - {id: P2, persona: coughing_older_adult, seat: C1}
+  - {id: P3, persona: companion, seat: C2, companion_of: P2}
+  - {id: P4, persona: older_outpatient_stick, seat: A3}
+  - {id: P5, persona: anxious_first_timer, seat: D2}

@@ -1,0 +1,8 @@
+# Placeholder poses. Plan 2 replaces them with poses exported from the hospital USD.
+signs:
+  - {id: sign_reception, text: "Reception", x: 1.7, y: 4.3, z: 2.4, facing_yaw: -1.5708, placeholder: true}
+  - {id: sign_clinics, text: "Outpatient clinics 1-6 →", x: 5.0, y: 2.0, z: 2.3, facing_yaw: -1.5708, placeholder: true}
+  - {id: sign_wards, text: "Wards A-D and lifts →", x: 10.5, y: 6.0, z: 2.3, facing_yaw: -1.5708, placeholder: true}
+  - {id: sign_toilets, text: "← Toilets", x: -9.5, y: 1.8, z: 2.3, facing_yaw: 0.0, placeholder: true}
+  - {id: sign_exit, text: "Way out", x: -1.2, y: -2.4, z: 2.6, facing_yaw: 1.5708, placeholder: true}
+  - {id: sign_wait, text: "Please take a seat. You will be called.", x: -6.3, y: 1.9, z: 2.0, facing_yaw: -1.5708, placeholder: true}

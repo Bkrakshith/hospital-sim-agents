@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "wardzero-agents"
+version = "0.1.0"
+description = "LLM-driven simulated hospital visitors for the WardZero hospital simulator"
+requires-python = ">=3.10"
+dependencies = [
+    "anthropic>=1.0",
+    "openai>=1.40",
+    "langgraph",
+    "langgraph-checkpoint-sqlite",
+    "pydantic>=2",
+    "pyyaml",
+    "numpy",
+    "aiohttp",
+    "keyring",
+]
+
+[project.optional-dependencies]
+embed = ["fastembed"]
+test = ["pytest>=8", "pytest-asyncio"]
+
+[project.scripts]
+hhumans = "wardzero_agents.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["wardzero_agents*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+# ROS 2 Humble ships pytest plugins that break pytest 8+; they are not needed here
+addopts = "-p no:launch_ros -p no:launch_testing"
+testpaths = ["tests"]
+markers = ["ros: needs a sourced ROS 2 Humble environment"]

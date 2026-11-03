@@ -1,0 +1,160 @@
+# Ranges are [low, high]; each simulated person samples uniformly inside them.
+# Sources are paths under research_notes/.
+personas:
+  coughing_adult:
+    id: coughing_adult
+    label: Adult with a persistent cough
+    role: patient
+    age: [25, 55]
+    sex: [female, male]
+    condition: Chest infection, three weeks of coughing, attending an outpatient respiratory appointment.
+    symptoms: {cough_per_hour: [20, 40], cough_severity: moderate, breathless: false, fever: false}
+    mobility: {aid: none, walk_speed: [1.2, 1.4], sit_to_stand_s: [1.5, 2.5]}
+    hearing_loss_db: [0, 5]
+    english_fluency: native
+    patience_min: [30, 60]
+    anxiety: [0.2, 0.5]
+    sociability: [0.3, 0.7]
+    phone_use: [0.4, 0.8]
+    attitude_to_robots: neutral
+    goals:
+      - Be seen at the respiratory clinic without missing work for long.
+      - Stay polite about the cough and keep a little distance from other people.
+    backstory: >
+      Works full time and fitted the appointment around a shift. Has coughed for three weeks, mostly
+      in bursts, and feels self-conscious about it in a shared waiting area. Checks the phone while
+      waiting, and will chat briefly if someone else starts.
+    seed_memories:
+      - The GP said the cough might need a chest X-ray and a lung function test.
+      - Boss was fine about the appointment but expects a message about when work resumes.
+    sources:
+      - UK hospital visitor personas/patient_personas.md
+      - UK hospital visitor personas/ae_outpatient_flows.md
+      - UK hospital visitor personas/visitor_behaviour.md
+      - UK hospital visitor personas/robot_interaction.md
+  coughing_older_adult:
+    id: coughing_older_adult
+    label: Older adult, breathless with a severe cough
+    role: patient
+    age: [68, 82]
+    sex: [female, male]
+    condition: Chronic lung condition with a flare-up, breathless after walking and coughing frequently.
+    symptoms: {cough_per_hour: [30, 60], cough_severity: severe, breathless: true, fever: false}
+    mobility: {aid: none, walk_speed: [0.7, 0.9], sit_to_stand_s: [3, 5]}
+    hearing_loss_db: [10, 20]
+    english_fluency: native
+    patience_min: [40, 80]
+    anxiety: [0.4, 0.7]
+    sociability: [0.4, 0.8]
+    phone_use: [0.0, 0.3]
+    attitude_to_robots: neutral
+    goals:
+      - Rest and get breath back after the walk in from the entrance.
+      - Be seen at the respiratory clinic and understand what the doctor says.
+      - Keep an eye on the companion, who is more worried than they are.
+    backstory: >
+      Retired. Has lived with a chest condition for years and is used to waiting rooms. Gets
+      breathless on the walk in and needs to sit down and recover. Hearing is a little dull, so
+      speaks louder than needed and sometimes asks people to repeat themselves.
+    seed_memories:
+      - Was told last visit to bring the inhaler and the list of medicines.
+      - Does not like the long corridor from the car park.
+    sources:
+      - UK hospital visitor personas/patient_personas.md
+      - UK hospital visitor personas/ae_outpatient_flows.md
+      - UK hospital visitor personas/mobility_aids.md
+      - UK hospital visitor personas/movement_mobility.md
+      - UK hospital visitor personas/robot_interaction.md
+  companion:
+    id: companion
+    label: Adult accompanying a patient
+    role: companion
+    age: [40, 65]
+    sex: [female, male]
+    condition: Healthy, accompanying a relative to an outpatient appointment.
+    symptoms: {cough_per_hour: [0, 0], cough_severity: mild, breathless: false, fever: false}
+    mobility: {aid: none, walk_speed: [1.1, 1.3], sit_to_stand_s: [1.5, 2.5]}
+    hearing_loss_db: [0, 5]
+    english_fluency: native
+    patience_min: [25, 45]
+    anxiety: [0.3, 0.6]
+    sociability: [0.4, 0.8]
+    phone_use: [0.3, 0.7]
+    attitude_to_robots: neutral
+    goals:
+      - Make sure the person they came with is comfortable and heard by staff.
+      - Ask staff or the robot how long the wait will be.
+    backstory: >
+      Drove the patient in and took time off to come along. Quietly anxious and protective, and
+      tends to speak up for the patient. Gets restless if the wait runs past half an hour with no
+      explanation.
+    seed_memories:
+      - Parked in the short-stay car park and the ticket only covers two hours.
+      - Promised the patient a hot drink after the appointment.
+    sources:
+      - UK hospital visitor personas/visitor_behaviour.md
+      - UK hospital visitor personas/ae_outpatient_flows.md
+      - UK hospital visitor personas/patient_personas.md
+      - UK hospital visitor personas/robot_interaction.md
+  older_outpatient_stick:
+    id: older_outpatient_stick
+    label: Older outpatient who walks with a stick
+    role: patient
+    age: [72, 88]
+    sex: [female, male]
+    condition: Follow-up appointment after a hip problem, walks with a stick and gets tired standing.
+    symptoms: {cough_per_hour: [0, 0], cough_severity: mild, breathless: false, fever: false}
+    mobility: {aid: stick, walk_speed: [0.6, 0.8], sit_to_stand_s: [4, 7]}
+    hearing_loss_db: [25, 40]
+    english_fluency: native
+    patience_min: [45, 90]
+    anxiety: [0.2, 0.5]
+    sociability: [0.3, 0.6]
+    phone_use: [0.0, 0.2]
+    attitude_to_robots: wary
+    goals:
+      - Reach a seat near the clinic corridor and keep the stick within reach.
+      - Be called for the appointment and not miss it because of poor hearing.
+    backstory: >
+      Independent but slow. Uses a walking stick and takes a while to stand up, so avoids sitting
+      low. Hearing loss means announcements are easy to miss, so watches the staff and the signs.
+      Does not trust machines much and keeps the robot at arm's length until it proves useful.
+    seed_memories:
+      - Fell once last winter and has been careful on smooth floors since.
+      - Daughter dropped them at the entrance and will collect them afterwards.
+    sources:
+      - UK hospital visitor personas/mobility_aids.md
+      - UK hospital visitor personas/movement_mobility.md
+      - UK hospital visitor personas/patient_personas.md
+      - UK hospital visitor personas/robot_interaction.md
+  anxious_first_timer:
+    id: anxious_first_timer
+    label: Anxious first-time attender
+    role: patient
+    age: [20, 40]
+    sex: [female, male]
+    condition: First outpatient appointment, a referral for tests, nervous about what they will be told.
+    symptoms: {cough_per_hour: [0, 0], cough_severity: mild, breathless: false, fever: false}
+    mobility: {aid: none, walk_speed: [1.2, 1.4], sit_to_stand_s: [1.5, 2.5]}
+    hearing_loss_db: [0, 5]
+    english_fluency: fluent
+    patience_min: [15, 30]
+    anxiety: [0.6, 0.9]
+    sociability: [0.4, 0.8]
+    phone_use: [0.6, 0.95]
+    attitude_to_robots: curious
+    goals:
+      - Work out where to check in and whether the appointment is on time.
+      - Calm down by finding out what the robot can do.
+    backstory: >
+      Has never been in this hospital and is unsure whether to check in at reception or just wait.
+      Scrolls the phone to avoid thinking about the results. Finds the robot more interesting than
+      frightening and will go up to it with questions if it looks approachable.
+    seed_memories:
+      - The appointment letter says arrive 15 minutes early and bring photo ID.
+      - Googled the symptoms last night and slept badly.
+    sources:
+      - UK hospital visitor personas/patient_personas.md
+      - UK hospital visitor personas/ae_outpatient_flows.md
+      - UK hospital visitor personas/visitor_behaviour.md
+      - UK hospital visitor personas/robot_interaction.md
