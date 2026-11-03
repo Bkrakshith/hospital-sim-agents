@@ -313,3 +313,14 @@ def test_unknown_person_raises_value_error():
         w.cough("ZZ", "mild", 0)
     with pytest.raises(ValueError, match="unknown person 'ZZ'"):
         w.apply_intent(I("walk_to", person="ZZ", target="entrance"))
+
+
+def test_person_exit_unknown_or_gone_is_tolerated(caplog):
+    w = make()
+    with caplog.at_level("WARNING"):
+        assert w.apply_world_event(WorldEvent(id="a", t=1, kind="person_exit", person="P9")) == []
+    assert "P9" in caplog.text
+    w.apply_intent(I("leave", target="entrance"))
+    step_until(w, 120.0)
+    assert st(w, "P5").posture == "gone"
+    assert w.apply_world_event(WorldEvent(id="b", t=2, kind="person_exit", person="P5")) == []

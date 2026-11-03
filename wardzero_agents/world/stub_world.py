@@ -6,9 +6,9 @@ wrap it now and Isaac can replace it in Plan 2.
 
 Deviations from the task brief's signatures:
   * apply_intent returns list[AudioEvent] (cough and talk produce audio, all others return []).
-  * Wet-floor signs are omni-directional: the sign is stored with facing_yaw towards the nearest
-    person (or 0), but observation() re-faces every wet-floor sign towards the viewer, so it is
-    readable from any side without changing the shared Sign schema.
+  * Wet-floor signs are omni-directional: the sign is stored with facing_yaw 0, and
+    observation() re-faces every wet-floor sign towards the viewer, so it is readable from any
+    side without changing the shared Sign schema.
 """
 from __future__ import annotations
 
@@ -449,6 +449,10 @@ class StubWorld:
                 log.warning("arrival ignored: unknown persona '%s'", persona)
             return []
         if ev.kind == "person_exit" and ev.person:
+            q = self.people.get(ev.person)
+            if q is None or q.posture == "gone":
+                log.warning("person_exit ignored: '%s' is unknown or already gone", ev.person)
+                return []
             self.apply_intent(
                 Intent(id=f"exit_{ev.id}", person=ev.person, t=ev.t, kind="leave", target=self.loaded.area.entrance)
             )
