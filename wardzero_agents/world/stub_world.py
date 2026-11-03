@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 import math
+import re
 import uuid
 from dataclasses import dataclass, field
 from typing import Optional
@@ -46,6 +47,22 @@ INSTANT = ("sit_idle", "use_phone", "wait_standing", "read_sign", "gesture")
 EPS = 1e-9
 
 log = logging.getLogger(__name__)
+
+
+def spawned_instance(loaded: LoadedScenario, pid: str, persona_id: str) -> PersonInstance:
+    """The instance of spawned person N<n>, exactly as StubWorld.spawn samples it.
+
+    Other processes (the agent service) rebuild a newcomer from its roster entry with this.
+    """
+    m = re.fullmatch(r"N([1-9][0-9]*)", pid)
+    if m is None:
+        raise ValueError(f"'{pid}' is not a spawned person id (N1, N2, ...)")
+    if persona_id not in loaded.personas:
+        raise ValueError(f"unknown persona '{persona_id}'")
+    n = int(m.group(1))
+    seed = loaded.scenario.seed * 1000 + 100 + n
+    cast = CastEntry(id=pid, persona=persona_id, seed=seed)
+    return sample_instance(loaded.personas[persona_id], cast, loaded.scenario.seed, n)
 
 
 @dataclass
@@ -413,12 +430,8 @@ class StubWorld:
         if persona_id not in self.loaded.personas:
             raise ValueError(f"unknown persona '{persona_id}'")
         self._spawned += 1
-        n = self._spawned
-        pid = f"N{n}"
-        seed = self.loaded.scenario.seed * 1000 + 100 + n
-        cast = CastEntry(id=pid, persona=persona_id, seed=seed)
-        inst = sample_instance(self.loaded.personas[persona_id], cast, self.loaded.scenario.seed, n)
-        self.people[pid] = self._at_entrance(inst)
+        pid = f"N{self._spawned}"
+        self.people[pid] = self._at_entrance(spawned_instance(self.loaded, pid, persona_id))
         return pid
 
     def apply_world_event(self, ev: WorldEvent) -> list[AudioEvent]:

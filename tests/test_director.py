@@ -319,3 +319,11 @@ def test_missing_target_skip_cascades():
 def test_chaos_cap_of_three_per_tick():
     c = Chaos(3600.0 * 100, LS.deck, 3)
     assert len(c.tick(100.0, view(t=100.0))) == 3
+
+
+def test_chaos_started_late_does_not_fire_a_backlog():
+    late, base = Chaos(6.0, LS.deck, 7, t0=3600.0), Chaos(6.0, LS.deck, 7)
+    assert late.tick(3600.0, view(t=3600.0)) == []
+    a = [(f.t, f.card) for s in range(3600, 3 * 3600, 10) for f in late.tick(float(s), view(t=float(s)))]
+    b = [(f.t + 3600.0, f.card) for s in range(0, 2 * 3600, 10) for f in base.tick(float(s), view(t=float(s)))]
+    assert a and a == b

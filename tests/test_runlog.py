@@ -138,3 +138,31 @@ def test_exact_script_ties_across_streams(tmp_path):
     for s in ("cards", "audio", "status"):
         rl.write(s, {"t": 1.0})
     assert [n for n, _ in ExactScript(tmp_path).due(1.0)] == ["status", "audio", "cards"]
+
+
+def test_run_tail_reads_only_complete_new_lines(tmp_path):
+    from wardzero_agents.runlog import RunTail
+    log = RunLog(tmp_path)
+    tail = RunTail(tmp_path, ("says", "tokens"))
+    assert tail.poll() == []
+    log.write("says", {"t": 1.0, "person": "P1", "text": "hi"})
+    with open(tmp_path / "tokens.jsonl", "a") as f:
+        f.write('{"t": 2.0, "cost_usd": 0.5}\n{"t": 3.0, "cost')
+    got = tail.poll()
+    assert got == [("says", {"t": 1.0, "person": "P1", "text": "hi"}), ("tokens", {"t": 2.0, "cost_usd": 0.5})]
+    with open(tmp_path / "tokens.jsonl", "a") as f:
+        f.write('_usd": 0.25}\n')
+    assert tail.poll() == [("tokens", {"t": 3.0, "cost_usd": 0.25})]
+    assert tail.poll() == []
+
+
+def test_scripts_report_last_t_and_exhausted(tmp_path):
+    log = RunLog(tmp_path)
+    for t in (3.0, 1.0):
+        log.write("status", {"t": t, "person": "P1"})
+    s = ExactScript(tmp_path)
+    assert s.last_t == 3.0 and not s.exhausted
+    s.due(2.0)
+    assert not s.exhausted
+    s.due(3.0)
+    assert s.exhausted and ExactScript(tmp_path / "none").last_t == 0.0

@@ -49,6 +49,14 @@ class _Script:
         self._items = sorted(items, key=lambda x: x[0])  # stable
         self._i = 0
 
+    @property
+    def last_t(self) -> float:
+        return self._items[-1][0] if self._items else 0.0
+
+    @property
+    def exhausted(self) -> bool:
+        return self._i >= len(self._items)
+
     def due(self, t: float) -> list:
         out = []
         while self._i < len(self._items) and self._items[self._i][0] <= t:

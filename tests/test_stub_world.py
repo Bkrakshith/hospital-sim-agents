@@ -324,3 +324,14 @@ def test_person_exit_unknown_or_gone_is_tolerated(caplog):
     step_until(w, 120.0)
     assert st(w, "P5").posture == "gone"
     assert w.apply_world_event(WorldEvent(id="b", t=2, kind="person_exit", person="P5")) == []
+
+
+def test_spawned_instance_matches_the_world_spawn():
+    from wardzero_agents.world.stub_world import spawned_instance
+    w = make()
+    w.spawn("anxious_first_timer", 1.0)
+    w.spawn("companion", 2.0)
+    assert spawned_instance(w.loaded, "N2", "companion") == inst(w, "N2")
+    assert spawned_instance(w.loaded, "N1", "anxious_first_timer") == inst(w, "N1")
+    with pytest.raises(ValueError):
+        spawned_instance(w.loaded, "P9", "companion")

@@ -134,9 +134,10 @@ def _area_text(loaded: "LoadedScenario") -> str:
     return "\n".join(lines)
 
 
-def build_default_kb(
-    hg1_root: Path, loaded: "LoadedScenario", embedder: Embedder, max_chars: int = 1200
-) -> KnowledgeBase:
+def _default_chunks(
+    hg1_root: Path, loaded: "LoadedScenario", max_chars: int = 1200
+) -> tuple[list[Chunk], str]:
+    """The default KB's chunks and its sources hash, without embedding anything."""
     root = Path(hg1_root)
     chunks: list[Chunk] = []
     pairs: list[tuple[str, str]] = []
@@ -156,4 +157,16 @@ def build_default_kb(
     area = _area_text(loaded)
     synthetic.append(area)
     chunks.append(Chunk("<area>#0", "<area>", ["waiting area"], area, []))
-    return KnowledgeBase.build(chunks, embedder, _hash_sources(pairs, synthetic, max_chars))
+    return chunks, _hash_sources(pairs, synthetic, max_chars)
+
+
+def default_kb_sha256(hg1_root: Path, loaded: "LoadedScenario", max_chars: int = 1200) -> str:
+    """The sources_sha256 that build_default_kb would give now: compare it with a saved index."""
+    return _default_chunks(hg1_root, loaded, max_chars)[1]
+
+
+def build_default_kb(
+    hg1_root: Path, loaded: "LoadedScenario", embedder: Embedder, max_chars: int = 1200
+) -> KnowledgeBase:
+    chunks, sha = _default_chunks(hg1_root, loaded, max_chars)
+    return KnowledgeBase.build(chunks, embedder, sha)

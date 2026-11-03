@@ -236,3 +236,14 @@ def test_url_keeps_balanced_parentheses(tmp_path):
     md = "# A\nsee https://en.wikipedia.org/wiki/Foo_(bar) and [x](https://a.org/b), also (https://c.org/d).\n"
     c = chunk_markdown(write(tmp_path, md), tmp_path)[0]
     assert c.links == ["https://en.wikipedia.org/wiki/Foo_(bar)", "https://a.org/b", "https://c.org/d"]
+
+
+def test_default_kb_sha256_matches_build_without_embedding(tmp_path):
+    from wardzero_agents.kb.index import default_kb_sha256
+    (tmp_path / "research_notes").mkdir()
+    (tmp_path / "research_notes" / "a.md").write_text("# A\n\nWaiting rooms are busy.\n")
+    loaded = load_scenario(V1)
+    built = build_default_kb(tmp_path, loaded, HashEmbedder())
+    assert default_kb_sha256(tmp_path, loaded) == built.sources_sha256
+    (tmp_path / "research_notes" / "a.md").write_text("# A\n\nWaiting rooms are quiet.\n")
+    assert default_kb_sha256(tmp_path, loaded) != built.sources_sha256

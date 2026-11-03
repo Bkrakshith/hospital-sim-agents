@@ -11,12 +11,13 @@ MAX_PER_TICK = 3
 
 
 class Chaos:
-    def __init__(self, rate_per_hour: float, deck: dict[str, CardDef], seed: int):
+    def __init__(self, rate_per_hour: float, deck: dict[str, CardDef], seed: int, t0: float = 0.0):
+        """t0 is when the process starts (a chaos switched on mid-run draws its first gap from then)."""
         self.rate = rate_per_hour
         self.deck = deck
         self.rng = np.random.default_rng(seed)
         self._n = 0
-        self._next = self._gap() if rate_per_hour > 0 else float("inf")
+        self._next = t0 + self._gap() if rate_per_hour > 0 else float("inf")
 
     def _gap(self) -> float:
         return float(self.rng.exponential(3600.0 / self.rate))
