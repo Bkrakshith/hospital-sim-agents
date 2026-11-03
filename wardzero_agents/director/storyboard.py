@@ -72,8 +72,7 @@ class StoryboardEngine:
             if self._state[beat.id] != "pending" or not self._ready(beat, view):
                 continue
             if beat.target is not None and beat.target not in view.present:
-                self._state[beat.id] = "skipped"
-                self._reason[beat.id] = f"target {beat.target} is not in the room"
+                self._mark_skipped(beat.id, f"target {beat.target} is not in the room")
                 continue
             self._n += 1
             self._state[beat.id] = "fired"
@@ -87,8 +86,17 @@ class StoryboardEngine:
     def skip(self, beat_id: str) -> None:
         if beat_id not in self._state:
             raise KeyError(beat_id)
+        self._mark_skipped(beat_id, "skipped by operator")
+
+    def _dependents(self, beat_id: str) -> list[str]:
+        return [b.id for b in self.storyboard.beats if b.after == beat_id]
+
+    def _mark_skipped(self, beat_id: str, reason: str) -> None:
         self._state[beat_id] = "skipped"
-        self._reason[beat_id] = "skipped by operator"
+        self._reason[beat_id] = reason
+        for dep in self._dependents(beat_id):
+            if self._state[dep] == "pending":
+                self._mark_skipped(dep, f"predecessor {beat_id} skipped")
 
     def rerun(self, beat_id: str) -> None:
         if beat_id not in self._state:
@@ -97,6 +105,9 @@ class StoryboardEngine:
         self._fired_t[beat_id] = None
         self._fired_tick.pop(beat_id, None)
         self._reason[beat_id] = None
+        for dep in self._dependents(beat_id):
+            if self._state[dep] == "skipped" and (self._reason[dep] or "").startswith("predecessor "):
+                self.rerun(dep)
 
     def timeline(self) -> list[dict]:
         rows = []

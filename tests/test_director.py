@@ -209,9 +209,80 @@ def test_storyboard_cross_checks(tmp_path, edit, msg):
         load_scenario(p)
 
 
-def test_missing_storyboard_and_deck_tolerated(tmp_path):
+def test_missing_files_are_errors(tmp_path):
     p = write_patched(tmp_path, V1, {})
-    (p.parent.parent / "storyboards" / "waiting_area_day.yaml").unlink()
-    (p.parent.parent / "cards" / "starter.yaml").unlink()
-    ls = load_scenario(p)
-    assert ls.storyboard is None and ls.deck is None
+    (p.parent.parent / 'cards' / 'starter.yaml').unlink()
+    with pytest.raises(ConfigError, match='^deck: file not found'):
+        load_scenario(p)
+
+
+def _deck_patch(tmp_path, fn):
+    p = write_patched(tmp_path, V1, {})
+    f = p.parent.parent / "cards" / "starter.yaml"
+    data = yaml.safe_load(f.read_text())
+    fn(data["cards"])
+    f.write_text(yaml.safe_dump(data))
+    return p
+
+
+def _sb_patch(tmp_path, fn):
+    p = write_patched(tmp_path, V1, {})
+    f = p.parent.parent / "storyboards" / "waiting_area_day.yaml"
+    d = yaml.safe_load(f.read_text())
+    fn(d)
+    f.write_text(yaml.safe_dump(d))
+    return p
+
+
+@pytest.mark.parametrize("reflex", [{"severity": "severe"}, {"duration_s": 40}, {"duration_s": 0, "severity": "severe"},
+                                    {"duration_s": 40, "severity": "extreme"}])
+def test_bad_reflex_rejected_at_load(tmp_path, reflex):
+    p = _deck_patch(tmp_path, lambda cs: next(c for c in cs if c["id"] == "coughing_fit").update(reflex=reflex))
+    with pytest.raises(ConfigError, match=r"deck\.coughing_fit\.reflex: "):
+        load_scenario(p)
+
+
+def test_bad_reflex_params_rejected_at_fire():
+    with pytest.raises(CardRejected, match="severity"):
+        executor().execute(firing("coughing_fit", "P2", {"severity": "extreme"}), view(), roster())
+    with pytest.raises(CardRejected, match="duration_s"):
+        executor().execute(firing("coughing_fit", "P2", {"duration_s": -1}), view(), roster())
+
+
+def test_unknown_template_key_rejected_at_load(tmp_path):
+    p = _deck_patch(tmp_path, lambda cs: cs[0].update(nudge="Hello {nme}"))
+    with pytest.raises(ConfigError, match=r"deck\.lost_visitor: unknown template key 'nme'"):
+        load_scenario(p)
+
+
+def test_condition_value_validated_at_load(tmp_path):
+    p = _sb_patch(tmp_path / "a", lambda d: d["beats"][5]["when"].update(value="soon"))
+    with pytest.raises(ConfigError, match=r"beats\[5\]\.when\.value"):
+        load_scenario(p)
+    p = _sb_patch(tmp_path / "b", lambda d: d["beats"][5].update(when={"kind": "posture_is", "person": "P4", "value": "flying"}))
+    with pytest.raises(ConfigError, match=r"beats\[5\]\.when\.value"):
+        load_scenario(p)
+
+
+def test_skip_cascades_to_after_dependents():
+    e = engine()
+    e.skip("b3")
+    tl = {r["id"]: r for r in e.timeline()}
+    assert tl["b4"]["state"] == "skipped" and tl["b4"]["reason"] == "predecessor b3 skipped"
+    e.rerun("b3")
+    tl = {r["id"]: r for r in e.timeline()}
+    assert tl["b3"]["state"] == "pending" and tl["b4"]["state"] == "pending"
+    assert [f.card for f in e.tick(view(t=1200)) if f.card == "name_called"] == ["name_called"]
+    assert [f.card for f in e.tick(view(t=1201)) if f.card == "new_arrival"] == ["new_arrival"]
+
+
+def test_missing_target_skip_cascades():
+    e = engine()
+    e.tick(view(t=1200, present=ALL - {"P1"}))
+    tl = {r["id"]: r for r in e.timeline()}
+    assert tl["b3"]["state"] == "skipped" and tl["b4"]["reason"] == "predecessor b3 skipped"
+
+
+def test_chaos_cap_of_three_per_tick():
+    c = Chaos(3600.0 * 100, LS.deck, 3)
+    assert len(c.tick(100.0, view(t=100.0))) == 3

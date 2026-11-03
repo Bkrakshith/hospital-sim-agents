@@ -70,8 +70,13 @@ class CardExecutor:
         outs: list = []
         if "reflex" in card.channels and card.reflex and target is not None:
             r = {**card.reflex, **{k: params[k] for k in ("duration_s", "severity") if k in params}}
+            d, sev = r.get("duration_s"), r.get("severity")
+            if isinstance(d, bool) or not isinstance(d, (int, float)) or d <= 0:
+                raise CardRejected("reflex duration_s must be a number above 0")
+            if sev not in ("mild", "moderate", "severe"):
+                raise CardRejected("reflex severity must be mild, moderate or severe")
             outs.append(ReflexOverride(person=target, t=firing.t, kind="cough_bout",
-                                       duration_s=float(r["duration_s"]), severity=r["severity"]))
+                                       duration_s=float(d), severity=sev))
         if "nudge" in card.channels:
             if card.target_kind == "all":
                 if card.nudge:

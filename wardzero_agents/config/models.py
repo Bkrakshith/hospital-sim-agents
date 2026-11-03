@@ -166,9 +166,7 @@ class PersonInstance(_Model):
     entrance: Optional[str]
 
 
-
-
-_AT_RE = re.compile(r"^t\+\d{2}:\d{2}$")
+AT_RE = re.compile(r"^t\+\d{2}:\d{2}$")
 
 
 class Condition(_Model):
@@ -190,7 +188,7 @@ class Beat(_Model):
     def _one_trigger(self):
         if sum(x is not None for x in (self.at, self.when, self.after)) != 1:
             raise ValueError("exactly one of at, when, after")
-        if self.at is not None and not _AT_RE.match(self.at):
+        if self.at is not None and not AT_RE.match(self.at):
             raise ValueError(f"at '{self.at}' must look like t+MM:SS")
         return self
 

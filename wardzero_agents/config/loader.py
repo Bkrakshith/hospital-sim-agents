@@ -9,7 +9,7 @@ from typing import Any, Optional
 import yaml
 from pydantic import ValidationError
 
-from .models import CardDef, ModelRoles, Persona, PersonInstance, Scenario, Sign, Storyboard, WaitingArea
+from .models import AT_RE, CardDef, ModelRoles, Persona, PersonInstance, Scenario, Sign, Storyboard, WaitingArea
 from .sampling import sample_instance
 
 
@@ -23,8 +23,8 @@ class LoadedScenario:
     personas: dict[str, Persona]
     area: WaitingArea
     signs: list[Sign]
-    storyboard: Optional[Storyboard]  # None when the scenario's storyboard file is missing
-    deck: Optional[dict[str, CardDef]]  # None when the scenario's deck file is missing
+    storyboard: Storyboard
+    deck: dict[str, CardDef]
     instances: list[PersonInstance]
     root: Path = field(default_factory=Path)
     scenario_path: Path = field(default_factory=Path)
@@ -110,29 +110,30 @@ def _cross_check(scenario: Scenario, personas: dict[str, Persona], area: Waiting
             raise ConfigError(f"{scenario.area}: unknown landmark '{name}'")
 
 
-def _load_deck(path: Path) -> Optional[dict[str, CardDef]]:
-    """Load the card deck. A missing file gives None so partial configs still load."""
+def _load_deck(path: Path) -> dict[str, CardDef]:
+    """Load and check the card deck. A missing file is an error."""
     if not path.exists():
-        return None
+        raise ConfigError(f"deck: file not found: {path}")
     raw = (_read_yaml(path) or {}).get("cards", [])
     deck: dict[str, CardDef] = {}
     for i, entry in enumerate(raw):
         card = _validate(CardDef, entry, path)
         if card.id in deck:
             raise ConfigError(f"deck.cards[{i}].id: duplicate card id '{card.id}'")
+        _check_card(card)
         deck[card.id] = card
     return deck
 
 
-def _load_storyboard(path: Path, deck: Optional[dict[str, CardDef]], scenario: Scenario) -> Optional[Storyboard]:
-    """Load and cross-check the storyboard. A missing file gives None."""
+def _load_storyboard(path: Path, deck: dict[str, CardDef], scenario: Scenario) -> Storyboard:
+    """Load and cross-check the storyboard. A missing file is an error."""
     if not path.exists():
-        return None
+        raise ConfigError(f"storyboard: file not found: {path}")
     raw = _read_yaml(path)
     for i, b in enumerate((raw or {}).get("beats", []) or []):
         if isinstance(b, dict) and sum(b.get(k) is not None for k in ("at", "when", "after")) != 1:
             raise ConfigError(f"storyboard.beats[{i}]: exactly one of at, when, after")
-        if isinstance(b, dict) and b.get("at") is not None and not re.match(r"^t\+\d{2}:\d{2}$", str(b["at"])):
+        if isinstance(b, dict) and b.get("at") is not None and not AT_RE.match(str(b["at"])):
             raise ConfigError(f"storyboard.beats[{i}].at: '{b['at']}' must look like t+MM:SS")
     sb = _validate(Storyboard, raw, path)
     people = {c.id for c in scenario.cast}
@@ -144,12 +145,35 @@ def _load_storyboard(path: Path, deck: Optional[dict[str, CardDef]], scenario: S
             raise ConfigError(f"storyboard.beats[{i}].target: unknown person '{b.target}'")
         if b.when is not None and b.when.person not in people:
             raise ConfigError(f"storyboard.beats[{i}].when.person: unknown person '{b.when.person}'")
-        if deck is not None:
-            if b.card not in deck:
-                raise ConfigError(f"storyboard.beats[{i}].card: unknown card '{b.card}'")
-            if deck[b.card].target_kind == "person" and b.target is None:
-                raise ConfigError(f"storyboard.beats[{i}].target: card '{b.card}' needs a target person")
+        if b.card not in deck:
+            raise ConfigError(f"storyboard.beats[{i}].card: unknown card '{b.card}'")
+        if deck[b.card].target_kind == "person" and b.target is None:
+            raise ConfigError(f"storyboard.beats[{i}].target: card '{b.card}' needs a target person")
+        if b.when is not None:
+            v, kind = b.when.value, b.when.kind
+            if kind == "posture_is":
+                if v not in POSTURES:
+                    raise ConfigError(f"storyboard.beats[{i}].when.value: '{v}' is not a posture")
+            elif isinstance(v, (str, bool)):
+                raise ConfigError(f"storyboard.beats[{i}].when.value: {kind} needs a number")
         if b.after is not None and b.after not in seen:
             raise ConfigError(f"storyboard.beats[{i}].after: '{b.after}' must name an earlier beat")
         seen[b.id] = i
     return sb
+
+
+POSTURES = ("seated", "standing", "walking", "fallen", "gone")
+_KEY_RE = re.compile(r"\{([^{}]*)\}")
+
+
+def _check_card(card: CardDef) -> None:
+    if card.reflex is not None:
+        d, sev = card.reflex.get("duration_s"), card.reflex.get("severity")
+        if isinstance(d, bool) or not isinstance(d, (int, float)) or d <= 0:
+            raise ConfigError(f"deck.{card.id}.reflex: duration_s must be a number above 0")
+        if sev not in ("mild", "moderate", "severe"):
+            raise ConfigError(f"deck.{card.id}.reflex: severity must be mild, moderate or severe")
+    for text in (card.nudge, card.companion_nudge, (card.world or {}).get("text")):
+        for key in _KEY_RE.findall(text or ""):
+            if key not in ("name", "companion") and not (key.startswith("params.") and len(key) > 7):
+                raise ConfigError(f"deck.{card.id}: unknown template key '{key}'")

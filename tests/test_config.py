@@ -94,9 +94,9 @@ def test_persona_sources_exist():
         assert all((HG1_ROOT / "research_notes" / s).exists() for s in p.sources)
 
 
-def test_storyboard_and_deck_tolerated_when_missing():
-    ls = load_scenario(V1)
-    if not (CFG / "storyboards" / "waiting_area_day.yaml").exists():
-        assert ls.storyboard is None
-    if not (CFG / "cards" / "starter.yaml").exists():
-        assert ls.deck is None
+def test_missing_storyboard_or_deck_is_an_error(tmp_path):
+    for sub_dir, name, field in (("storyboards", "waiting_area_day.yaml", "storyboard"), ("cards", "starter.yaml", "deck")):
+        p = write_patched(tmp_path / field, V1, {})
+        (p.parent.parent / sub_dir / name).unlink()
+        with pytest.raises(ConfigError, match=rf"^{field}: file not found: "):
+            load_scenario(p)
