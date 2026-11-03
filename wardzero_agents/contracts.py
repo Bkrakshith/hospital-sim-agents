@@ -1,0 +1,173 @@
+"""wz.v1 JSON contracts for every message that crosses the sim boundary."""
+from __future__ import annotations
+
+import json
+from typing import Literal, Optional, TypeVar
+
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
+
+SCHEMA = "wz.v1"
+
+IntentKind = Literal[
+    "sit_idle",
+    "use_phone",
+    "fidget",
+    "look_at",
+    "read_sign",
+    "stand_up",
+    "sit_down",
+    "walk_to",
+    "approach",
+    "wait_standing",
+    "talk",
+    "gesture",
+    "cough",
+    "leave",
+]
+
+
+class ContractError(ValueError):
+    """Raised when a wz.v1 payload is not valid JSON or fails validation."""
+
+
+class _Envelope(BaseModel):
+    """Common base: every payload carries "schema": "wz.v1" and rejects unknown keys."""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    schema_: Literal["wz.v1"] = Field(SCHEMA, alias="schema")
+
+
+class Intent(_Envelope):
+    id: str
+    person: str
+    t: float
+    kind: IntentKind
+    target: Optional[str] = None
+    point: Optional[tuple[float, float]] = None
+    speed: Optional[float] = None
+    style: Optional[str] = None
+    text: Optional[str] = None
+    addressee: Optional[str] = None
+    overlay: bool = False
+
+
+class Status(_Envelope):
+    person: str
+    t: float
+    x: float
+    y: float
+    yaw: float
+    posture: Literal["seated", "standing", "walking", "fallen", "gone"]
+    intent_id: Optional[str] = None
+    intent_kind: Optional[IntentKind] = None
+    progress: float
+    state: Literal["running", "done", "failed", "idle"]
+    reason: Optional[str] = None
+
+
+class Seen(_Envelope):
+    kind: Literal["person", "robot", "sign", "seat"]
+    id: str
+    distance: float
+    bearing_deg: float
+    detail: Optional[str] = None
+
+
+class Heard(_Envelope):
+    source_kind: Literal["robot", "person", "pa", "cough", "alarm"]
+    source_id: str
+    text: Optional[str] = None
+    received_db: float
+    partial: bool
+    addressed_to_me: bool
+
+
+class Observation(_Envelope):
+    person: str
+    t: float
+    visible: list[Seen] = Field(default_factory=list)
+    heard: list[Heard] = Field(default_factory=list)
+
+
+class AudioEvent(_Envelope):
+    id: str
+    t: float
+    source_kind: str
+    source_id: str
+    x: float
+    y: float
+    z: float
+    loudness_db: float
+    text: Optional[str] = None
+    addressee: Optional[str] = None
+
+
+class Say(_Envelope):
+    person: str
+    t: float
+    text: str
+    addressee: Optional[str] = None
+
+
+class Nudge(_Envelope):
+    person: str
+    t: float
+    card: str
+    message: str
+
+
+class ReflexOverride(_Envelope):
+    person: str
+    t: float
+    kind: Literal["cough_bout"]
+    duration_s: float
+    severity: Literal["mild", "moderate", "severe"]
+
+
+class WorldEvent(_Envelope):
+    id: str
+    t: float
+    kind: Literal["pa_announcement", "alarm", "wet_floor", "arrival", "person_exit"]
+    text: Optional[str] = None
+    x: Optional[float] = None
+    y: Optional[float] = None
+    persona: Optional[str] = None
+    person: Optional[str] = None
+
+
+class RosterEntry(_Envelope):
+    id: str
+    persona: str
+    display_name: str
+    seat: Optional[str] = None
+    companion_of: Optional[str] = None
+
+
+class Roster(_Envelope):
+    t: float
+    people: list[RosterEntry]
+
+
+class Control(_Envelope):
+    action: Literal["start", "pause", "resume", "stop", "reset"]
+
+
+_M = TypeVar("_M", bound=_Envelope)
+
+
+def to_json(model: _Envelope) -> str:
+    """Serialise a contract model to JSON text, using the "schema" key."""
+    return model.model_dump_json(by_alias=True)
+
+
+def from_json(cls: type[_M], text: str) -> _M:
+    """Parse and validate JSON text as cls. Raises ContractError on any failure."""
+    try:
+        data = json.loads(text)
+    except (json.JSONDecodeError, TypeError) as exc:
+        raise ContractError(f"invalid JSON for {cls.__name__}: {exc}") from exc
+    try:
+        return cls.model_validate(data)
+    except ValidationError as exc:
+        raise ContractError(f"invalid {cls.__name__}: {exc}") from exc
