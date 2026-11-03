@@ -159,6 +159,67 @@ def test_log_redaction(caplog):
     assert "[redacted]" in caplog.text
 
 
+def test_log_redaction_exception_and_nonstr_args(caplog):
+    install_log_redaction()
+    log = logging.getLogger("y")
+    try:
+        raise ValueError(ANT)
+    except ValueError:
+        log.exception("failed")
+    log.warning("%s", RuntimeError(ANT))
+    log.warning(RuntimeError(ANT))
+    assert "abcdefghijk" not in caplog.text
+    assert "abcdefghijk" not in "".join(r.getMessage() for r in caplog.records)
+
+
+def test_key_file_missing_names_env(memkeyring, tmp_path, monkeypatch):
+    monkeypatch.setenv("WARDZERO_KEY_FILE", str(tmp_path / "nope.json"))
+    with pytest.raises(KeyMissing, match="WARDZERO_KEY_FILE"):
+        get_key("claude")
+
+
+async def test_check_unrelated_errors_not_key_missing():
+    with pytest.raises(TypeError):
+        await check("claude", FakeClient(TypeError("something else")), "m")
+    with pytest.raises(openai.OpenAIError):
+        await check("openai", FakeClient(openai.OpenAIError("boom")), "m")
+    with pytest.raises(KeyMissing):
+        await check(
+            "openai",
+            FakeClient(openai.OpenAIError("The api_key client option must be set")),
+            "m",
+        )
+
+
+def test_install_hooks_backs_up_existing(tmp_path):
+    repo = tmp_path / "r"
+    (repo / "scripts").mkdir(parents=True)
+    _git(repo, "init", "-q")
+    for n in ("check_secrets.sh", "install_hooks.sh"):
+        (repo / "scripts" / n).write_text((SCRIPT.parent / n).read_text())
+    hook = repo / ".git" / "hooks" / "pre-commit"
+    hook.write_text("#!/bin/sh\necho mine\n")
+    for _ in range(2):
+        subprocess.run(["bash", str(repo / "scripts" / "install_hooks.sh")], check=True, capture_output=True)
+    assert hook.is_symlink()
+    assert (hook.parent / "pre-commit.bak").read_text().endswith("mine\n")
+
+
+def test_check_secrets_rename_and_unicode_name(tmp_path):
+    _git(tmp_path, "init", "-q")
+    (tmp_path / "a.txt").write_text("k=" + ANT + "\n")
+    _git(tmp_path, "add", "a.txt")
+    _git(tmp_path, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "x", "--no-verify")
+    _git(tmp_path, "mv", "a.txt", "b.txt")
+    r = subprocess.run(["bash", str(SCRIPT)], cwd=tmp_path, capture_output=True, text=True)
+    assert r.returncode == 1 and "b.txt" in r.stderr
+    _git(tmp_path, "reset", "-q", "--hard")
+    (tmp_path / "\u00fc key.txt").write_text("k=" + ANT + "\n")
+    _git(tmp_path, "add", "-A")
+    r = subprocess.run(["bash", str(SCRIPT)], cwd=tmp_path, capture_output=True, text=True)
+    assert r.returncode == 1 and "key.txt" in r.stderr
+
+
 @pytest.mark.parametrize("mod,name", [(anthropic, "claude"), (openai, "openai")])
 async def test_check_maps_errors(mod, name):
     err = mod.AuthenticationError("bad", response=_resp(401), body=None)
@@ -184,7 +245,7 @@ async def test_check_no_credentials_is_key_missing():
     with pytest.raises(KeyMissing, match="ant auth login"):
         await check("claude", FakeClient(err), "m")
     with pytest.raises(KeyMissing, match="hhumans keys set openai"):
-        await check("openai", FakeClient(openai.OpenAIError("Missing credentials")), "m")
+        await check("openai", FakeClient(openai.OpenAIError("The api_key client option must be set")), "m")
 
 
 async def test_check_real_anthropic_without_credentials(memkeyring, monkeypatch):

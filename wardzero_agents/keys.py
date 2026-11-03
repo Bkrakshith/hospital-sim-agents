@@ -57,7 +57,9 @@ def _file_key(provider: str) -> str | None:
     try:
         mode = os.stat(path).st_mode
     except OSError:
-        return None
+        raise KeyMissing(
+            "WARDZERO_KEY_FILE is set but the file is missing or unreadable. " + _FIX[provider]
+        ) from None
     if mode & 0o077:
         raise KeyMissing(
             "WARDZERO_KEY_FILE key file must be mode 600 (run `chmod 600` on it). "
@@ -67,7 +69,9 @@ def _file_key(provider: str) -> str | None:
         with open(path, encoding="utf-8") as fh:
             data = json.load(fh)
     except (OSError, ValueError):
-        raise KeyMissing("WARDZERO_KEY_FILE could not be read as JSON. " + _FIX[provider]) from None
+        raise KeyMissing(
+            "WARDZERO_KEY_FILE could not be read as JSON. " + _FIX[provider]
+        ) from None
     value = data.get(provider) if isinstance(data, dict) else None
     return value if isinstance(value, str) and value else None
 
@@ -98,12 +102,12 @@ def make_client(provider: Provider):
     raise ValueError(f"unknown provider {provider!r}")
 
 
-def _no_credentials(exc: BaseException) -> bool:
-    text = str(exc).lower()
-    if isinstance(exc, TypeError):
-        return "authentication" in text or "api_key" in text
-    return isinstance(exc, (anthropic.AnthropicError, openai.OpenAIError)) and (
-        "credentials" in text or "api_key" in text or "authentication method" in text
+def _no_credentials(provider: str, exc: BaseException) -> bool:
+    text = str(exc)
+    if provider == "claude":
+        return isinstance(exc, TypeError) and "authentication" in text.lower()
+    return isinstance(exc, openai.OpenAIError) and (
+        "api_key client option must be set" in text or "Missing credentials" in text
     )
 
 
@@ -120,8 +124,8 @@ async def check(provider: Provider, client: Any, model: str) -> None:
         ) from None
     except mod.APIStatusError:
         raise
-    except (TypeError, anthropic.AnthropicError, openai.OpenAIError) as exc:
-        if _no_credentials(exc):
+    except (TypeError, openai.OpenAIError) as exc:
+        if _no_credentials(provider, exc):
             raise KeyMissing(_FIX[provider]) from None
         raise
 
@@ -135,42 +139,56 @@ def redact(text: str) -> str:
 
 
 def _redact_arg(arg: Any) -> Any:
-    return redact(arg) if isinstance(arg, str) else arg
+    if isinstance(arg, (int, float, bool)) or arg is None:
+        return arg
+    return redact(arg if isinstance(arg, str) else str(arg))
 
 
 class _RedactFilter(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
-        if isinstance(record.msg, str):
-            record.msg = redact(record.msg)
+        record.msg = redact(record.msg if isinstance(record.msg, str) else str(record.msg))
         args = record.args
         if isinstance(args, tuple):
             record.args = tuple(_redact_arg(a) for a in args)
         elif isinstance(args, dict):
             record.args = {k: _redact_arg(v) for k, v in args.items()}
+        if record.exc_info and not record.exc_text:
+            record.exc_text = redact(logging.Formatter().formatException(record.exc_info))
+        elif record.exc_text:
+            record.exc_text = redact(record.exc_text)
+        if record.stack_info:
+            record.stack_info = redact(record.stack_info)
         return True
 
 
 _filter = _RedactFilter()
-_factory_installed = False
+_installed = False
 
 
 def install_log_redaction() -> None:
-    """Redact key-shaped strings from every log record (idempotent).
+    """Redact key-shaped strings from all log output (idempotent).
 
-    A filter on the root logger only sees records logged directly on it, so the
-    record factory is wrapped too; that covers records from every logger.
+    Records are scrubbed at creation (record factory, covers every logger) and the
+    final formatted text, tracebacks included, is scrubbed in Formatter.format.
     """
-    global _factory_installed
+    global _installed
     root = logging.getLogger()
     if _filter not in root.filters:
         root.addFilter(_filter)
-    if not _factory_installed:
-        old = logging.getLogRecordFactory()
+    if _installed:
+        return
+    old_factory = logging.getLogRecordFactory()
 
-        def factory(*a, **kw):
-            record = old(*a, **kw)
-            _filter.filter(record)
-            return record
+    def factory(*a, **kw):
+        record = old_factory(*a, **kw)
+        _filter.filter(record)
+        return record
 
-        logging.setLogRecordFactory(factory)
-        _factory_installed = True
+    logging.setLogRecordFactory(factory)
+    old_format = logging.Formatter.format
+
+    def format(self, record):  # noqa: A001
+        return redact(old_format(self, record))
+
+    logging.Formatter.format = format
+    _installed = True
