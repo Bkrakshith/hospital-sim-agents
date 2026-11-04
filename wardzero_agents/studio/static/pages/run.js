@@ -79,7 +79,7 @@
         selectField("sim", "Simulator", [["isaac", isaac ? "Isaac Sim" : "Isaac Sim (not installed)", !isaac], ["stub", "Quick 2D"]],
           isaac ? "Isaac Sim is the 3D hospital. Quick 2D is a fast stand-in without rendering." : "Isaac Sim is not installed on this computer (set ISAAC_SIM_ROOT), so only Quick 2D is available."),
         onIsaac ? selectField("headed", "Window", [["false", "Headless (preview here)"], ["true", "Headed (Isaac window)"]], null, true) : null,
-        onIsaac ? switchRow("record", "Record the run", "Saves overhead and robot-view videos and a rosbag of the robot. The run is slower than real time.") : null,
+        onIsaac ? switchRow("record", "Record the run", "Saves overhead and robot-view videos and a rosbag of the robot. The run may be slower than real time.") : null,
         onIsaac && p.record ? selectField("record_res", "Video size", [["1280x720", "1280 x 720"], ["1920x1080", "1920 x 1080"]]) : null);
     }
 

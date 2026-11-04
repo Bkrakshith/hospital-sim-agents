@@ -69,7 +69,8 @@ def grab_frames(mp4: Path, stem: str, secs=(1.0, 5.0, 9.0)) -> list:
     out = []
     for t in secs:
         png = OUT / f"{stem}_{t:.0f}s.png"
-        subprocess.run([ffmpeg_exe(), "-y", "-v", "error", "-i", str(mp4), "-ss", str(t), "-frames:v", "1", str(png)]  # seek after decoding: a streamed MP4 has no index,
+        # seek after decoding: a streamed MP4 has no index
+        subprocess.run([ffmpeg_exe(), "-y", "-v", "error", "-i", str(mp4), "-ss", str(t), "-frames:v", "1", str(png)],
                        check=True)
         out.append(png)
     return out
@@ -180,7 +181,7 @@ def check_one_time_base(run: Path, bag: Path) -> dict:
     near = lambda x: min(abs(x - c) for c in clock)  # noqa: E731
     joints = bag_stamps(bag, "/robot/joint_states")
     assert len(joints) >= SECONDS * 25 and all(b > a for a, b in zip(joints, joints[1:])), "joint stamps repeat"  # once a frame
-    assert max(near(x) for x in joints[:-1]) <= 1e-6 and near(joints[-1]) <= frame + 1e-6, "joint stamps are not /clock's"
+    assert max(near(x) for x in joints) <= frame + 1e-6, "joint stamps are on another time base"  # same frame, same base
     info = bag_stamps(bag, "/robot/camera/camera_info")
     assert len(info) >= SECONDS * 4 and all(b > a for a, b in zip(info, info[1:]))
     assert max(near(x) for x in info) <= frame + 1e-6, "camera stamps are on another time base"
