@@ -457,3 +457,75 @@ def test_bed_contact_logged_when_robot_reaches_the_bed_centre_line(tmp_path):
     log = [r for s_, r in w.drain_log()]
     recs = [r for r in log if r.get("kind") == "bed_contact"]
     assert len(recs) == 1 and recs[0]["bed"] == b.id
+
+
+# ---- fix round 2 ----------------------------------------------------------------------------
+def goal_results(outs):
+    return [(r["id"], r["ok"], r["reason"]) for r in results(outs) if r.get("kind") == "goal"]
+
+
+def test_goal_pose_ids_are_unique_and_a_replaced_goal_is_superseded(tmp_path):
+    s, _ = service(tmp_path)
+    place_robot(s.world, 0.46, 1.26, 0.0)
+    s.on_goal(6.0, 1.26, None)
+    advance(s, 0.3)
+    s.on_goal(2.0, 1.26, None)
+    got = goal_results(advance(s, 0.2))
+    assert len(got) == 1 and got[0][1:] == (False, "superseded") and got[0][0].startswith("goal_pose-")
+    s.on_goal(6.0, 1.26, None)
+    got2 = goal_results(advance(s, 0.2))
+    assert got2[0][0] != got[0][0]  # a different goal id
+
+
+def test_guide_start_replaced_by_goal_pose_is_superseded(tmp_path):
+    s, _ = service(tmp_path)
+    w = s.world
+    put(w, "P2", 3.0, 1.26)
+    place_robot(w, 0.46, 1.26, 0.0)
+    s.step(0.1)
+    track = next(d["track"] for d in perceive_people(w, w.robot))
+    s.on_task_action({"id": "gs", "action": "guide_start", "track": track, "place": "ward_doors"})
+    advance(s, 0.3)
+    s.on_goal(1.5, 1.26, None)
+    assert ("gs", False, "superseded") in goal_results(advance(s, 0.2))
+
+
+def test_cmd_vel_cancels_a_goal(tmp_path):
+    s, _ = service(tmp_path)
+    place_robot(s.world, 0.46, 1.26, 0.0)
+    s.on_goal(6.0, 1.26, None)
+    advance(s, 0.3)
+    s.on_cmd_vel((0.2, 0.0))
+    got = goal_results(advance(s, 0.2))
+    assert len(got) == 1 and got[0][1:] == (False, "cancelled")
+
+
+def test_guide_stop_cancels_the_guide_goal(tmp_path):
+    s, _ = service(tmp_path)
+    w = s.world
+    put(w, "P2", 3.0, 1.26)
+    place_robot(w, 0.46, 1.26, 0.0)
+    s.step(0.1)
+    track = next(d["track"] for d in perceive_people(w, w.robot))
+    s.on_task_action({"id": "gs", "action": "guide_start", "track": track, "place": "ward_doors"})
+    advance(s, 0.3)
+    s.on_task_action({"id": "gx", "action": "guide_stop"})
+    outs = advance(s, 0.2)
+    assert goal_results(outs) == [("gs", False, "cancelled")]
+    assert ("gx", True, "ok") in [(r["id"], r["ok"], r["reason"]) for r in results(outs)]
+
+
+def test_human_give_item_supersedes_the_robots_open_offer(tmp_path):
+    s, _ = service(tmp_path)
+    w = s.world
+    track, place = bedside_robot(s)
+    s.on_task_action({"id": "rh", "action": "hand_over", "item": "T1", "to": track, "place": place})
+    advance(s, 0.3)
+    # a nurse (P2) stands by the bed holding another item and offers it to the same patient
+    p1 = w.people["P1"]
+    put(w, "P2", place[0], place[1] - 0.3)
+    w.objects.add_item(Item(id="T2", kind="tray", holder="P2"))
+    s.on_intent(Intent(id="gv", person="P2", t=0, kind="give_item", target="P1", text="T2",
+                       point=(place[0], place[1])))
+    got = results(advance(s, 0.3))
+    assert ("rh", False, "superseded") in [(r["id"], r["ok"], r["reason"]) for r in got]

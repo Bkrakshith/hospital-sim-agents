@@ -220,7 +220,7 @@ class StubSimService:
 
     def on_cmd_vel(self, cmd: "tuple[float, float]") -> None:
         if self.robot:
-            self.world.robot.set_cmd_vel(*cmd)
+            self.tasks.cmd_vel(cmd, self.t)
 
     def on_goal(self, x: float, y: float, yaw: Optional[float] = None) -> None:
         if self.robot:

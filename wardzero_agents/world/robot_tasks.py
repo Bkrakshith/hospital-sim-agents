@@ -36,7 +36,8 @@ class RobotTasks:
         self.world = world
         self._spray: dict[str, str] = {}  # action id -> fire id
         self._guide: Optional[dict] = None
-        self.goal_id = "goal_pose"
+        self.goal_id = ""
+        self._goal_n = 0
         self._out = TaskOutputs()
 
     def _result(self, aid, action, ok, reason, t) -> None:
@@ -118,9 +119,8 @@ class RobotTasks:
         xy = w._resolve_place(place)
         if xy is None:
             return self._result(aid, "guide_start", False, "unknown_place", t)
-        if not w.robot.set_goal(*xy):
+        if not self._set_goal(aid, xy[0], xy[1], None, t):
             return self._result(aid, "guide_start", False, "no_route", t)
-        self.goal_id = aid
         lm = w.site.landmarks.get(place)
         label = (lm.label if lm is not None and lm.label else place.replace("_", " "))
         self._guide = {"id": aid, "goal": xy}
@@ -130,16 +130,34 @@ class RobotTasks:
 
     def goal_pose(self, x, y, yaw, t) -> None:
         """A goal_pose command; no route is reported as a goal result."""
-        if self.world.robot.set_goal(x, y, yaw):
-            self.goal_id = "goal_pose"
-        else:
-            self._goal("goal_pose", False, "no_route", t)
+        self._goal_n += 1
+        gid = f"goal_pose-{self._goal_n}"
+        if not self._set_goal(gid, x, y, yaw, t):
+            self._goal(gid, False, "no_route", t)
+
+    def _set_goal(self, gid, x, y, yaw, t) -> bool:
+        """Start a goal; one still in flight is reported as superseded."""
+        w = self.world
+        in_flight = w.robot.has_goal
+        if not w.robot.set_goal(x, y, yaw):
+            return False
+        if in_flight:
+            self._goal(self.goal_id, False, "superseded", t)
+        self.goal_id = gid
+        return True
+
+    def cmd_vel(self, cmd, t) -> None:
+        if self.world.robot.has_goal:
+            self._goal(self.goal_id, False, "cancelled", t)
+        self.world.robot.set_cmd_vel(*cmd)
 
     def _goal(self, gid, ok, reason, t) -> None:
         self._out.results.append({"kind": "goal", "id": gid, "action": "goal", "ok": ok,
                                   "reason": reason, "t": t})
 
     def _guide_stop(self, aid, msg, t) -> None:
+        if self.world.robot.has_goal:
+            self._goal(self.goal_id, False, "cancelled", t)
         self.world.robot.cancel_goal()
         self._guide = None
         self._result(aid, "guide_stop", True, "ok", t)

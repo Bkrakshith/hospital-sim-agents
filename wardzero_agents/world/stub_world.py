@@ -979,6 +979,10 @@ class StubWorld:
             self._fail(p, intent, why)
             return []
         self._begin(p, intent)
+        old = self._offers.get(intent.target)
+        if old is not None and old["giver"] == ROBOT_ID:  # the robot's offer is replaced: tell it
+            self.robot_results.append({"id": old["intent"], "action": "hand_over", "ok": False,
+                                       "reason": "superseded"})
         self._offers[intent.target] = {"giver": pid, "item": item.id, "place": place, "t": t,
                                        "intent": intent.id}
         return []
