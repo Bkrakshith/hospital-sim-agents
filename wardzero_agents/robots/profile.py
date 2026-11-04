@@ -1,30 +1,39 @@
 """Robot profiles: what a robot body can do, which the robot's mind is told and must not exceed.
 
-Only the built-in g1_claude profile lives here for now; the Studio adds bring-your-own profiles.
+The built-in g1_claude profile lives here; bring-your-own profiles are saved by the Studio to
+<data>/robots/<name>/robot.yaml.
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
-from typing import Literal
+from pathlib import Path
+from typing import Literal, Optional
+
+import yaml
+
+from .sensors import SensorSpec
 
 
 @dataclass(frozen=True)
 class RobotProfile:
     name: str
     can_move: bool
-    base: Literal["static", "mobile"]
+    base: Literal["static", "legged", "wheeled", "mobile"]
     radius: float
     reach: tuple[float, float]  # [zmin, zmax] the hands can put things at, metres
     max_speed: float
     ns: str
-    sensors: tuple[str, ...]
+    sensors: tuple[SensorSpec, ...]
+    urdf: Optional[Path] = None
+    controller: Literal["builtin_claude", "external", "none"] = "builtin_claude"
 
     def abilities(self) -> str:
         """The robot's body in words, for the prompt."""
         lo, hi = self.reach
         lines = [
             "Your body: a Unitree G1 humanoid with a head camera and a microphone and speaker.",
-            f"Sensors: {', '.join(self.sensors)}.",
+            f"Sensors: {', '.join(x.label() for x in self.sensors)}.",
             f"Your hands reach between {lo:g} m and {hi:g} m above the floor, within arm's length of you.",
             "You can hand an item you are holding to a person, take an item lying within arm's length, "
             "spray a fire extinguisher at a small fire in range, press the staff call button, speak, and wait.",
@@ -40,13 +49,56 @@ class RobotProfile:
 
 G1_CLAUDE = RobotProfile(
     name="g1_claude", can_move=False, base="static", radius=0.3, reach=(0.6, 1.3), max_speed=1.0,
-    ns="robot", sensors=("head RealSense D455 camera", "microphone", "speaker"))
+    ns="robot", sensors=(
+        SensorSpec("head_camera", "rgbd", "realsense_d455", "d435_link", (0.0, 0.0, 0.0), (0.0, 0.0, 0.0),
+                   {"label": "head RealSense D455 camera"}),
+        SensorSpec("mic", "mic", None, "head_link", params={"label": "microphone"}),
+        SensorSpec("speaker", "speaker", None, "head_link", params={"label": "speaker"})))
 
 PROFILES = {G1_CLAUDE.name: G1_CLAUDE}
 
 
 def get_profile(name: str) -> RobotProfile:
-    try:
+    if name in PROFILES:
         return PROFILES[name]
-    except KeyError:
+    try:  # a bring-your-own robot saved by the Studio
+        return load_profile(name)
+    except (KeyError, ValueError, OSError):
         raise KeyError(f"unknown robot profile {name!r}") from None
+
+
+_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
+
+
+def profile_path(name: str, data: Optional[Path] = None) -> Path:
+    if not _NAME.match(name or ""):
+        raise ValueError(f"bad robot name {name!r}: use letters, digits, - and _")
+    if data is None:
+        from ..memory import data_dir
+        data = data_dir()
+    return Path(data) / "robots" / name / "robot.yaml"
+
+
+def save_profile(profile: RobotProfile, data: Optional[Path] = None) -> Path:
+    path = profile_path(profile.name, data)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    doc = {"name": profile.name, "urdf": str(profile.urdf) if profile.urdf else None, "base": profile.base,
+           "can_move": profile.can_move, "radius": profile.radius, "reach": list(profile.reach),
+           "max_speed": profile.max_speed, "ns": profile.ns, "controller": profile.controller,
+           "sensors": [x.to_dict() for x in profile.sensors]}
+    path.write_text(yaml.safe_dump(doc, sort_keys=False))
+    return path
+
+
+def load_profile(name: str, data: Optional[Path] = None) -> RobotProfile:
+    path = profile_path(name, data)
+    if not path.is_file():
+        raise KeyError(f"unknown robot profile {name!r}")
+    d = yaml.safe_load(path.read_text()) or {}
+    base = d.get("base", "static")
+    return RobotProfile(
+        name=d["name"], can_move=bool(d.get("can_move", base != "static")), base=base,
+        radius=float(d.get("radius", 0.3)), reach=tuple(float(v) for v in d.get("reach", (0.6, 1.3))),
+        max_speed=float(d.get("max_speed", 1.0)), ns=d.get("ns") or d["name"],
+        sensors=tuple(SensorSpec.from_dict(x) for x in d.get("sensors", [])),
+        urdf=Path(d["urdf"]) if d.get("urdf") else None, controller=d.get("controller", "external"))

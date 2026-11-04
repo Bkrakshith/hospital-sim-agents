@@ -1,0 +1,7 @@
+<?xml version="1.0"?>
+<robot name="mesh_bot">
+  <link name="base"><visual><geometry><mesh filename="package://mesh_pkg/meshes/found.stl"/></geometry></visual>
+    <collision><geometry><mesh filename="package://other_pkg/meshes/gone.stl"/></geometry></collision></link>
+  <link name="top"><visual><geometry><mesh filename="meshes/nothere.dae"/></geometry></visual></link>
+  <joint name="j" type="continuous"><parent link="base"/><child link="top"/><origin xyz="0 0 0.3"/><axis xyz="0 0 1"/></joint>
+</robot>

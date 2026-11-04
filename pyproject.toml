@@ -17,6 +17,7 @@ dependencies = [
     "numpy",
     "aiohttp",
     "keyring",
+    "defusedxml",
     # the SDK HTTP client decodes brotli responses with output_buffer_limit (Brotli 1.2+);
     # Ubuntu 22.04 ships python3-brotli 1.0.9, which fails every API call
     "Brotli>=1.2",
