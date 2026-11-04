@@ -5,9 +5,11 @@ import numpy as np
 
 from .models import CastEntry, Persona, PersonInstance
 
-FIRST_NAMES = [
+MALE_NAMES = [
     "Oliver", "George", "Harry", "Noah", "Jack", "Leo", "Arthur", "Oscar", "Charlie", "Henry",
     "Thomas", "William", "James", "Edward", "Alfie", "Freddie", "Joshua", "Daniel", "David", "Michael",
+]
+FEMALE_NAMES = [
     "Olivia", "Amelia", "Isla", "Ava", "Emily", "Sophie", "Grace", "Lily", "Charlotte", "Jessica",
     "Margaret", "Susan", "Patricia", "Sarah", "Hannah", "Rebecca", "Helen", "Karen", "Joan", "Ruth",
 ]
@@ -17,7 +19,7 @@ SURNAMES = [
     "Patel", "Khan", "Lewis", "James", "Phillips", "Mason", "Mitchell", "Rose", "Davis", "Rogers",
     "Cooper", "Harris", "Ward", "Turner", "Hill", "Moore", "Scott", "Morris", "Bailey", "Baker",
 ]
-assert len(FIRST_NAMES) == 40 and len(SURNAMES) == 40
+assert len(MALE_NAMES) == 20 and len(FEMALE_NAMES) == 20 and len(SURNAMES) == 40
 
 
 def instance_seed(cast: CastEntry, scenario_seed: int, index: int) -> int:
@@ -42,7 +44,9 @@ def sample_instance(persona: Persona, cast: CastEntry, scenario_seed: int, index
     anxiety = u(persona.anxiety)
     sociability = u(persona.sociability)
     phone = u(persona.phone_use)
-    name = f"{FIRST_NAMES[int(rng.integers(40))]} {SURNAMES[int(rng.integers(40))]}"
+    # the first name comes from the list that matches the sampled sex, so a name never contradicts it
+    firsts = {"female": FEMALE_NAMES, "male": MALE_NAMES}.get(sex.lower(), FEMALE_NAMES + MALE_NAMES)
+    name = f"{firsts[int(rng.integers(len(firsts)))]} {SURNAMES[int(rng.integers(40))]}"
 
     return PersonInstance(
         person_id=cast.id,

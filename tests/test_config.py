@@ -100,3 +100,21 @@ def test_missing_storyboard_or_deck_is_an_error(tmp_path):
         (p.parent.parent / sub_dir / name).unlink()
         with pytest.raises(ConfigError, match=rf"^{field}: file not found: "):
             load_scenario(p)
+
+
+def test_first_name_matches_sampled_sex_and_is_deterministic():
+    from wardzero_agents.config.sampling import FEMALE_NAMES, MALE_NAMES
+    assert not set(FEMALE_NAMES) & set(MALE_NAMES)
+    ls = load_scenario(V1)
+    persona = next(iter(ls.personas.values()))
+    cast = ls.scenario.cast[0]
+    seen = set()
+    for idx in range(200):
+        from wardzero_agents.config.sampling import sample_instance
+        a = sample_instance(persona, cast.model_copy(update={"seed": None}), 7, idx)
+        b = sample_instance(persona, cast.model_copy(update={"seed": None}), 7, idx)
+        assert a == b
+        first = a.display_name.split()[0]
+        assert first in (FEMALE_NAMES if a.sex == "female" else MALE_NAMES)
+        seen.add(a.sex)
+    assert seen == {"female", "male"}
