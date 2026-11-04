@@ -240,7 +240,7 @@
               if (a[0] - half < v.x || a[0] + half > v.x + v.w || -a[1] - hh < v.y || -a[1] + hh > v.y + v.h) continue;
               let clash = false;
               for (const mk of this.markers) {
-                if (Math.abs(mk.x - a[0]) / k < tw / 2 + 22 && Math.abs(mk.y - a[1]) / k < 24) { clash = true; break; }
+                if (Math.abs(mk.x - a[0]) / k < tw / 2 + 22 && Math.abs(mk.y - a[1]) / k < (mk.r || 24)) { clash = true; break; }
               }
               if (!clash) { text = cand; at = a; break search; }
             }
@@ -345,17 +345,44 @@
       for (const b of beds) this._person(this.gStatic, b, { color: "var(--static)", r: 7, initial: "", cls: "static", scale: this.opts.thumb ? 0.62 : 1, title: "Patient in bed " + b.id });
       this._relayout();
     }
-    setRobot(r) {
+    /* r: {x, y, yaw}. opts: {handle: true} adds a turn handle (Robot page), {label: "text"} renames the label. */
+    setRobot(r, opts) {
+      opts = opts || {};
       this._clear(this.gRobot);
-      if (!r) return;
+      this._robot = null;
+      if (!r) return null;
       const { g, m } = this._marker(this.gRobot, r.x, r.y);
       m.s = this.opts.thumb ? 0.7 : 1;
       g.setAttribute("class", "robot");
-      const rot = -((r.yaw || 0) * 180 / Math.PI);
       el("circle", { r: 15, class: "robot-halo" }, g);
-      el("path", { d: "M0,-11 L9,8 L0,4 L-9,8 Z", class: "robot-body", transform: `rotate(${rot + 90})` }, g);
-      if (!this.opts.thumb) { const t = el("text", { class: "pname robot-label", x: 20, y: 4, "text-anchor": "start" }, g); t.textContent = "Robot start"; }
-      const tt = el("title", {}, g); tt.textContent = "Robot start";
+      const body = el("path", { d: "M0,-11 L9,8 L0,4 L-9,8 Z", class: "robot-body" }, g);
+      const R = { g, m, body, yaw: r.yaw || 0 };
+      if (opts.handle) {
+        R.line = el("line", { x1: 0, y1: 0, class: "robot-arm" }, g);
+        R.handle = el("circle", { r: 7, class: "robot-handle" }, g);
+        const ht = el("title", {}, R.handle); ht.textContent = "Drag to turn the robot";
+      }
+      if (opts.handle) m.r = 48;
+      if (!this.opts.thumb && !opts.handle) { const t = el("text", { class: "pname robot-label", x: 20, y: 4, "text-anchor": "start" }, g); t.textContent = opts.label || "Robot start"; }
+      const tt = el("title", {}, g); tt.textContent = opts.label || "Robot start";
+      this._robot = R;
+      this._poseRobot(R, r.x, r.y, r.yaw || 0);
+      this._relayout();
+      return R;
+    }
+    _poseRobot(R, x, y, yaw) {
+      R.m.x = x; R.m.y = y; R.yaw = yaw;
+      R.body.setAttribute("transform", `rotate(${-(yaw * 180) / Math.PI + 90})`);
+      if (R.handle) {
+        const hx = 36 * Math.cos(yaw), hy = -36 * Math.sin(yaw);
+        R.handle.setAttribute("cx", hx); R.handle.setAttribute("cy", hy);
+        R.line.setAttribute("x2", hx); R.line.setAttribute("y2", hy);
+      }
+    }
+    /* Move the robot marker without rebuilding it (drag and live updates). */
+    moveRobot(x, y, yaw) {
+      if (!this._robot) return;
+      this._poseRobot(this._robot, x, y, yaw);
       this._relayout();
     }
     setGhost(c) {

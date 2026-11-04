@@ -295,7 +295,7 @@ def _fmt(v) -> str:
 
 
 def _table(head: list[str], rows: list[list[str]], num: tuple[int, ...] = ()) -> str:
-    th = "".join(f"<th>{_e(h)}</th>" for h in head)
+    th = "".join(f'<th class="n">{_e(h)}</th>' if i in num else f"<th>{_e(h)}</th>" for i, h in enumerate(head))
     def cell(i, c):
         return ('<td class="n">' if i in num else "<td>") + c + "</td>"
     body = "".join("<tr>" + "".join(cell(i, c) for i, c in enumerate(r)) + "</tr>" for r in rows)
@@ -342,7 +342,9 @@ def render_html(facts: dict) -> str:
         ratings = '<p class="note">No debrief was recorded for this run.</p>'
     if facts["trust"]:
         trows = [[_e(t["name"]), _e(_fmt(t["before"])), _e(_fmt(t["after"])),
-                  _e(f"{t['stage_before']} ({STAGE_NAMES.get(t['stage_before'], '')}) to "
+                  _e(f"{t['stage_before']} ({STAGE_NAMES.get(t['stage_before'], '')}), unchanged"
+                     if t['stage_before'] == t['stage_after'] else
+                     f"{t['stage_before']} ({STAGE_NAMES.get(t['stage_before'], '')}) to "
                      f"{t['stage_after']} ({STAGE_NAMES.get(t['stage_after'], '')})")] for t in facts["trust"]]
         trust = _table(["Person", "Trust before", "Trust after", "Stage"], trows, num=(1, 2))
     else:

@@ -142,15 +142,19 @@
   }
 
   // ---- cost meter ----
+  const kfmt = (n) => { n = Number(n || 0); return n >= 1e6 ? (n / 1e6).toFixed(1) + "M" : n >= 1e3 ? (n / 1e3).toFixed(1) + "k" : String(n); };
   function renderCost(s) {
     WZ.state = s;
     const box = document.getElementById("cost");
     const show = !!s.running;
     box.hidden = !show;
-    if (!show) return;
-    const c = Number(s.cost_usd || 0), b = Number(s.budget_usd || 0);
-    document.getElementById("cost-text").textContent = "$" + c.toFixed(2) + (b ? " of $" + b.toFixed(2) : "");
-    document.getElementById("cost-bar").style.width = (b ? Math.min(100, (c / b) * 100) : 0) + "%";
+    if (show) {
+      const c = Number(s.cost_usd || 0), b = Number(s.budget_usd || 0), t = s.tokens || {};
+      document.getElementById("cost-text").textContent = "$" + c.toFixed(2) + (b ? " of $" + b.toFixed(2) : "");
+      document.getElementById("cost-tokens").textContent = kfmt(t.input) + " in · " + kfmt(t.output) + " out · " + kfmt(t.cache_read) + " cached";
+      document.getElementById("cost-bar").style.width = (b ? Math.min(100, (c / b) * 100) : 0) + "%";
+      box.classList.toggle("warn", b > 0 && c / b > 0.85);
+    }
     WZ.emit("state", s);
   }
 

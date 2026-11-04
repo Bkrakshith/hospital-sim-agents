@@ -270,7 +270,7 @@ def make_app(ctx: Ctx) -> web.Application:
         resp = web.Response(body=page.read_bytes(), content_type="text/html", charset="utf-8")
         resp.headers["Content-Security-Policy"] = (
             "default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; "
-            "connect-src 'self'; img-src 'self' data:; font-src 'self'; base-uri 'none'; form-action 'none'")
+            "connect-src 'self'; img-src 'self' data:; font-src 'self'; frame-src 'self'; base-uri 'none'; form-action 'none'")
         resp.headers["Cache-Control"] = "no-store"
         resp.headers["X-Content-Type-Options"] = "nosniff"
         return resp
@@ -550,6 +550,16 @@ def make_app(ctx: Ctx) -> web.Application:
     async def list_runs(request):
         return j(await asyncio.to_thread(list_project_runs, ctx.runs_dir, request.query.get("project")))
 
+    @r.get("/api/sensors/catalogue")
+    async def sensor_catalogue(request):
+        from ..robots.sensors import load_catalogue
+        keep = ("id", "vendor", "kind", "source", "fov_h", "fov_v", "range_min", "range_max")
+        return j([{k: e[k] for k in keep if k in e} for e in load_catalogue()])
+
+    @r.get("/api/batches")
+    async def list_batches(request):
+        return j(await asyncio.to_thread(list_batches_for, ctx.runs_dir, request.query.get("scenario")))
+
     @r.get("/runs/{run_id}/report.html")
     async def report(request):
         rid = request.match_info["run_id"]
@@ -657,6 +667,26 @@ def list_project_runs(runs_dir: Path, project: Optional[str]) -> list[dict]:
         out.append({"run_id": d.name, "project_id": meta.get("project_id"), "scenario_id": meta.get("scenario_id"),
                     "has_report": (d / "report.html").is_file(), "score": score, "verdict": verdict,
                     "mtime": d.stat().st_mtime})
+    return out
+
+
+def list_batches_for(runs_dir: Path, scenario: Optional[str]) -> list[dict]:
+    """Repeat batches (batch-<scenario>-<stamp> folders with a batch.json), newest first."""
+    out = []
+    if not runs_dir.is_dir():
+        return out
+    for d in sorted(runs_dir.glob("batch-*"), reverse=True):
+        try:
+            b = json.loads((d / "batch.json").read_text())
+        except (OSError, ValueError):
+            continue
+        if not isinstance(b, dict) or (scenario is not None and b.get("scenario_id") != scenario):
+            continue
+        arm = (b.get("arms") or {}).get("primary") or {}
+        rate = arm.get("pass_rate") or {}
+        out.append({"run_id": d.name, "scenario_id": b.get("scenario_id"), "title": b.get("title"), "n": b.get("n"),
+                    "baseline": bool(b.get("baseline")), "passed": rate.get("k"), "of": rate.get("n"),
+                    "has_report": (d / "report.html").is_file(), "mtime": d.stat().st_mtime})
     return out
 
 
