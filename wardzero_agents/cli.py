@@ -2,7 +2,10 @@
 
     hhumans run SCENARIO [--sim stub] [--time-scale F] [--lockstep] [--no-robot] [--no-panel]
                 [--panel-port 8765] [--bot claude|reception|none] [--ready-timeout 600]
+                [--repeat N] [--carry-memory] [--baseline] [--no-report]
     hhumans rerun RUN_DIR [same flags]
+    hhumans debrief RUN_DIR [--force]
+    hhumans report RUN_DIR|BATCH_DIR [--no-narrative]
     hhumans replay RUN_DIR (--intents | --exact) [--time-scale F]
     hhumans memory reset (--person ID --scenario S | --persona NAME --scenario S | --all) [--yes]
     hhumans memory snapshot save|restore|list [NAME]
@@ -325,7 +328,7 @@ def _bot_children(bot: str, sp: str, rd: str) -> list:
     return []
 
 
-def _start_live(args, loaded, overrides: dict, meta: dict) -> int:
+def _start_live(args, loaded, overrides: dict, meta: dict, out: Optional[dict] = None) -> int:
     ts = _positive(args.time_scale, "--time-scale")
     ready = _positive(args.ready_timeout, "--ready-timeout")
     _key_check(loaded)
@@ -348,6 +351,8 @@ def _start_live(args, loaded, overrides: dict, meta: dict) -> int:
                                   *(["--no-panel"] if args.no_panel else ["--panel-port", str(args.panel_port)]))),
     ]
     children += _bot_children(bot, sp, rd)
+    if out is not None:
+        out["run_dir"] = run_dir
     print(f"Run folder: {run_dir}", flush=True)
     print(f"Scenario {staged.scenario.id}: {staged.scenario.duration_min:g} min of sim time at x{ts:g}, "
           f"ROS_DOMAIN_ID={os.environ.get('ROS_DOMAIN_ID', '0')}, robot: {bot}", flush=True)
@@ -358,11 +363,103 @@ def _start_live(args, loaded, overrides: dict, meta: dict) -> int:
     return code
 
 
+def _post_run(run_dir: Path, report: bool = True) -> Optional[Path]:
+    """Debrief a finished run and write its report, in this process with the user's key. A failure here
+    never fails the run: the folder is kept and the fix-it command is printed."""
+    from .bench.report import post_run
+    try:
+        path = asyncio.run(post_run(run_dir, report=report))
+    except (keys.KeyMissing, keys.KeyRejected) as exc:
+        err(f"No debrief or report: {keys.redact(str(exc))[:300]}")
+    except Exception as exc:
+        err(f"The debrief or report failed ({type(exc).__name__}: {keys.redact(str(exc))[:200]}). "
+            f"Run `hhumans debrief {run_dir}` and `hhumans report {run_dir}` to try again.")
+    else:
+        if path is not None:
+            print(f"Report: {path}", flush=True)
+        return path
+    return None
+
+
+def _ran_for_real(run_dir: Path) -> bool:
+    """The agent node wrote its run meta (a run id), so there is something to debrief."""
+    try:
+        return bool(json.loads((run_dir / "meta.json").read_text(encoding="utf-8")).get("run_id"))
+    except (OSError, ValueError):
+        return False
+
+
+def _cmd_batch(args, loaded) -> int:
+    from .bench.batch import run_batch
+    from .config.presets import preset_for_run
+    if args.repeat < 1:
+        raise CliError("--repeat must be at least 1")
+    preset = preset_for_run({"preset_id": loaded.scenario.preset_id, "scenario_id": loaded.scenario.id})
+    meta = {"mode": "live", "scenario_source": str(loaded.scenario_path)}
+
+    def runner(seed: int, profile: Optional[str]) -> Path:
+        overrides: dict = {"seed": seed}
+        if profile:
+            overrides["robot"] = {**loaded.scenario.robot.model_dump(), "profile": profile}
+        out: dict = {}
+        code = _start_live(args, loaded, overrides, meta, out=out)
+        if code != 0 or "run_dir" not in out:
+            raise CliError(f"A run of the batch ended with code {code}; the batch stops here.", code or 1)
+        if _ran_for_real(out["run_dir"]):
+            _post_run(out["run_dir"], report=not args.no_report)
+        return out["run_dir"]
+
+    batch_dir = run_batch(loaded, args.repeat, args.carry_memory, args.baseline, runner=runner, preset=preset,
+                          log=lambda m: print(m, flush=True))
+    print(f"Batch (repeatability): {batch_dir / 'report.html'}", flush=True)
+    return 0
+
+
 def cmd_run(args) -> int:
     if args.sim == "isaac":
         raise CliError(ISAAC_MSG)
     loaded = _load(args.scenario)
-    return _start_live(args, loaded, {}, {"mode": "live", "scenario_source": str(loaded.scenario_path)})
+    if args.repeat > 1 or args.baseline:
+        return _cmd_batch(args, loaded)
+    out: dict = {}
+    code = _start_live(args, loaded, {}, {"mode": "live", "scenario_source": str(loaded.scenario_path)}, out=out)
+    if code == 0 and not args.no_report and "run_dir" in out and _ran_for_real(out["run_dir"]):
+        _post_run(out["run_dir"])
+    return code
+
+
+def cmd_debrief(args) -> int:
+    from .bench.report import post_run
+    run_dir = Path(args.run_dir).resolve()
+    _recorded_meta(run_dir)
+    _refuse_if_active()
+    try:
+        asyncio.run(post_run(run_dir, report=False, force_debrief=args.force))
+    except (keys.KeyMissing, keys.KeyRejected) as exc:
+        raise CliError(keys.redact(str(exc))[:300], 1) from None
+    print(f"Debrief: {run_dir / 'debrief.jsonl'} and {run_dir / 'trust.jsonl'}")
+    return 0
+
+
+def cmd_report(args) -> int:
+    from .bench.batch import report_batch
+    from .bench.report import build_report_async
+    from .config.presets import preset_for_run
+    from .campaign.debrief import make_post_gateway
+    run_dir = Path(args.run_dir).resolve()
+    if not run_dir.is_dir():
+        raise CliError(f"No folder at {run_dir}")
+    if (run_dir / "batch.json").is_file():
+        print(f"Batch report (repeatability): {report_batch(run_dir)}")
+        return 0
+    meta = _recorded_meta(run_dir)
+    try:
+        gateway = None if args.no_narrative else make_post_gateway(run_dir)
+        path = asyncio.run(build_report_async(run_dir, preset_for_run(meta), gateway))
+    except (keys.KeyMissing, keys.KeyRejected) as exc:
+        raise CliError(keys.redact(str(exc))[:300] + "\nUse --no-narrative for a report without the AI text.", 1) from None
+    print(f"Report: {path}")
+    return 0
 
 
 def _recorded_meta(run_dir: Path) -> dict:
@@ -718,7 +815,23 @@ def build_parser() -> argparse.ArgumentParser:
 
     r = sub.add_parser("run", parents=[live], help="run a scenario")
     r.add_argument("scenario")
+    r.add_argument("--repeat", type=int, default=1, metavar="N", help="run N seeds back to back as one batch")
+    r.add_argument("--carry-memory", action="store_true",
+                   help="in a batch, carry memory from run to run (default: every repeat starts from the same snapshot)")
+    r.add_argument("--baseline", action="store_true",
+                   help="also run the same seeds with the built-in robot from the same start memory")
+    r.add_argument("--no-report", action="store_true", help="skip the AI-written report after the run")
     r.set_defaults(func=cmd_run)
+
+    db = sub.add_parser("debrief", help="ask the people about the robot and update their trust")
+    db.add_argument("run_dir")
+    db.add_argument("--force", action="store_true", help="debrief again, applying trust a second time")
+    db.set_defaults(func=cmd_debrief)
+
+    rpt = sub.add_parser("report", help="write the report of a run, or of a batch folder")
+    rpt.add_argument("run_dir", metavar="RUN_DIR|BATCH_DIR")
+    rpt.add_argument("--no-narrative", action="store_true", help="no AI text, only the figures")
+    rpt.set_defaults(func=cmd_report)
 
     rr = sub.add_parser("rerun", parents=[live], help="run a recorded run's scenario again from its start memory")
     rr.add_argument("run_dir")

@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{title}}</title>
+<style>
+:root{color-scheme:light dark;--bg:#fafaf7;--panel:#fff;--ink:#1c2420;--muted:#5d675f;--line:#dcdfd8;--pass:#16794c;--pass-bg:#e2f3ea;--fail:#b3261e;--fail-bg:#fbe7e5;--warn:#8a5a00;--warn-bg:#fdf0d5;--accent:#1d5a8a}
+@media (prefers-color-scheme:dark){:root{--bg:#14171a;--panel:#1c2024;--ink:#e6e9e4;--muted:#9aa39b;--line:#32383d;--pass:#6fd3a0;--pass-bg:#173a2a;--fail:#ff8a80;--fail-bg:#43201d;--warn:#f0c36a;--warn-bg:#41341a;--accent:#7ab8e8}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+main{max-width:60rem;margin:0 auto;padding:1.5rem 1rem 3rem}
+h1{font-size:1.5rem;margin:0 0 .25rem}h2{font-size:1.15rem;margin:2rem 0 .6rem;border-bottom:1px solid var(--line);padding-bottom:.25rem}
+.sub{color:var(--muted);margin:0 0 1rem}
+.banner{border-radius:.5rem;padding:.9rem 1rem;font-weight:600;margin:1rem 0}
+.banner small{display:block;font-weight:400;margin-top:.2rem}
+.pass{background:var(--pass-bg);color:var(--pass)}.fail{background:var(--fail-bg);color:var(--fail)}.invalid{background:var(--fail-bg);color:var(--fail);border:2px solid var(--fail)}.none{background:var(--warn-bg);color:var(--warn)}
+.wrap{overflow-x:auto}
+table{border-collapse:collapse;width:100%;background:var(--panel)}
+th,td{text-align:left;padding:.4rem .6rem;border-bottom:1px solid var(--line);vertical-align:top}
+th{font-size:.8rem;text-transform:uppercase;letter-spacing:.04em;color:var(--muted)}
+td.n{text-align:right;font-variant-numeric:tabular-nums}
+.tag{display:inline-block;padding:0 .5rem;border-radius:1rem;font-size:.8rem;font-weight:600}
+.tag.pass{background:var(--pass-bg);color:var(--pass)}.tag.fail{background:var(--fail-bg);color:var(--fail)}.tag.none{background:var(--warn-bg);color:var(--warn)}
+ol.tl{list-style:none;margin:0;padding:0}
+ol.tl li{display:grid;grid-template-columns:4rem 1fr;gap:.6rem;padding:.35rem 0;border-bottom:1px solid var(--line)}
+ol.tl time{font-variant-numeric:tabular-nums;color:var(--accent);font-weight:600}
+ol.tl .k{color:var(--muted);font-size:.8rem;text-transform:uppercase;margin-right:.4rem}
+blockquote{margin:.2rem 0;padding:.2rem .8rem;border-left:3px solid var(--line);color:var(--muted)}
+.narr p{margin:.6rem 0}.narr ul{padding-left:1.2rem}
+footer{margin-top:2.5rem;color:var(--muted);font-size:.85rem}
+footer dl{display:grid;grid-template-columns:max-content 1fr;gap:.2rem .8rem;margin:.5rem 0}footer dt{font-weight:600}footer dd{margin:0}
+.note{color:var(--muted);font-size:.9rem}
+</style>
+</head>
+<body>
+<main>
+<h1>{{title}}</h1>
+<p class="sub">{{subtitle}}</p>
+{{banner}}
+<section id="criteria"><h2>Success criteria</h2>{{criteria}}</section>
+<section id="timeline"><h2>Key moments</h2>{{timeline}}</section>
+<section id="ratings"><h2>What the people said afterwards</h2>{{ratings}}</section>
+<section id="trust"><h2>Trust in the robot</h2>{{trust}}</section>
+<section id="narrative"><h2>Assessment and suggestions</h2>{{narrative}}</section>
+<footer id="facts"><h2>Run facts</h2>{{facts}}</footer>
+</main>
+</body>
+</html>
