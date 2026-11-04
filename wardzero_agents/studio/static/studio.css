@@ -389,3 +389,6 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 .empty.big { margin: auto; max-width: 420px; border: 0; }
 a.btn { text-decoration: none; }
 .hints { margin: 8px 0 0; padding: 0 0 0 18px; color: var(--muted); font-size: 13px; }
+.cost.final { opacity: .7; }
+.cost.final .meter i { background: var(--dim); }
+body:has(.coord-chip) .toasts { bottom: 110px; }

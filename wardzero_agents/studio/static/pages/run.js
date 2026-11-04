@@ -129,7 +129,9 @@
       reportBtn.hidden = !(!running && s.has_report);
       chip.textContent = running ? (ph === "running" || !ph ? "Live · " + clock(s.t) : "Run ending") : (ph === "done" && s.run_id ? "Run finished" : "Start layout");
       // transcript
-      const says = (s.says_tail || []).slice(-8);
+      if (s.says_tail && s.says_tail.length) { WZ.lastSays = { run: s.run_id, says: s.says_tail }; }
+      else if (s.running && WZ.lastSays && WZ.lastSays.run !== s.run_id) WZ.lastSays = null;
+      const says = ((WZ.lastSays && WZ.lastSays.says) || []).slice(-8);
       tail.replaceChildren(...says.map((e) => h("li", h("time", clock(e.t)), h("b", nameOf(e.person)), h("span", e.text || ""))));
       tailBox.querySelector(".empty-tail").hidden = says.length > 0;
       // overhead preview slot
@@ -164,14 +166,24 @@
       if (lines.length > 3) { lines.length = 3; lines[2] = lines[2].replace(/.{0,2}$/, "") + "…"; }
       return lines;
     }
-    function bubble(x, y, text, who) {
+    /* Place a bubble above-right, above-left or below the speaker, taking the first spot that covers
+       no other bubble and no room label (screen pixels). `placed` collects the rectangles used. */
+    function bubble(x, y, text, who, placed, labels) {
       const { g } = S.map._marker(S.gBubbles, x, y);
       const lines = wrap(text, 30), cw = 6.4, w = Math.max(...lines.map((l) => l.length), who.length + 2) * cw + 20, hgt = lines.length * 15 + 30;
-      const by = -24 - hgt;
-      svgEl("rect", { x: -w / 2, y: by, width: w, height: hgt, rx: 9, class: "bub" }, g);
-      svgEl("path", { d: "M-6," + (by + hgt) + " L0," + (by + hgt + 8) + " L6," + (by + hgt) + " Z", class: "bub-tail" }, g);
-      const t0 = svgEl("text", { class: "bub-who", x: -w / 2 + 10, y: by + 17 }, g); t0.textContent = who;
-      lines.forEach((l, i) => { const t = svgEl("text", { class: "bub-t", x: -w / 2 + 10, y: by + 17 + 15 * (i + 1) }, g); t.textContent = l; });
+      const r = svg.getBoundingClientRect(), v = S.map.vb;
+      const sx = r.left + ((x - v.x) / v.w) * r.width, sy = r.top + ((-y - v.y) / v.h) * r.height;
+      const cands = [{ dx: -16, dy: -24 - hgt, tail: "down" }, { dx: -w + 16, dy: -24 - hgt, tail: "down" }, { dx: -w / 2, dy: 24, tail: "up" },
+        { dx: 50, dy: -hgt / 2 }, { dx: -w - 50, dy: -hgt / 2 }, { dx: -16, dy: -48 - hgt, tail: "down" }, { dx: -w + 16, dy: -48 - hgt, tail: "down" }];
+      const rect = (c) => { const left = sx + c.dx, top = sy + c.dy; return { l: left, t: top, r: left + w, b: top + hgt }; };
+      const hit = (a, bb) => a.l < bb.right && a.r > bb.left && a.t < bb.bottom && a.b > bb.top;
+      let pick = cands.find((c) => { const q = rect(c); return q.l > r.left && q.r < r.right && q.t > r.top && q.b < r.bottom && !placed.some((p) => hit(q, { left: p.l, right: p.r, top: p.t, bottom: p.b })) && !labels.some((lb) => hit(q, lb)); }) || cands[0];
+      placed.push(rect(pick));
+      const bx = pick.dx, by = pick.dy;
+      svgEl("rect", { x: bx, y: by, width: w, height: hgt, rx: 9, class: "bub" }, g);
+      if (pick.tail) svgEl("path", { d: pick.tail === "down" ? "M-6," + (by + hgt) + " L0," + (by + hgt + 8) + " L6," + (by + hgt) + " Z" : "M-6," + by + " L0," + (by - 8) + " L6," + by + " Z", class: "bub-tail" }, g);
+      const t0 = svgEl("text", { class: "bub-who", x: bx + 10, y: by + 17 }, g); t0.textContent = who;
+      lines.forEach((l, i) => { const t = svgEl("text", { class: "bub-t", x: bx + 10, y: by + 17 + 15 * (i + 1) }, g); t.textContent = l; });
     }
     /* Everyone glides toward the latest reported position (state arrives every half second). */
     function glide(map, id, tx, ty) {
@@ -204,12 +216,13 @@
         if (!S.map._robot) S.map.setRobot(rp, { label: "Robot" }); else S.map.moveRobot(rp.x, rp.y, rp.yaw);
       }
       S.map._clear(S.gBubbles);
-      const seen = new Set();
+      const seen = new Set(), placed = [];
+      const labels = (s.says_tail || []).some((e) => e.text) ? S.map.roomLabels.filter((l) => !l.txt.hasAttribute("display")).map((l) => l.txt.getBoundingClientRect()) : [];
       for (const e of [...(s.says_tail || [])].reverse()) {
         if (!e.text || seen.has(e.person) || (s.t || 0) - (e.t || 0) > BUBBLE_S) continue;
         seen.add(e.person);
         const at = e.person === "robot" ? rp : list.find((p) => p.id === e.person || p.name === e.person);
-        if (at) bubble(at.x, at.y, e.text, nameOf(e.person));
+        if (at) bubble(at.x, at.y, e.text, nameOf(e.person), placed, labels);
       }
       S.map._relayout();
     }

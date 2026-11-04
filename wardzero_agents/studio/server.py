@@ -682,8 +682,10 @@ def list_batches_for(runs_dir: Path, scenario: Optional[str]) -> list[dict]:
             continue
         if not isinstance(b, dict) or (scenario is not None and b.get("scenario_id") != scenario):
             continue
-        arm = (b.get("arms") or {}).get("primary") or {}
-        rate = arm.get("pass_rate") or {}
+        arms = b.get("arms")
+        arm = arms.get("primary") if isinstance(arms, dict) else None
+        rate = arm.get("pass_rate") if isinstance(arm, dict) else None
+        rate = rate if isinstance(rate, dict) else {}
         out.append({"run_id": d.name, "scenario_id": b.get("scenario_id"), "title": b.get("title"), "n": b.get("n"),
                     "baseline": bool(b.get("baseline")), "passed": rate.get("k"), "of": rate.get("n"),
                     "has_report": (d / "report.html").is_file(), "mtime": d.stat().st_mtime})

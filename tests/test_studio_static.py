@@ -46,3 +46,15 @@ async def test_sensor_catalogue_and_batches(client):
     rows = await (await client.get("/api/batches?scenario=ae_waiting")).json()
     assert rows[0]["run_id"] == d.name and rows[0]["passed"] == 1 and rows[0]["has_report"]
     assert (await client.get(f"/runs/{d.name}/report.html")).status == 200
+
+
+@pytest.mark.asyncio
+async def test_malformed_batch_is_skipped_or_tolerated(client):
+    runs = client.env["runs"]
+    for name, text in (("batch-a-1", '{"scenario_id": "a", "arms": []}'), ("batch-a-2", '{"scenario_id": "a", "arms": {"primary": {"pass_rate": 3}}}'),
+                       ("batch-a-3", '[1, 2]'), ("batch-a-4", 'not json')):
+        (runs / name).mkdir(parents=True)
+        (runs / name / "batch.json").write_text(text)
+    r = await client.get("/api/batches?scenario=a")
+    assert r.status == 200
+    assert {x["run_id"] for x in await r.json()} == {"batch-a-1", "batch-a-2"}

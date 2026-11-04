@@ -25,6 +25,13 @@
   }
   const copyBtn = (text, label) => h("button.icon-btn.plain", { type: "button", title: "Copy " + label, "aria-label": "Copy " + label,
     onclick: async () => { const ok = await copyText(text); WZ.toast(ok ? "Copied " + label : "Copy failed, select the text instead", ok ? undefined : "bad"); } }, svgIcon(COPY));
+  const NOISE = /absl|protobuf|\bW\d{4}\b|\bE\d{4}\b|Warning:|WARNING:|descriptor_database|message\.cc/i;
+  /* The last meaningful lines of a conversion log, then its result when it has one. */
+  function cleanLog(job) {
+    const lines = String(job.log || "").split("\n").filter((l) => l.trim() && !NOISE.test(l)).slice(-14);
+    if (job.result != null && job.result !== "") lines.push("Result: " + (typeof job.result === "string" ? job.result : JSON.stringify(job.result)));
+    return lines.join("\n");
+  }
   const num = (v, d) => { const n = parseFloat(v); return Number.isFinite(n) ? n : d; };
   const fmt = (n, d) => (Number.isFinite(n) ? n.toFixed(d == null ? 2 : d).replace(/\.?0+$/, "") : "0");
 
@@ -328,7 +335,7 @@
     }
 
     function convertSection(r) {
-      const log = h("pre.joblog", { "aria-label": "Conversion log", hidden: !S.job }, S.job ? S.job.log : "");
+      const log = h("pre.joblog", { "aria-label": "Conversion log", hidden: !S.job }, S.job ? cleanLog(S.job) : "");
       const status = h("span.tag" + jobTag(S.job), S.job ? S.job.status : "");
       status.hidden = !S.job;
       const btn = h("button.btn", { type: "button", disabled: !r.urdf || (S.job && S.job.status === "running"), onclick: async () => {
@@ -351,7 +358,7 @@
           const j = await API.get("/api/jobs/" + S.job.id);
           S.job = { id: S.job.id, status: j.status, log: j.log || "", result: j.result };
           if (S.logEl && S.logEl.isConnected) {
-            S.logEl.textContent = S.job.log; S.logEl.scrollTop = S.logEl.scrollHeight;
+            S.logEl.textContent = cleanLog(S.job); S.logEl.scrollTop = S.logEl.scrollHeight;
             S.statusEl.textContent = S.job.status; S.statusEl.className = "tag " + jobTag(S.job).slice(1);
             S.convBtn.disabled = S.job.status === "running";
           }
