@@ -198,3 +198,27 @@ def test_silent_pending_heartbeat_releases_the_clock(tmp_path):
     assert s.step(0.1).clock == pytest.approx(0.1)
     s.set_pending(1)  # the heartbeat is back: pending holds again
     assert s.step(0.1).clock == pytest.approx(0.1)
+
+
+def test_robot_reply_goes_to_the_person_it_heard_not_the_nearest(tmp_path):
+    from wardzero_agents.ros.stub_sim_node import REPLY_WINDOW_S
+    s = svc(tmp_path)
+    s.step(0.01)
+    s.on_intent(Intent(id="a", person="P5", t=s.t, kind="approach", target="g1"))
+    for _ in range(400):
+        s.step(0.05)
+    # P2 speaks from her seat; P5 is the one standing at the robot
+    s.on_say(Say(person="P2", t=s.t, text="Where is Ward B please?", addressee="g1"))
+    out = s.step(0.01)
+    assert [h.source_id for h in out.robot_heard if h.text] == ["unknown"]  # the robot cannot tell who
+    s.on_robot_say("Head for the wards.")
+    assert s.step(0.01).audio[0].addressee == "P2"
+    # one reply per utterance: the next line falls back to the nearest person
+    s.on_robot_say("Anything else?")
+    assert s.step(0.01).audio[0].addressee == "P5"
+    # a stale utterance is not answered by name
+    s.on_say(Say(person="P2", t=s.t, text="Hello again", addressee="g1"))
+    s.step(0.01)
+    s.t += REPLY_WINDOW_S + 1
+    s.on_robot_say("Hello")
+    assert s.step(0.01).audio[0].addressee == "P5"

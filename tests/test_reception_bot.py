@@ -31,18 +31,34 @@ def test_greets_hello_and_excuse_me():
     assert b.on_heard(speech("Nice weather today"), 3.0) is None
 
 
-@pytest.mark.parametrize("text,landmark,sign", [
-    ("Where is clinic 3?", "clinic_corridor", "Outpatient clinics 1-6"),
-    ("Excuse me, where are the wards?", "ward_doors", "Wards A-D and lifts"),
+@pytest.mark.parametrize("text,label,sign", [
+    ("Where is clinic 3?", "corridor to the outpatient clinics", "Outpatient clinics 1-6"),
+    ("Excuse me, where are the wards?", "doors to the wards and lifts", "Wards A-D and lifts"),
+    ("I'm looking for my mum on Ward B", "doors to the wards and lifts", "Wards A-D and lifts"),
+    ("How do I get to Ward B please?", "doors to the wards and lifts", "Wards A-D and lifts"),
     ("Where's the toilet please", "toilets", "Toilets"),
-    ("where is the exit", "entrance", "Way out"),
-    ("Where's the way out?", "entrance", "Way out"),
+    ("where is the exit", "main entrance", "Way out"),
+    ("Where's the way out?", "main entrance", "Way out"),
+    ("Which way is the exit?", "main entrance", "Way out"),
+    ("How do I get out of here?", "main entrance", "Way out"),
 ])
-def test_directions_name_the_landmark_id_and_the_sign(text, landmark, sign):
+def test_directions_use_readable_names_and_the_sign(text, label, sign):
     reply = bot().on_heard(speech(text), 1.0)
-    assert landmark in reply and sign in reply
-    label = LS.area.landmarks[landmark].label.split(" (")[0].lower()
-    assert label in reply.lower()
+    assert label in reply.lower() and sign in reply
+    assert "_" not in reply and "→" not in reply and "←" not in reply
+
+
+def test_every_destination_in_the_config_gets_an_answer_without_ids():
+    from wardzero_agents.examples.reception_bot import _PLACES
+    b = bot()
+    asked = {"clinic_corridor": "where are the clinics", "ward_doors": "where is ward b",
+             "toilets": "where are the toilets", "entrance": "where is the exit",
+             "reception_g1": "where is reception"}
+    assert {lm for _, lm, _ in _PLACES} == set(asked)
+    for lm, q in asked.items():
+        assert lm in LS.area.landmarks
+        reply = b.on_heard(speech(q), 1.0)
+        assert reply and "_" not in reply
 
 
 def test_directions_need_where_and_a_whole_word():

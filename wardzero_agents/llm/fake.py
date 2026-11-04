@@ -13,8 +13,15 @@ class FakeRefusal(Exception):
     """Raise from a policy to simulate a model refusal."""
 
 
+# The placeholder robot speaks the human-readable landmark labels, not the ids.
+LABELS = {"outpatient clinics": "clinic_corridor", "wards": "ward_doors", "toilets": "toilets",
+          "main entrance": "entrance"}
+
+
 def _landmark(text: str) -> Optional[str]:
-    return next((lm for lm in LANDMARKS if lm in text), None)
+    low = text.lower()
+    return next((lm for lm in LANDMARKS if lm in text), None) or next(
+        (lm for label, lm in LABELS.items() if label in low), None)
 
 
 def _decision(kind: str, target: str = "", say: str = "") -> dict:

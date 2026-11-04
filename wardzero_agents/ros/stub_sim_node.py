@@ -35,6 +35,7 @@ STATUS_RECORD_PERIOD_S = 0.5
 OBS_PERIOD_S = 0.5
 OBS_WINDOW_S = 2.0
 MAX_WALL_DT = 0.5  # a stalled loop does not make the sim jump further than this
+REPLY_WINDOW_S = 20.0  # a robot reply goes to whoever it last heard speak, if that was this recent
 ROBOT_ADDRESS_M = 2.5  # robot speech is addressed to the nearest person within this distance
 READY_TIMEOUT_S = 600.0  # the first knowledge base build can be slow
 PENDING_SILENT_S = 5.0  # wall seconds without a pending heartbeat before lockstep stops waiting
@@ -85,6 +86,9 @@ class StubSimService:
         # (emit time, event, {person: what they heard}) for the observation window
         self._recent: deque[tuple[float, AudioEvent, dict[str, Heard]]] = deque()
         self._last_spoken: dict[str, tuple[float, str]] = {}
+        # Sim-side bookkeeping only: who the robot's microphone last picked up speaking. The robot
+        # itself sees source "unknown"; the sim uses the true id to route the reply.
+        self._last_robot_listener: Optional[tuple[float, str]] = None
 
     # ---- inputs --------------------------------------------------------------------------
     def ready(self, what: str) -> None:
@@ -133,6 +137,8 @@ class StubSimService:
             rh = self.world.robot_heard(ev) if self.robot else None
             if rh is not None:
                 self._heard_out.append(rh)
+                if ev.source_kind == "person" and ev.text:
+                    self._last_robot_listener = (self.t, ev.source_id)
             self._obs_now = True
 
     def _spoken_before(self, person: str, t: float, text: str) -> bool:
@@ -173,6 +179,14 @@ class StubSimService:
             return
         ev = self.world.robot_say(text, self.t)
         r = self.world.robot_pose
+        # The reply goes to the person the robot just heard, not to whoever stands nearest.
+        last, self._last_robot_listener = self._last_robot_listener, None
+        if last is not None and self.t - last[0] <= REPLY_WINDOW_S:
+            p = self.world.people.get(last[1])
+            if p is not None and p.posture != "gone":
+                ev = ev.model_copy(update={"addressee": last[1]})
+                self._emit([ev])
+                return
         near = [(math.hypot(p.x - r.x, p.y - r.y), pid) for pid, p in self.world.people.items()
                 if p.posture != "gone"]
         near = [x for x in near if x[0] <= ROBOT_ADDRESS_M]

@@ -6,8 +6,9 @@ publishes only /g1/speech/say (plain text). It never reads the people's topics.
 
 Its rules:
   * speech with "hello" or "excuse me" gets a greeting;
-  * "where" plus clinic, ward, toilet, exit or "way out" gets directions built from the landmark
-    labels in waiting_area.yaml and the sign texts in signs.yaml;
+  * a question ("where", "which way", "looking for"...) naming a clinic, ward, toilet, exit or
+    way out, or reception, gets directions built from the landmark labels in waiting_area.yaml
+    and the sign texts in signs.yaml (never the internal ids);
   * three coughs received at 50 dB or more within 20 s get "Can I get some help for you? I'll let
     the nurse know.", at most once every 60 s.
 
@@ -36,20 +37,33 @@ COUGH_WINDOW_S = 20.0
 COUGH_COUNT = 3
 HELP_COOLDOWN_S = 60.0
 
-# (words that ask for the place, landmark id, sign id)
+# (words that name the place, landmark id, sign id). The ids only key into the config; they are
+# never spoken. Every landmark people can be sent to has a row; the rest are internal points.
 _PLACES = (
-    (re.compile(r"\bclinics?\b"), "clinic_corridor", "sign_clinics"),
-    (re.compile(r"\bwards?\b"), "ward_doors", "sign_wards"),
-    (re.compile(r"\btoilets?\b"), "toilets", "sign_toilets"),
-    (re.compile(r"\bexit\b|\bway out\b"), "entrance", "sign_exit"),
+    (re.compile(r"\bclinics?\b|\boutpatients?\b"), "clinic_corridor", "sign_clinics"),
+    (re.compile(r"\bwards?\b|\blifts?\b|\bvisiting\b"), "ward_doors", "sign_wards"),
+    (re.compile(r"\btoilets?\b|\bloos?\b|\bbathrooms?\b|\brestrooms?\b"), "toilets", "sign_toilets"),
+    (re.compile(r"\bexit\b|\bway out\b|\bget out\b|\bleave\b|\boutside\b|\bentrance\b|\bdoors? out\b"),
+     "entrance", "sign_exit"),
+    (re.compile(r"\breception\b|\bcheck(?:ing)? in\b|\bsign(?:ing)? in\b|\bregister\b"),
+     "reception_g1", "sign_reception"),
 )
-_WHERE = re.compile(r"\bwhere\b|\bwhere's\b")
+# a question about a place: "where", "which way", "how do I get to", "looking for", "directions"
+_ASK = re.compile(r"\bwhere\b|\bwhich way\b|\bhow (?:do|can|would) (?:i|we)\b|\blooking for\b"
+                  r"|\bdirections?\b|\bfind\b|\bway to\b|\bget to\b|\bgo to\b|\btake (?:me|us)\b"
+                  r"|\bneed (?:the|to get)\b")
 _GREET = re.compile(r"\bhello\b|\bexcuse me\b")
+_ARROWS = re.compile(r"[\u2190-\u21ff]")
 
 
 def _label(text: str) -> str:
     text = re.sub(r"\s*\(.*?\)\s*", " ", text).strip()
+    text = text.split(", ")[0]  # "Reception desk, where the G1 stands" -> "Reception desk"
     return text[:1].lower() + text[1:]
+
+
+def _sign_text(text: str) -> str:
+    return re.sub(r"\s+", " ", _ARROWS.sub("", text)).strip()
 
 
 class ReceptionBot:
@@ -60,11 +74,14 @@ class ReceptionBot:
             lm = area.landmarks.get(landmark)
             if lm is None:
                 continue
-            # The sentence names the landmark id on purpose. This phrasing is for the placeholder
-            # only: it lets the offline test policy (FakeGateway) walk to the place it hears.
-            line = f"That's the {_label(lm.label)}. Head for the {landmark}"
+            # Spoken names come from the config labels and sign texts, never from the ids.
             sign = signs_by_id.get(sign_id)
-            line += f" and follow the sign that says \"{sign.text}\"." if sign else "."
+            if landmark == "reception_g1":
+                line = "You're already at the reception desk. Tell me what you need and I'll do what I can."
+            else:
+                line = f"Head for the {_label(lm.label)}."
+                if sign:
+                    line += f" Follow the sign that says \"{_sign_text(sign.text)}\"."
             self._directions.append((pattern, line))
         self._coughs: deque[float] = deque()
         self._last_help: Optional[float] = None
@@ -76,7 +93,7 @@ class ReceptionBot:
         if h.source_kind != "person" or not h.text:
             return None
         text = h.text.lower()
-        if _WHERE.search(text):
+        if _ASK.search(text):
             for pattern, line in self._directions:
                 if pattern.search(text):
                     return line
