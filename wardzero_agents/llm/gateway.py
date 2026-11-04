@@ -11,7 +11,7 @@ from ..config.models import ModelRoles
 
 log = logging.getLogger(__name__)
 
-Role = Literal["decide", "summarise", "vision"]
+Role = Literal["decide", "summarise", "vision", "robot"]
 ErrorKind = Literal["refusal", "invalid_json", "timeout", "rate_limited", "budget", "provider_error",
                     "bad_request", "auth", "model_not_found", "too_large", "max_tokens", "llm_disabled"]
 # Errors that retrying cannot fix: the request, the key or the model is wrong.
@@ -96,7 +96,7 @@ class BaseGateway:
 
     def model_for(self, role: str) -> str:
         return {"decide": self.roles.decide, "summarise": self.roles.summarise,
-                "vision": self.roles.vision}[role]
+                "vision": self.roles.vision, "robot": self.roles.robot}[role]
 
     async def _call(self, req: LLMRequest, model: str) -> LLMResult:  # pragma: no cover
         raise NotImplementedError

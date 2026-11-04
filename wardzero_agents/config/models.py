@@ -79,6 +79,7 @@ class ModelRoles(_Model):
     decide: str
     summarise: str
     vision: str
+    robot: str = "claude-sonnet-5-5"  # the built-in Claude robot
     effort_decide: Literal["low", "medium", "high"] = "low"
 
 

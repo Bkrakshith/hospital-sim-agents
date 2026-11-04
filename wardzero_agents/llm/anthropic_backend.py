@@ -6,6 +6,9 @@ Request layout, stable parts first (a cache hit needs a byte-identical prefix):
   user[0..n] the person's day so far, one block a line  <- breakpoint 2 (5 min): append-only
   user[n+1]  images, then the per-tick text (retrieved background, memories, the situation now)
 Breakpoint 2 is read by the next call, which has the same blocks plus one more.
+The robot role (the built-in Claude robot) uses the same layout: system[1] holds the site, the brief
+and the robot's abilities (constant for the run), and `user` holds the situation now. It runs at
+low effort with a 1024-token cap, like the other non-decide roles.
 """
 from __future__ import annotations
 

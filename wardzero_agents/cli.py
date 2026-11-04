@@ -1,7 +1,7 @@
 """hhumans: run, rerun and replay persona simulations; manage memory, the knowledge base and keys.
 
     hhumans run SCENARIO [--sim stub] [--time-scale F] [--lockstep] [--no-robot] [--no-panel]
-                [--panel-port 8765] [--bot reception|none] [--ready-timeout 600]
+                [--panel-port 8765] [--bot claude|reception|none] [--ready-timeout 600]
     hhumans rerun RUN_DIR [same flags]
     hhumans replay RUN_DIR (--intents | --exact) [--time-scale F]
     hhumans memory reset (--person ID --scenario S | --persona NAME --scenario S | --all) [--yes]
@@ -13,7 +13,8 @@
 `run` checks the key in this process, copies the scenario and its configs into a new run folder
 (the copy is self-contained) and starts the ROS 2 nodes as child processes, each in its own
 process group, all loading that copy: the stub sim, the agent service, the director and, unless
---bot none, the placeholder reception robot. The run ends when any child exits (normally the stub
+--bot none, the robot: the built-in Claude robot when a Claude key is set, else the placeholder
+reception robot. The run ends when any child exits (normally the stub
 sim, at the scenario's duration); the rest then get SIGINT, SIGTERM after 10 s, SIGKILL after a
 further grace (longer for the agent node, which drains its minds and saves the memory snapshot).
 Ctrl+C does the same; press it again to hurry. Run folders go to $WARDZERO_RUNS_DIR, default
@@ -113,7 +114,8 @@ def _module(mod: str, *args: str) -> list[str]:
     return [sys.executable, "-m", mod, *args]
 
 
-# Credentials only the agent node needs. Every other child (the robot above all) runs without them.
+# Credentials only the agent node and the Claude robot need. Every other child, and the placeholder
+# reception robot, runs without them.
 KEY_ENV = ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_AUTH_TOKEN", "WARDZERO_KEY_FILE")
 
 
@@ -297,12 +299,30 @@ def _robot_override(loaded, args) -> dict:
     return {"robot": {**loaded.scenario.robot.model_dump(), "enabled": False}}
 
 
-def _bot(args, staged) -> str:
+def _claude_key_present() -> bool:
+    """Whether a Claude credential is configured (not whether it works; the run checks that)."""
+    if os.environ.get("WARDZERO_TEST_FAKE_LLM") == "1":
+        return False  # tests and demos without a provider keep the placeholder robot
+    return key_source("claude") != KEY_LABELS[3]
+
+
+def _bot(args, staged, claude_default: bool = True) -> str:
     if args.no_robot or not staged.scenario.robot.enabled:
-        if args.bot == "reception":
-            err("This run has no robot, so the reception bot is not started.")
+        if args.bot in ("reception", "claude"):
+            err(f"This run has no robot, so the {args.bot} bot is not started.")
         return "none"
-    return args.bot or "reception"
+    if args.bot:
+        return args.bot
+    return "claude" if claude_default and _claude_key_present() else "reception"
+
+
+def _bot_children(bot: str, sp: str, rd: str) -> list:
+    if bot == "reception":
+        return [Child("reception_bot", _module("wardzero_agents.examples.reception_bot", "--scenario", sp))]
+    if bot == "claude":  # the one robot process that gets the key, like the agent node
+        return [Child("robot_claude", _module("wardzero_agents.robots.claude_robot", "--scenario", sp,
+                                              "--run-dir", rd), env=_child_env(with_keys=True))]
+    return []
 
 
 def _start_live(args, loaded, overrides: dict, meta: dict) -> int:
@@ -327,8 +347,7 @@ def _start_live(args, loaded, overrides: dict, meta: dict) -> int:
         Child("director", _module("wardzero_agents.ros.director_node", "--run-dir", rd, "--scenario", sp,
                                   *(["--no-panel"] if args.no_panel else ["--panel-port", str(args.panel_port)]))),
     ]
-    if bot == "reception":
-        children.append(Child("reception_bot", _module("wardzero_agents.examples.reception_bot", "--scenario", sp)))
+    children += _bot_children(bot, sp, rd)
     print(f"Run folder: {run_dir}", flush=True)
     print(f"Scenario {staged.scenario.id}: {staged.scenario.duration_min:g} min of sim time at x{ts:g}, "
           f"ROS_DOMAIN_ID={os.environ.get('ROS_DOMAIN_ID', '0')}, robot: {bot}", flush=True)
@@ -434,7 +453,7 @@ def cmd_replay(args) -> int:
         loaded = _load_recorded(src, meta, Path(tmp))
         out_dir, staged = _stage(loaded, runs_dir(), f"{loaded.scenario.id}-replay", _robot_override(loaded, args),
                                  {"mode": "replay-intents", "replay_of": src.name, "time_scale": ts})
-    bot = _bot(args, staged)
+    bot = _bot(args, staged, claude_default=False)  # a replay stays free of API calls unless asked
     sp = str(staged.scenario_path)
     children = [
         Child("stub_sim", _module("wardzero_agents.ros.stub_sim_node", "--run-dir", str(out_dir), "--scenario", sp,
@@ -443,8 +462,7 @@ def cmd_replay(args) -> int:
         Child("replay", _module("wardzero_agents.ros.replay_node", "--run-dir", rd, "--intents",
                                 "--record-dir", str(out_dir))),
     ]
-    if bot == "reception":
-        children.append(Child("reception_bot", _module("wardzero_agents.examples.reception_bot", "--scenario", sp)))
+    children += _bot_children(bot, sp, str(out_dir))
     print(f"Replaying the intents of {src.name} at x{ts:g}, robot: {bot}. Recording to {out_dir}", flush=True)
     return supervise(children, env=_child_env())
 
@@ -685,8 +703,9 @@ def _live_flags() -> argparse.ArgumentParser:
     p.add_argument("--no-robot", action="store_true", help="run the scenario without the robot")
     p.add_argument("--no-panel", action="store_true")
     p.add_argument("--panel-port", type=int, default=DEFAULT_PANEL_PORT)
-    p.add_argument("--bot", choices=("reception", "none"), default=None,
-                   help="the placeholder robot to run (default reception when there is a robot)")
+    p.add_argument("--bot", choices=("claude", "reception", "none"), default=None,
+                   help="the robot to run: claude (the built-in Claude robot; the default when a Claude key is "
+                        "set), reception (the placeholder) or none")
     p.add_argument("--ready-timeout", type=float, default=DEFAULT_READY_TIMEOUT_S,
                    help="wall seconds the sim waits for the agents and director to come up")
     return p
@@ -712,7 +731,7 @@ def build_parser() -> argparse.ArgumentParser:
     mode.add_argument("--exact", action="store_true", help="republish the recorded world; read-only panel")
     rp.add_argument("--time-scale", type=float, default=1.0)
     rp.add_argument("--no-robot", action="store_true")
-    rp.add_argument("--bot", choices=("reception", "none"), default=None)
+    rp.add_argument("--bot", choices=("claude", "reception", "none"), default=None)
     rp.add_argument("--no-panel", action="store_true")
     rp.add_argument("--panel-port", type=int, default=DEFAULT_PANEL_PORT)
     rp.add_argument("--ready-timeout", type=float, default=DEFAULT_READY_TIMEOUT_S)
