@@ -249,7 +249,15 @@ def build_facts(run_dir: Path, preset, narrative: Optional[dict] = None) -> dict
                    "criteria_failed": sum(1 for r in res.rows if not r["passed"])},
         "moments": moments, "ratings": ratings, "ratings_mean": rating_mean, "trust": trust,
         "tokens": _tokens(d), "narrative": "", "suggestions": [],
+        "video": _video(Path(run_dir)),
     }
+
+
+def _video(run_dir: Path) -> Optional[dict]:
+    """The run's overhead recording, when there is one (with its voices once the voice step has run)."""
+    if not (run_dir / "video" / "overhead.mp4").is_file():
+        return None
+    return {"src": "video/overhead.mp4", "voiced": (run_dir / "audio" / "voice.wav").is_file()}
 
 
 class _NoPreset:
@@ -358,6 +366,11 @@ def render_html(facts: dict) -> str:
     else:
         narrative = '<p class="note">No AI assessment was written for this run.</p>'
     models = run.get("models") or {}
+    vid = facts.get("video")
+    video = (f'<section id="video"><h2>{"Recording with voices" if vid["voiced"] else "Recording"}</h2>'
+             f'<video controls preload="metadata" src="{_e(vid["src"])}"></video>'
+             + ('<p class="note">The robot and the people are heard speaking in the picture\'s time.</p>' if vid["voiced"] else "")
+             + "</section>") if vid else ""
     tok = facts["tokens"]
     facts_rows = [
         ("Run", run["run_id"]), ("Seed", run["seed"]), ("Run index", run["run_index"]),
@@ -369,7 +382,7 @@ def render_html(facts: dict) -> str:
     facts_html = "<dl>" + "".join(f"<dt>{_e(k)}</dt><dd>{_e(v)}</dd>" for k, v in facts_rows) + "</dl>"
     sub = f"Scenario {_e(run['scenario_id'])}; run {_e(run['run_id'])}"
     page = TEMPLATE.read_text(encoding="utf-8")
-    vals = {"title": _e(run["title"]), "subtitle": sub, "banner": banner, "criteria": criteria,
+    vals = {"title": _e(run["title"]), "subtitle": sub, "banner": banner, "video": video, "criteria": criteria,
             "timeline": timeline, "ratings": ratings, "trust": trust, "narrative": narrative,
             "facts": facts_html}
     page = re.sub(r"\{\{(\w+)\}\}", lambda m: vals.get(m.group(1), m.group(0)), page)  # one pass

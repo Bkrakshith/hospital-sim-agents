@@ -115,3 +115,17 @@ async def test_isaac_is_refused_when_it_is_not_installed(client):
     client.state["isaac"] = False
     r = await client.post("/api/run/start", json={"project_id": p["id"]}, headers=H)
     assert r.status == 400 and "Isaac Sim is not installed" in (await r.json())["error"]
+
+
+def test_voices_default_on_and_no_voice_is_passed_only_when_recording_with_them_off(tmp_path, monkeypatch):
+    assert Project(id="p", name="n", scenario_id="reception_guide").voice is True
+    assert "--no-voice" not in argv_for(tmp_path, monkeypatch, sim="isaac", record=True)
+    assert "--no-voice" in argv_for(tmp_path, monkeypatch, sim="isaac", record=True, voice=False)
+    assert "--no-voice" not in argv_for(tmp_path, monkeypatch, sim="isaac", voice=False)  # not recording: nothing to voice
+
+
+def test_the_cli_takes_no_voice_and_a_voice_command():
+    from wardzero_agents import cli
+    import argparse
+    live = cli._live_flags()
+    assert live.parse_args([]).no_voice is False and live.parse_args(["--no-voice"]).no_voice is True

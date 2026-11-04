@@ -47,6 +47,7 @@ class Project(BaseModel):
     headed: StrictBool = False
     record: StrictBool = False
     record_res: Literal["1280x720", "1920x1080"] = "1280x720"
+    voice: StrictBool = True  # with record: spoken voices in the recorded videos (added after the run)
 
 
 def valid_id(pid: str) -> bool:

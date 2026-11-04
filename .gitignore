@@ -5,3 +5,6 @@ __pycache__/
 *.egg-info/
 config/site/preview.png
 artifacts/screens/
+*.onnx
+*.onnx.json
+voice.wav

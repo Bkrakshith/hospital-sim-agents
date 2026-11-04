@@ -6,6 +6,7 @@
                 [--repeat N] [--carry-memory] [--baseline] [--no-report]
     hhumans rerun RUN_DIR [same flags]
     hhumans debrief RUN_DIR [--force]
+    hhumans voice RUN_DIR [--models-dir DIR]
     hhumans report RUN_DIR|BATCH_DIR [--no-narrative]
     hhumans replay RUN_DIR (--intents | --exact) [--time-scale F]
     hhumans memory reset (--person ID --scenario S | --persona NAME --scenario S | --all) [--yes]
@@ -404,6 +405,8 @@ def _start_live(args, loaded, overrides: dict, meta: dict, out: Optional[dict] =
     grace = ISAAC_EARLY_EXIT_GRACE_S if sim == "isaac" else EARLY_EXIT_GRACE_S
     code = supervise(children, env=_child_env(), early_exit_grace_s=grace)
     print(f"Run finished (exit code {code}). Run folder: {run_dir}", flush=True)
+    if sim == "isaac" and args.record and not getattr(args, "no_voice", False) and code in (0, 130):
+        _post_voice(run_dir)
     return code
 
 
@@ -450,6 +453,24 @@ def _post_run(run_dir: Path, report: bool = True) -> Optional[Path]:
             print(f"Report: {path}", flush=True)
         return path
     return None
+
+
+def _post_voice(run_dir: Path) -> None:
+    """Spoken voices for a recorded run, after the simulator has exited (CPU only). Never fails the run."""
+    try:
+        from .voice.post import build_voice
+        build_voice(run_dir, say=lambda m: print(m, flush=True))
+    except Exception as exc:
+        err(f"No voices ({type(exc).__name__}: {keys.redact(str(exc))[:200]}). Run `hhumans voice {run_dir}` to try again.")
+
+
+def cmd_voice(args) -> int:
+    from .voice.post import build_voice
+    run_dir = Path(args.run_dir).resolve()
+    if not run_dir.is_dir():
+        raise CliError(f"No folder at {run_dir}")
+    res = build_voice(run_dir, models_dir=Path(args.models_dir) if args.models_dir else None)
+    return 0 if res["wav"] is not None or res["warning"] is None else 1
 
 
 def _ran_for_real(run_dir: Path) -> bool:
@@ -904,6 +925,8 @@ def _live_flags() -> argparse.ArgumentParser:
                    help="Isaac: record the run to <run>/video and the robot domain to <run>/robot_bag (lockstep)")
     p.add_argument("--bag-images", action="store_true",
                    help="Isaac --record: also put the robot's rgb, depth and point cloud in the rosbag (large)")
+    p.add_argument("--no-voice", action="store_true",
+                   help="Isaac --record: no spoken voices in the recorded videos (voices are added after the run, on the CPU)")
     p.add_argument("--record-res", default="1280x720", metavar="WxH", type=_record_res,
                    help="Isaac: resolution of the recorded videos (1920x1080 for a film)")
     p.add_argument("--preview", action="store_true",
@@ -951,6 +974,11 @@ def build_parser() -> argparse.ArgumentParser:
     db.add_argument("run_dir")
     db.add_argument("--force", action="store_true", help="debrief again, applying trust a second time")
     db.set_defaults(func=cmd_debrief)
+
+    vo = sub.add_parser("voice", help="speak a recorded run's lines: audio/voice.wav and a voice track in its videos")
+    vo.add_argument("run_dir")
+    vo.add_argument("--models-dir", default=None, help="folder of Piper voice models (default <data>/voices)")
+    vo.set_defaults(func=cmd_voice)
 
     rpt = sub.add_parser("report", help="write the report of a run, or of a batch folder")
     rpt.add_argument("run_dir", metavar="RUN_DIR|BATCH_DIR")

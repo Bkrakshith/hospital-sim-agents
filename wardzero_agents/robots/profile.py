@@ -31,6 +31,7 @@ class RobotProfile:
     urdf: Optional[Path] = None
     controller: Literal["builtin_claude", "external", "none"] = "builtin_claude"
     base_z: float = 0.0  # where the URDF's root link sits above the floor when the robot is placed (the G1's pelvis)
+    voice: Optional[str] = None  # the spoken voice's key in wardzero_agents.voice.catalogue (None: the default robot voice)
 
     def abilities(self) -> str:
         """The robot's body in words, for the prompt."""
@@ -62,7 +63,7 @@ class RobotProfile:
 G1_HEAD_CAMERA_PITCH = -0.70
 G1_CLAUDE = RobotProfile(
     name="g1_claude", can_move=False, base="static", radius=0.3, reach=(0.6, 1.3), max_speed=1.0,
-    ns="robot", base_z=0.80, sensors=(
+    ns="robot", base_z=0.80, voice="en_GB-cori-medium", sensors=(
         SensorSpec("head_camera", "rgbd", "realsense_d455", "d435_link", (0.0, 0.0, 0.0), (0.0, G1_HEAD_CAMERA_PITCH, 0.0),
                    {"label": "head RealSense D455 camera"}),
         SensorSpec("mic", "mic", None, "head_link", params={"label": "microphone"}),
@@ -98,7 +99,7 @@ def save_profile(profile: RobotProfile, data: Optional[Path] = None) -> Path:
     doc = {"name": profile.name, "urdf": str(profile.urdf) if profile.urdf else None, "base": profile.base,
            "can_move": profile.can_move, "radius": profile.radius, "reach": list(profile.reach),
            "max_speed": profile.max_speed, "ns": profile.ns, "controller": profile.controller,
-           "base_z": profile.base_z, "sensors": [x.to_dict() for x in profile.sensors]}
+           "base_z": profile.base_z, "voice": profile.voice, "sensors": [x.to_dict() for x in profile.sensors]}
     path.write_text(yaml.safe_dump(doc, sort_keys=False))
     return path
 
@@ -117,4 +118,4 @@ def load_profile(name: str, data: Optional[Path] = None) -> RobotProfile:
         max_speed=float(d.get("max_speed", 1.0)), ns=d.get("ns") or d["name"],
         sensors=tuple(SensorSpec.from_dict(x) for x in d.get("sensors", [])),
         urdf=Path(d["urdf"]) if d.get("urdf") else None, controller=d.get("controller", "external"),
-        base_z=float(d.get("base_z", 0.0)))
+        base_z=float(d.get("base_z", 0.0)), voice=d.get("voice") or None)

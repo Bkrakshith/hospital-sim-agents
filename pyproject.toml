@@ -25,6 +25,7 @@ dependencies = [
 
 [project.optional-dependencies]
 embed = ["fastembed"]
+voice = ["piper-tts==1.8.0", "imageio-ffmpeg"]  # spoken voices in recorded runs; models: scripts/fetch_voices.py
 test = ["pytest>=8", "pytest-asyncio"]
 
 [project.scripts]
@@ -47,4 +48,5 @@ testpaths = ["tests"]
 markers = [
     "ros: needs a sourced ROS 2 Humble environment",
     "isaac: boots Isaac Sim (skipped unless WARDZERO_ISAAC=1)",
+    "voice: needs Piper and the voice models (skipped when they are missing)",
 ]

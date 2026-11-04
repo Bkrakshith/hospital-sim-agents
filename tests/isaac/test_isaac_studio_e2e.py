@@ -93,6 +93,9 @@ def test_studio_runs_isaac_headless_with_recording_and_a_live_preview(tmp_path):
     runs.mkdir()  # default Studio settings: no connection.yaml, so the robot gets its own default domain
     env = dict(os.environ, WARDZERO_TEST_FAKE_LLM="1", WARDZERO_DATA_DIR=str(data), WARDZERO_RUNS_DIR=str(runs),
                ROS_DOMAIN_ID=str(PRIVATE_DOMAIN), PYTHONPATH=str(ROOT))
+    voices = Path.home() / ".local" / "share" / "wardzero-agents" / "voices"  # the test's data dir is empty
+    if voices.is_dir():
+        env["WARDZERO_VOICES_DIR"] = str(voices)
     for k in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_AUTH_TOKEN", "WARDZERO_KEY_FILE", "WARDZERO_SIM",
               "WARDZERO_STUDIO_SIM"):
         env.pop(k, None)
@@ -109,7 +112,7 @@ def test_studio_runs_isaac_headless_with_recording_and_a_live_preview(tmp_path):
         assert conn["explicit"] is False and conn["robot_domain"] == PRIVATE_DOMAIN + 1
         p = call(base, "POST", "/api/projects", {"name": "E2E", "scenario_id": "reception_guide"})
         p = call(base, "PUT", f"/api/projects/{p['id']}", {"sim": "isaac", "headed": False, "record": RECORD,
-                                                           "record_res": "1280x720", "duration_min": 0.25})
+                                                           "record_res": "1280x720", "duration_min": float(os.environ.get("WARDZERO_E2E_MIN", "0.25"))})
         call(base, "POST", "/api/run/start", {"project_id": p["id"]})
         state = wait(lambda: (lambda s: s if s.get("preview_url") else None)(call(base, "GET", "/api/run/state")),
                      PREVIEW_TIMEOUT_S, "preview_url in the run state")
@@ -124,6 +127,8 @@ def test_studio_runs_isaac_headless_with_recording_and_a_live_preview(tmp_path):
         run = runs / final["run_id"]
         for f in (("video/overhead.mp4", "video/follow.mp4", "robot_bag/metadata.yaml") if RECORD else ()) + ("report.html",):
             assert (run / f).is_file() and (run / f).stat().st_size > 0, f
+        if RECORD and "WARDZERO_VOICES_DIR" in env and (run / "audio.jsonl").is_file():
+            assert (run / "audio" / "voice.wav").is_file()  # the post step voiced the recording
         counts = bag_counts(run / "robot_bag")
         print("bag messages:", json.dumps(counts))
         assert counts.get("/clock", 0) > 0 and counts.get("/tf", 0) > 0, counts  # recorded with no user setting

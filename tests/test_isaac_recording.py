@@ -271,3 +271,53 @@ def test_the_follow_camera_writes_one_jpeg_per_sim_frame_and_repeats_when_late(t
     rec.step()  # the resume frame repeats the last image: the follow clip is as long as the overhead one
     assert sorted(p.name for p in rec.follow_dir.iterdir()) == [f"f_{i:06d}.jpg" for i in range(5)]
     assert rec.follow_frames == rec.encoded == 5
+
+
+def test_a_follow_camera_that_starts_late_is_backfilled_so_both_clips_start_together(tmp_path):
+    np = pytest.importorskip("numpy")
+    pytest.importorskip("PIL")
+
+    class LateFollow(FakeKit):
+        def __init__(self):
+            super().__init__()
+            self.calls = 0
+
+        def get_data(self):  # empty for the first two frames, like an annotator that has not filled yet
+            self.calls += 1
+            return np.zeros((0,), np.uint8) if self.calls <= 2 else super().get_data()
+
+    top, follow = FakeKit(), LateFollow()
+    rec = recorder(top, tmp_path, record=True)
+    rec._an_follow, rec.follow_dir = follow, tmp_path / "video" / "follow_frames"
+    rec.follow_dir.mkdir(parents=True)
+    for _ in range(5):
+        rec.step()
+    assert rec.follow_frames == rec.encoded == 5  # the leading frames repeat the first image
+    assert len(list(rec.follow_dir.iterdir())) == 5
+
+
+def test_frame_zero_is_stamped_with_the_run_clock_and_written_to_timing_json(tmp_path):
+    import json
+
+    kit, now = FakeKit(), [12.5]
+    rec = recorder(kit, tmp_path, record=True)
+    rec.clock = lambda: now[0]
+    rec._enc.finalize_encoding = lambda: None
+    rec._rep.orchestrator.stop = lambda: None
+    rec.cfg.video_dir.mkdir(parents=True)
+    kit.playing = False
+    rec.step()  # held: no frame, no stamp
+    assert rec.t_start is None
+    kit.playing = True
+    now[0] = 11.0
+    rec.step()  # the resume frame has no image yet, so it is not video frame 0
+    assert rec.t_start is None and rec.encoded == 0
+    now[0] = 12.5
+    rec.step()
+    now[0] = 99.0
+    rec.step()
+    assert rec.t_start == 12.5
+    rec._fix_header = lambda *a: None
+    stats = rec.finish()
+    t = json.loads((tmp_path / "video" / "timing.json").read_text())
+    assert stats["t_start_s"] == 12.5 and t["t_start_s"] == 12.5 and t["fps"] == 30 and t["overhead_frames"] == 2 == rec.encoded

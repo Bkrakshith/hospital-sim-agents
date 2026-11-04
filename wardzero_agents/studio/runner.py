@@ -51,6 +51,8 @@ def default_command(project: Project, staged: Path, bot: str, robot_domain: Opti
         argv += ["--headed"] if project.headed else ["--headless", "--preview"]
         if project.record:
             argv += ["--record", "--record-res", project.record_res]
+            if not project.voice:
+                argv.append("--no-voice")
     if robot_domain is not None:
         argv += ["--robot-domain", str(robot_domain)]
     if project.repeat > 1 or project.baseline:

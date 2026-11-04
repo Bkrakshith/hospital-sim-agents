@@ -353,7 +353,8 @@ class IsaacHost:
             return
         self.recorder = recording.Recorder(cfg, self.app, self.timeline, self.stage, list(self.plan.rects.values()) or
                                            [tuple(self.loaded.site.bounds[i] for i in (0, 2, 1, 3))],
-                                           robot_pose=self.robot.pose if self.robot is not None else None)
+                                           robot_pose=self.robot.pose if self.robot is not None else None,
+                                           clock=lambda: float(self.svc.t) if getattr(self, "svc", None) is not None else 0.0)
         self.recorder.start()
         self._updates(2)
         self._mark("recording")

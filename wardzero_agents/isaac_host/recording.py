@@ -43,6 +43,7 @@ OVERHEAD_MARGIN = 1.06
 FOLLOW_AHEAD_M, FOLLOW_SIDE_M, FOLLOW_HEIGHT_M, FOLLOW_TARGET_Z, FOLLOW_FOCAL_MM = 2.8, 1.0, 1.7, 1.0, 16.0
 FOLLOW_DIR = "follow_frames"
 FOLLOW_JPEG_QUALITY = 92
+TIMING_FILE = "timing.json"
 
 
 def parse_res(text: str) -> tuple[int, int]:
@@ -193,9 +194,11 @@ class Recorder:
     """The writers, the preview and the per-frame step. Built after the host's start-up (the cameras are authored once
     the timeline is playing, like the robot's: they never touch physics or the NavMesh)."""
 
-    def __init__(self, cfg: RecordConfig, app, timeline, stage, rects: Sequence[tuple], robot_pose=None):
+    def __init__(self, cfg: RecordConfig, app, timeline, stage, rects: Sequence[tuple], robot_pose=None, clock=None):
         self.cfg, self.app, self.timeline, self.stage = cfg, app, timeline, stage
         self.rects, self.robot_pose = list(rects), robot_pose
+        self.clock = clock  # the run's sim time (svc.t); stamps video frame 0 so voices can be placed on the video
+        self.t_start: Optional[float] = None
         self.frames = 0  # frames rendered for the writers
         self.sim_frames = 0  # frames the timeline advanced while the recorder was in charge
         self.render_s = 0.0
@@ -297,14 +300,21 @@ class Recorder:
     def _emit(self, np) -> None:
         """One video frame for this sim frame: a renderer that is late repeats the last image."""
         if self._last_rgba is not None:
+            if self.t_start is None and self.clock is not None:
+                self.t_start = float(self.clock())  # video frame 0 starts here: the service steps after this frame
             self._enc.encode_next_frame_from_buffer(np.ascontiguousarray(self._last_rgba), *self.cfg.res)
             self.encoded += 1
         if self._last_follow is not None:
             from PIL import Image
 
-            Image.fromarray(self._last_follow[..., :3]).save(self.follow_dir / f"f_{self.follow_frames:06d}.jpg",
-                                                             format="JPEG", quality=FOLLOW_JPEG_QUALITY)
-            self.follow_frames += 1
+            # the follow annotator can still be empty for the first frames: the first image it gives is written for
+            # each of them, so follow.mp4 and overhead.mp4 have the same frames and start together
+            img = Image.fromarray(self._last_follow[..., :3])
+            while True:
+                img.save(self.follow_dir / f"f_{self.follow_frames:06d}.jpg", format="JPEG", quality=FOLLOW_JPEG_QUALITY)
+                self.follow_frames += 1
+                if self.follow_frames >= self.encoded:
+                    break
 
     def _preview_only_frame(self) -> None:
         import numpy as np
@@ -330,6 +340,7 @@ class Recorder:
         self._enc.finalize_encoding()
         self._fix_header(cfg.overhead_mp4, self.encoded)  # the encoder was told no length at the start
         stats["overhead_frames"] = self.encoded
+        stats["t_start_s"] = round(self.t_start or 0.0, 4)
         if self._an_follow is not None:
             t0 = time.monotonic()
             stats["follow_frames"] = self._encode_follow()
@@ -338,8 +349,21 @@ class Recorder:
             self._rep.orchestrator.stop()
         except Exception as exc:
             log.warning("could not stop the Replicator orchestrator: %s", exc)
+        self._write_timing(stats)
         log.info("recording done: %s", stats)
         return stats
+
+    def _write_timing(self, stats: dict) -> None:
+        """video/timing.json: the run time of video frame 0 and the frame counts, for the voice track."""
+        import json
+
+        try:
+            (self.cfg.video_dir / TIMING_FILE).write_text(json.dumps({
+                "fps": self.cfg.fps, "t_start_s": stats.get("t_start_s", 0.0),
+                "overhead_frames": stats.get("overhead_frames", 0), "follow_frames": stats.get("follow_frames", 0)}),
+                encoding="utf-8")
+        except OSError as exc:
+            log.warning("could not write %s: %s", TIMING_FILE, exc)
 
     def _encode_follow(self) -> int:
         cfg = self.cfg

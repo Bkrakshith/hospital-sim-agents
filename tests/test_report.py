@@ -375,3 +375,16 @@ def test_fractions_with_one_and_number_words_are_still_checked():
     assert check_numbers("One of nine trays was late.", rep) == ""
     assert check_numbers("One in five waited.", rep) == ""  # 1 is not a known value
     assert check_numbers("One in five waited.", {"a": 1, "b": 5}) == "One in five waited."
+
+
+def test_report_embeds_the_voiced_overhead_video_when_there_is_one(tmp_path):
+    rd = debriefed_run(tmp_path)
+    assert 'id="video"' not in build_report(rd, AE, None).read_text()  # a run without a recording has no player
+    (rd / "video").mkdir()
+    (rd / "video" / "overhead.mp4").write_bytes(b"x")
+    page = build_report(rd, AE, None).read_text()
+    assert '<video controls' in page and 'src="video/overhead.mp4"' in page and "with voices" not in page
+    (rd / "audio").mkdir()
+    (rd / "audio" / "voice.wav").write_bytes(b"x")
+    page = build_report(rd, AE, None).read_text()
+    assert "Recording with voices" in page and json.loads((rd / "report.json").read_text())["video"]["voiced"] is True
