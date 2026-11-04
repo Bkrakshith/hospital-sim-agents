@@ -8,10 +8,14 @@ robot has to cope.
 You use it to test a robot's reception behaviour against people who are not scripted.
 
 The people run on a lightweight stand-in simulator (the "stub sim"), which is what the tests
-use. Running them in Isaac Sim is in progress (see "Isaac Sim mode" below). The Python package is `wardzero_agents` and the command is `hhumans`.
+use. Running them in Isaac Sim is in progress (see "Isaac Sim mode" below). The Python
+package is `wardzero_agents` and the command is `hhumans`.
 
-What v1 covers: patients and visitors asking for directions in a waiting area. There are 12
-starter cards and an 8-beat storyboard (both in `config/`). There are no crisis scenarios yet.
+What it covers: a hospital with a ward, an A&E waiting room and a reception area. It
+comes with several ready-made scenarios (see "Studio") and the original waiting-area scenario
+with 12 starter cards and an 8-beat storyboard (both in `config/`). The scenarios include crises such as a
+ward fire, a fire evacuation, a patient who gets worse and a patient who wanders off. Each
+scenario can be scored against success criteria.
 
 ## Setup
 
@@ -92,31 +96,6 @@ Useful flags:
   knowledge base build can be slow.
 - `--sim isaac|stub` picks the simulator (see "Isaac Sim mode").
 
-### Your own robot
-
-The robot fairness rule: the robot sees the world only through its own senses.
-
-- The robot hears people only on `/g1/audio/heard`.
-- It speaks by publishing plain text on `/g1/speech/say`.
-- Robot speech is 72 dB at 1 m. It is addressed to the person whose speech the robot last heard (within 20 s, once); otherwise to the nearest person within 2.5 m. The robot itself never sees who spoke.
-- In the stub the robot gets no lidar or camera. People's bodies in the sensors come in Plan 2
-  with Isaac.
-
-To test a real G1 stack, point its speech output at `/g1/speech/say` and its speech input at
-`/g1/audio/heard`, then run with `--bot none`. `wardzero_agents/examples/reception_bot.py` is
-a small placeholder that shows the pattern. It is not the real robot's behaviour.
-
-The robot's microphone cannot tell who spoke, so on `/g1/audio/heard` the `source_id` is
-always `unknown`. `source_kind` still says whether it was a person, the PA, a cough or an alarm.
-
-The audit `hhumans audit` checks the live ROS graph once. It flags any node whose name does
-not start with `wardzero_` that is subscribed to `/humans/`, `/scenario/`,
-`/sim/audio/events`, `/sim/world_event` or `/agents/pending`. Use `--wait SECONDS` to allow
-more discovery time.
-
-Topic names, types and rates are in `docs/interfaces.md` ("Persona agents"). The robot's
-own topics are in `docs/robot-topics.md`.
-
 ## Studio
 
 The Studio is a browser tool for setting up a test without editing YAML. Start it with:
@@ -150,15 +129,16 @@ The scenarios you can start from:
 Each scenario has success criteria (for example "fire out within 2 minutes" or "no contact with
 people"). A run is scored against them and the report says which passed.
 
-### Your own robot, from the Studio
+### Your own robot
 
-On the Robot page you give the Studio a folder with your robot's URDF, then:
+On the Studio's Robot page you give the Studio a folder with your robot's URDF, then:
 
 1. **Check the URDF.** The Studio reads the links and joints and finds the base and the head.
 2. **Sensors.** Add or edit the camera, lidar, microphone and speaker. Each sensor decides
    which topics the robot gets: no microphone, no `audio/heard`.
 3. **Connect over ROS 2.** Choose the ROS domain your robot runs on (`--robot-domain`) and its
-   namespace. The page shows a light for each topic once your robot is up on that domain.
+   namespace. The page shows three lights (robot controller seen, sensors subscribed, commands seen) and
+   the list of topics your robot should publish and subscribe to.
 4. **Place it on the map.** Pick where the robot starts and which way it faces.
 
 The robot's side of the contract is in `docs/robot-topics.md`: what it hears, sees and
@@ -168,6 +148,31 @@ so the robot cannot read the people's minds or the scenario. To see how a result
 for each task action and each walk goal (`arrived`, `stuck`, `no_route`, `superseded`,
 `cancelled`), read that file. The built-in Claude robot (`--bot claude`) follows the same
 contract, so it is a worked example.
+
+#### Connecting by hand
+
+The robot fairness rule: the robot sees the world only through its own senses.
+
+- The robot hears people only on `/g1/audio/heard`.
+- It speaks by publishing plain text on `/g1/speech/say`.
+- Robot speech is 72 dB at 1 m. It is addressed to the person whose speech the robot last heard (within 20 s, once); otherwise to the nearest person within 2.5 m. The robot itself never sees who spoke.
+- In the stub the robot gets anonymous person boxes on `camera/bbox_3d` and the objects in view
+  on `perception/objects`, but no camera images or lidar. Those come with Isaac.
+
+To test a real G1 stack, point its speech output at `/g1/speech/say` and its speech input at
+`/g1/audio/heard`, then run with `--bot none`. `wardzero_agents/examples/reception_bot.py` is
+a small placeholder that shows the pattern. It is not the real robot's behaviour.
+
+The robot's microphone cannot tell who spoke, so on `/g1/audio/heard` the `source_id` is
+always `unknown`. `source_kind` still says whether it was a person, the PA, a cough or an alarm.
+
+The audit `hhumans audit` checks the live ROS graph once. It flags any node whose name does
+not start with `wardzero_` that is subscribed to `/humans/`, `/scenario/`,
+`/sim/audio/events`, `/sim/world_event` or `/agents/pending`. Use `--wait SECONDS` to allow
+more discovery time.
+
+Topic names, types and rates are in `docs/interfaces.md` ("Persona agents"). The robot's
+own topics are in `docs/robot-topics.md`.
 
 ### Isaac Sim mode (in progress)
 

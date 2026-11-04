@@ -25,8 +25,8 @@ for `speech/say`, a mobile base for `cmd_vel` and `goal_pose`).
 |---|---|---|---|
 | `/clock` | `rosgraph_msgs/Clock` | in | Sim time. Use it (`use_sim_time`). |
 | `/tf` | `tf2_msgs/TFMessage` | in | Isaac host only. |
-| `<ns>/joint_states` | `sensor_msgs/JointState` | in | Isaac host only. |
-| `<ns>/joint_command` | `sensor_msgs/JointState` | out | Isaac host only. |
+| `<ns>/joint_states` | `sensor_msgs/JointState` | in | For the Isaac host. Not working end to end yet. |
+| `<ns>/joint_command` | `sensor_msgs/JointState` | out | For the Isaac host. Joint-level control is not working end to end yet; use `cmd_vel` and `goal_pose`. |
 | `<ns>/cmd_vel` | `geometry_msgs/Twist` | out | Linear x and angular z. Mobile robots only. |
 | `<ns>/odom` | `nav_msgs/Odometry` | in | 20 Hz, frame `map`. |
 | `<ns>/camera/rgb`, `camera/depth`, `camera/camera_info` | image types | in | Isaac host only. |
@@ -88,5 +88,3 @@ seated, a low long box is a person lying down.
 
 `audio/heard`: `{"source_kind": "person"|"robot"|"pa"|"cough"|"alarm", "source_id": "unknown",
 "text": "...", "received_db": 58.0, "partial": false, "addressed_to_me": true}`.
-
-> The master repository's `docs/interfaces.md` section 7 needs this same table.

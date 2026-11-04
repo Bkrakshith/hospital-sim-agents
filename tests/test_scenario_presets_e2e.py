@@ -19,7 +19,7 @@ from wardzero_agents.llm.fake import FakeGateway, default_policy
 from wardzero_agents.llm.gateway import LLMResult
 from wardzero_agents.mind.runtime import Mind, MindDeps
 from wardzero_agents.robots.claude_robot import RobotMind, decision_outputs
-from wardzero_agents.robots.profile import get_profile
+from wardzero_agents.robots.profile import G1_CLAUDE, RobotProfile, get_profile
 from wardzero_agents.ros.agent_node import TICK_S, AgentService
 from wardzero_agents.ros.director_node import DirectorService
 from wardzero_agents.ros.stub_sim_node import StubSimService
@@ -30,6 +30,11 @@ PRESETS = load_scenario_presets(CONFIG)
 RUN_S = 120.0
 TIME_SCALE = 10.0
 WALL_STEP = 0.01  # x TIME_SCALE = 0.1 sim-s per step
+
+
+# A movable stand-in for a bring-your-own wheeled robot (same sensors as the built-in one).
+MOVER = RobotProfile(name="test_mover", can_move=True, base="wheeled", radius=0.3, reach=(0.4, 1.2),
+                     max_speed=1.0, ns="robot", sensors=G1_CLAUDE.sensors)
 
 
 class RobotGateway:
@@ -71,7 +76,7 @@ class AgentOut:
         self.items.append(("say", s))
 
 
-def run_scenario(preset_id, tmp_path, seconds=RUN_S):
+def run_scenario(preset_id, tmp_path, seconds=RUN_S, profile=None):
     preset = PRESETS[preset_id]
     loaded = preset_to_scenario(preset, CONFIG, tmp_path / "staged")
     run_dir = tmp_path / "run"
@@ -94,7 +99,7 @@ def run_scenario(preset_id, tmp_path, seconds=RUN_S):
     agents = AgentService(loaded, runlog, aout, mind_factory, now=lambda: clock["t"])
     cfg = loaded.scenario.robot
     rgw = RobotGateway(loaded.scenario.known_places)
-    robot = RobotMind(loaded.site, sim.robot_brief, rgw, lambda: clock["t"], profile=get_profile(cfg.profile),
+    robot = RobotMind(loaded.site, sim.robot_brief, rgw, lambda: clock["t"], profile=profile or get_profile(cfg.profile),
                       known_places=loaded.scenario.known_places, pose=(cfg.x, cfg.y, cfg.yaw))
     stats = {"decisions": 0, "ticks": 0}
 
@@ -155,7 +160,8 @@ def run_scenario(preset_id, tmp_path, seconds=RUN_S):
             deadline = time.monotonic() + 5.0
             while agents.pending_count() and time.monotonic() < deadline:
                 await asyncio.sleep(0.001)
-            sim.set_pending(agents.pending_count())
+            assert not agents.pending_count(), f"the agents never settled (t={t:.1f} s)"
+            sim.set_pending(0)
         await agents.aclose()
 
     asyncio.run(drive())
@@ -167,24 +173,64 @@ def rows(run_dir, stream):
     return [json.loads(x) for x in p.read_text().splitlines() if x.strip()] if p.exists() else []
 
 
-def check_preset(preset_id, tmp_path, caplog):
+def beat_seconds(at):
+    mm, ss = at.split("+")[1].split(":")
+    return int(mm) * 60 + int(ss)
+
+
+def check_preset(preset_id, tmp_path, caplog, profile=None):
     with caplog.at_level("WARNING"):
-        preset, loaded, run_dir, sim, stats = run_scenario(preset_id, tmp_path)
+        preset, loaded, run_dir, sim, stats = run_scenario(preset_id, tmp_path, profile=profile)
     bad = [r.getMessage() for r in caplog.records if r.levelname == "ERROR"]
     assert not bad, bad[:3]  # a failed tick is logged, not raised: no errors may have been logged
-    assert stats["ticks"] > 100
-    assert rows(run_dir, "decisions") or rows(run_dir, "intents"), "no person ever decided anything"
-    assert sim.t == pytest.approx(RUN_S, abs=0.2)
+    assert stats["ticks"] > 100 and sim.t == pytest.approx(RUN_S, abs=0.2)
     assert stats["decisions"] >= 1
-    tasks = rows(run_dir, "robot_tasks")
-    assert any(r["kind"] == "action" for r in tasks), "the robot attempted no task"
+
+    # the people did something: a sampled (not static) person spoke or acted
+    moving = [r for r in rows(run_dir, "says") + rows(run_dir, "intents")
+              if r.get("person") and not r["person"].startswith("SB") and r["person"] != "g1"]
+    assert moving, "no person spoke or acted"
     assert rows(run_dir, "status") and rows(run_dir, "robot_pose")
+
+    # the director's beats due inside the run all fired
+    due = [b for b in preset.timeline if beat_seconds(b.at) <= RUN_S - 5]
+    fired = [c["card"] for c in rows(run_dir, "cards") if c["ok"]]
+    for b in due:
+        assert b.card in fired, f"beat {b.id} ({b.card}) did not fire"
+
+    # the preset's world objects exist (trays, specimen box, call bell, instruments, extinguisher...)
+    seen = {o.get("id") for r in rows(run_dir, "objects") for o in r["objects"]}
+    kinds = {o.get("kind") for r in rows(run_dir, "objects") for o in r["objects"]}
+    for o in preset.objects:
+        oid = o.get("id") or f"bell_{o['bed']}"  # a call bell is named after its bed
+        assert oid in seen, f"object {oid} never appeared"
+    if any(b.card == "fire_start" for b in due):  # ward_fire and evacuation_guide: the fire exists
+        assert "fire" in kinds
+    if any(b.card == "call_bell_at" for b in due):  # the patient was nudged to ring (the fake mind does not)
+        assert any(n["person"] == "P1" for n in rows(run_dir, "nudges"))
+    if any(b.card == "route_blocked" for b in due):
+        assert "route_blocked" in {w["kind"] for w in rows(run_dir, "world")}
+
+    # the robot's scripted action was acknowledged by a result with the same id
+    tasks = rows(run_dir, "robot_tasks")
+    acted = [r for r in tasks if r["kind"] == "action" and r.get("action") == "press_call"]
+    assert acted, "the robot attempted no task"
+    for a in acted:
+        assert any(r["kind"] == "result" and r["id"] == a["id"] and r["ok"] for r in tasks)
+    if profile is not None and profile.can_move:  # a goal-type action: the goal reports an outcome
+        goals = [r for r in tasks if r["kind"] == "goal" or r.get("action") == "goal"]
+        assert goals and goals[0]["reason"] in ("arrived", "stuck", "no_route", "superseded", "cancelled")
+
     build_report(run_dir, preset, None)
     report = json.loads((run_dir / "report.json").read_text())
     assert (run_dir / "report.html").is_file()
     assert report["run"]["scenario_id"] == preset_id
     assert len(report["criteria"]) == len(preset.criteria) > 0
-    assert all("passed" in c and c["label"] for c in report["criteria"])
+    for c in report["criteria"]:  # evaluated: a value, or an explicit None that counts as not passed
+        assert "value" in c and c["label"]
+        assert c["passed"] is (None if c["value"] is None else c["passed"])
+        assert c["value"] is not None or c["passed"] is None
+        assert c["value"] is None or isinstance(c["passed"], bool)
     assert report["verdict"]["label"] in ("PASS", "FAIL")
     assert all(not (isinstance(v, float) and not math.isfinite(v)) for v in report["metrics"].values())
     assert RunData.load(run_dir).meta["preset_id"] == preset_id
@@ -193,6 +239,10 @@ def check_preset(preset_id, tmp_path, caplog):
 @pytest.mark.parametrize("preset_id", sorted(p for p in PRESETS if p != "scrub_nurse"))
 def test_preset_runs_end_to_end(preset_id, tmp_path, caplog):
     check_preset(preset_id, tmp_path, caplog)
+
+
+def test_movable_robot_goal_result(tmp_path, caplog):
+    check_preset("reception_guide", tmp_path, caplog, profile=MOVER)
 
 
 def test_preset_02(tmp_path, caplog):
