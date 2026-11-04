@@ -4,7 +4,10 @@
     ~/isaacsim/python.sh scripts/isaac_import_urdf.py --urdf PATH.urdf --sensors wardzero_sensors.yaml --out robot.usd
     python scripts/isaac_import_urdf.py --dry-run ...     # no Isaac: validates the inputs
 
-Prints one JSON object on the last line: {ok, usd, joints, warnings, ...}. Exit code 0 when ok.
+The USD is sanitised for the Isaac host (wardzero_agents.robots.sanitise): joint armature, mass and inertia floors,
+solver iterations, sensor assets reduced to their camera, and a marker in the layer data that the host checks. It is
+verified after the export and the result says what it found. Prints one JSON object on the last line:
+{ok, usd, joints, warnings, ...}. Exit code 0 when ok.
 Under Isaac's python only pyyaml is used, so this file reads the sensors and catalogue YAML itself.
 """
 import argparse
@@ -16,6 +19,8 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parent
+sys.path.insert(0, str(REPO))
+from wardzero_agents.robots import sanitise as sn  # noqa: E402  (pure Python: the rules that make the USD ready)
 CATALOGUE = REPO / "config" / "sensors" / "catalogue.yaml"
 
 
@@ -127,21 +132,21 @@ def import_robot(args, sensors: list, warnings: list) -> dict:
     for p in stage.Traverse():
         if p.HasAPI(UsdPhysics.RigidBodyAPI):  # near-massless sensor frames import with ~0 mass
             ma = UsdPhysics.MassAPI.Apply(p)
-            m = ma.GetMassAttr().Get()
-            if not m or m < 0.005:
-                ma.CreateMassAttr(0.005)
+            m = sn.floored_mass(ma.GetMassAttr().Get())
+            if m is not None:
+                ma.CreateMassAttr(m)
                 n_floor += 1
-            d = ma.GetDiagonalInertiaAttr().Get()
-            if d is None or min(d) < 1e-6:
-                ma.CreateDiagonalInertiaAttr(Gf.Vec3f(*[max(1e-6, v) for v in (d or (0, 0, 0))]))
+            d = sn.floored_inertia(ma.GetDiagonalInertiaAttr().Get())
+            if d is not None:
+                ma.CreateDiagonalInertiaAttr(Gf.Vec3f(*d))
         if p.IsA(UsdPhysics.RevoluteJoint) or p.IsA(UsdPhysics.PrismaticJoint):
             n_joints += 1
             # armature (reflected rotor inertia): without it the articulation goes NaN within ~5 frames
             PhysxSchema.PhysxJointAPI.Apply(p).CreateArmatureAttr(args.armature)
         if p.HasAPI(UsdPhysics.ArticulationRootAPI):
             pa = PhysxSchema.PhysxArticulationAPI.Apply(p)
-            pa.CreateSolverPositionIterationCountAttr(16)
-            pa.CreateSolverVelocityIterationCountAttr(2)
+            pa.CreateSolverPositionIterationCountAttr(sn.SOLVER_POSITION_ITERATIONS)
+            pa.CreateSolverVelocityIterationCountAttr(sn.SOLVER_VELOCITY_ITERATIONS)
     if n_floor:
         warnings.append(f"{n_floor} links raised to the 5 g mass floor")
 
@@ -162,9 +167,39 @@ def import_robot(args, sensors: list, warnings: list) -> dict:
             warnings.append(f"sensor {s.get('id')} failed: {type(e).__name__}: {e}")
     out = Path(args.out).resolve()
     out.parent.mkdir(parents=True, exist_ok=True)
+    stage.GetRootLayer().customLayerData = {**dict(stage.GetRootLayer().customLayerData or {}), **sn.ready_layer_data(),
+                                            "wardzero:armature": args.armature}
     stage.Export(str(out))
     shutil.rmtree(work, ignore_errors=True)
-    return {"ok": True, "usd": str(out), "joints": n_joints, "sensors_placed": placed, "warnings": warnings}
+    problems = verify_ready(out, args.armature)
+    return {"ok": not problems, "usd": str(out), "joints": n_joints, "sensors_placed": placed, "warnings": warnings,
+            "errors": problems}
+
+
+def verify_ready(out: Path, armature: float) -> list:
+    """Open the exported file and check what PhysX will need: the marker, an articulation root, armature on every
+    joint, and no rigid body (or IMU, or depth template) left under a mounted sensor asset."""
+    from pxr import PhysxSchema, Usd, UsdPhysics
+    problems = []
+    st = Usd.Stage.Open(str(out))
+    if not sn.is_ready(st.GetRootLayer().customLayerData):
+        problems.append("the ready marker is missing from the exported layer")
+    roots = [p for p in st.Traverse() if p.HasAPI(UsdPhysics.ArticulationRootAPI)]
+    if len(roots) != 1:
+        problems.append(f"expected one articulation root, found {len(roots)}")
+    for p in st.Traverse():
+        if p.IsA(UsdPhysics.RevoluteJoint) or p.IsA(UsdPhysics.PrismaticJoint):
+            a = PhysxSchema.PhysxJointAPI(p).GetArmatureAttr().Get() if p.HasAPI(PhysxSchema.PhysxJointAPI) else None
+            if not a or abs(a - armature) > 1e-9:
+                problems.append(f"joint {p.GetPath()} has no armature")
+                break
+    for sensor in (q for q in st.Traverse() if q.GetName().startswith("wz_")):
+        for q in Usd.PrimRange(sensor):
+            if q.HasAPI(UsdPhysics.RigidBodyAPI) or q.HasAPI(UsdPhysics.MassAPI):
+                problems.append(f"sensor asset prim {q.GetPath()} is still a rigid body")
+            if q.IsActive() and (q.GetTypeName() == "IsaacImuSensor" or q.GetName() == "TemplateRenderProducts"):
+                problems.append(f"sensor asset prim {q.GetPath()} is still active")
+    return problems
 
 
 def add_sensor(stage, link, s, cat, Gf, Usd, UsdGeom, UsdPhysics, PhysxSchema, warnings):
@@ -189,17 +224,20 @@ def add_sensor(stage, link, s, cat, Gf, Usd, UsdGeom, UsdPhysics, PhysxSchema, w
         child = stage.DefinePrim(path.AppendChild("model"), "Xform")
         child.GetReferences().AddReference(str(usd))
         for q in Usd.PrimRange(child):  # sensor assets are rigid bodies with their own IMU and depth template
-            if q.HasAPI(UsdPhysics.RigidBodyAPI):
-                for api in (UsdPhysics.RigidBodyAPI, UsdPhysics.MassAPI, PhysxSchema.PhysxRigidBodyAPI):
-                    q.RemoveAPI(api)
-            if q.HasAPI(UsdPhysics.MassAPI):
-                q.RemoveAPI(UsdPhysics.MassAPI)
-            if q.HasAPI(UsdPhysics.CollisionAPI):
-                UsdPhysics.CollisionAPI(q).CreateCollisionEnabledAttr(False)
-            if params.get("hide_housing", kind in ("rgbd", "rgb")) and q.IsA(UsdGeom.Mesh):
-                UsdGeom.Imageable(q).MakeInvisible()  # the housing covers the lenses inside a robot's head shell
-            if q.GetTypeName() == "IsaacImuSensor" or q.GetName() == "TemplateRenderProducts":
-                q.SetActive(False)
+            for edit in sn.sensor_prim_edits(q.GetTypeName(), q.GetName(), q.IsA(UsdGeom.Mesh),
+                                             q.HasAPI(UsdPhysics.RigidBodyAPI), q.HasAPI(UsdPhysics.MassAPI),
+                                             q.HasAPI(UsdPhysics.CollisionAPI), kind, params.get("hide_housing")):
+                if edit == "strip_rigid_body":
+                    for api in (UsdPhysics.RigidBodyAPI, PhysxSchema.PhysxRigidBodyAPI):
+                        q.RemoveAPI(api)
+                elif edit == "strip_mass":
+                    q.RemoveAPI(UsdPhysics.MassAPI)
+                elif edit == "disable_collision":
+                    UsdPhysics.CollisionAPI(q).CreateCollisionEnabledAttr(False)
+                elif edit == "hide":
+                    UsdGeom.Imageable(q).MakeInvisible()  # the housing covers the lenses inside a robot's head shell
+                elif edit == "deactivate":
+                    q.SetActive(False)
         return
     if kind in ("rgb", "rgbd"):
         res = params.get("resolution") or [640, 480]

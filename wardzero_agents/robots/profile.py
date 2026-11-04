@@ -30,6 +30,7 @@ class RobotProfile:
     sensors: tuple[SensorSpec, ...]
     urdf: Optional[Path] = None
     controller: Literal["builtin_claude", "external", "none"] = "builtin_claude"
+    base_z: float = 0.0  # where the URDF's root link sits above the floor when the robot is placed (the G1's pelvis)
 
     def abilities(self) -> str:
         """The robot's body in words, for the prompt."""
@@ -56,10 +57,13 @@ class RobotProfile:
         return "\n".join(lines)
 
 
+# The URDF mounts the head D435 pitched 47.6 degrees down, which sees a visitor's legs and the floor at reception. The
+# built-in G1's camera is tilted back up by 0.70 rad so it looks about 7 degrees down (a developer's robot keeps its own mount).
+G1_HEAD_CAMERA_PITCH = -0.70
 G1_CLAUDE = RobotProfile(
     name="g1_claude", can_move=False, base="static", radius=0.3, reach=(0.6, 1.3), max_speed=1.0,
-    ns="robot", sensors=(
-        SensorSpec("head_camera", "rgbd", "realsense_d455", "d435_link", (0.0, 0.0, 0.0), (0.0, 0.0, 0.0),
+    ns="robot", base_z=0.80, sensors=(
+        SensorSpec("head_camera", "rgbd", "realsense_d455", "d435_link", (0.0, 0.0, 0.0), (0.0, G1_HEAD_CAMERA_PITCH, 0.0),
                    {"label": "head RealSense D455 camera"}),
         SensorSpec("mic", "mic", None, "head_link", params={"label": "microphone"}),
         SensorSpec("speaker", "speaker", None, "head_link", params={"label": "speaker"})))
@@ -94,7 +98,7 @@ def save_profile(profile: RobotProfile, data: Optional[Path] = None) -> Path:
     doc = {"name": profile.name, "urdf": str(profile.urdf) if profile.urdf else None, "base": profile.base,
            "can_move": profile.can_move, "radius": profile.radius, "reach": list(profile.reach),
            "max_speed": profile.max_speed, "ns": profile.ns, "controller": profile.controller,
-           "sensors": [x.to_dict() for x in profile.sensors]}
+           "base_z": profile.base_z, "sensors": [x.to_dict() for x in profile.sensors]}
     path.write_text(yaml.safe_dump(doc, sort_keys=False))
     return path
 
@@ -112,4 +116,5 @@ def load_profile(name: str, data: Optional[Path] = None) -> RobotProfile:
         radius=float(d.get("radius", 0.3)), reach=tuple(float(v) for v in d.get("reach", (0.6, 1.3))),
         max_speed=float(d.get("max_speed", 1.0)), ns=d.get("ns") or d["name"],
         sensors=tuple(SensorSpec.from_dict(x) for x in d.get("sensors", [])),
-        urdf=Path(d["urdf"]) if d.get("urdf") else None, controller=d.get("controller", "external"))
+        urdf=Path(d["urdf"]) if d.get("urdf") else None, controller=d.get("controller", "external"),
+        base_z=float(d.get("base_z", 0.0)))

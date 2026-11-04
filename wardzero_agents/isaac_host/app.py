@@ -15,13 +15,15 @@ Behavior System's people):
 6. bake the NavMesh;
 7. one robot obstacle cylinder, collisions off;
 8. ``timeline.play()``, then the characters' Behavior agents are bound to their controllers (I2);
-9. the robots, in one authoring pass (I4).
+9. the robots, in one authoring pass (I4): their ready USDs (made before Kit starts, ``prepare_robot``) are referenced
+   with their pose, and their OmniGraph is built on the robot domain.
 Then the timeline is never stopped (only paused while the run is held) and the NavMesh is never
 re-baked while robots are present.
 
 ROS: Isaac's bundled rclpy, one explicit Context per domain. The private domain carries wz.v1 (the
-same topics as ``stub_sim_node``, through ``SimRos``); /clock is published on the private and the
-robot domain. The host never receives the Claude key: the launcher and this module drop it.
+same topics as ``stub_sim_node``, through ``SimRos``) and /clock; the robot domain carries the robot's topics:
+audio/heard, speech/say, goal_pose, task/* and perception/objects through ``SimRos`` (the StubWorld's logic), and
+/clock, /tf, joint states, the camera and bbox_3d (the host's detection link) through the robot's OmniGraph. The host never receives the Claude key: the launcher and this module drop it.
 """
 from __future__ import annotations
 
@@ -32,6 +34,7 @@ import signal
 import sys
 import time
 from pathlib import Path
+from typing import Optional
 
 from ..ros.sim_service import READY_TIMEOUT_S, WAIT_TOKENS
 from . import stage as stage_mod
@@ -129,6 +132,8 @@ class IsaacHost:
         self.svc = None  # the SimService (made before the people, which need its StubWorld)
         self.people = None  # IsaacPeople
         self.objects = None  # IsaacObjects: props, fire and call lights
+        self.robot = None  # IsaacRobot (None without a robot)
+        self.robot_usd: Optional[Path] = None
         self.startup: dict = {}
         self._stop = False
         self._t0 = time.monotonic()
@@ -251,8 +256,36 @@ class IsaacHost:
         self.timeline = tl
         self._mark("play")
 
-    def add_robots(self) -> None:  # 9: I4 references the sanitised robot USDs here, in one authoring pass
-        pass
+    def prepare_robot(self) -> None:
+        """Before Kit starts: the robot's ready USD (converted with Isaac's URDF importer in a process of its own the
+        first time, or when its URDF, sensors or the importer changed)."""
+        from ..robots import ready_usd
+        from ..robots.profile import get_profile
+
+        r = self.loaded.scenario.robot
+        if r.enabled:
+            self.robot_usd = ready_usd.ensure_ready_usd(get_profile(r.profile))
+
+    @property
+    def robot_domain(self) -> int:
+        a = self.args
+        return a.private_domain if a.robot_domain is None else a.robot_domain
+
+    def add_robots(self) -> None:  # 9: the ready robot USD goes in as one reference after play(), with its graph
+        from ..robots.profile import get_profile
+        from .robot_isaac import IsaacRobot
+
+        r = self.loaded.scenario.robot
+        if not r.enabled:
+            return
+        if self.robot_usd is None:
+            raise RuntimeError("the robot's ready USD is not made: call prepare_robot() before start_app()")
+        self.robot = IsaacRobot(self.stage, self.app, self.loaded, get_profile(r.profile), self.robot_usd,
+                                self.args.fps, self.robot_domain, self.args.private_domain)
+        self.robot.add()
+        self.bodies.set_robot(self.robot.pose)
+        self.bodies.robot_driver = self.robot
+        self._mark("robot")
 
     def frame_view(self) -> None:
         if not self.args.headed:
@@ -267,6 +300,11 @@ class IsaacHost:
 
     # ---- the run ----------------------------------------------------------------------------
     def run(self) -> int:
+        try:
+            self.prepare_robot()
+        except Exception as exc:
+            print(f"Robot error: {exc}", file=sys.stderr)
+            return 2
         self.start_app()
         try:
             self.enable_extensions()
@@ -297,12 +335,17 @@ class IsaacHost:
         runlog, svc = self.runlog, self.svc
         private = RosBridge("wardzero_isaac_host", None, use_sim_time=False, domain_id=a.private_domain)
         self.bridges = [private]
-        clocks = []
+        robot_bridge = None
         if a.robot_domain is not None and a.robot_domain != a.private_domain:
-            robot = RosBridge("wardzero_isaac_clock", None, use_sim_time=False, domain_id=a.robot_domain)
-            self.bridges.append(robot)
-            clocks.append(robot)
-        sim_ros = SimRos(svc, private, clock_bridges=clocks)
+            robot_bridge = RosBridge("wardzero_isaac_robot_side", None, use_sim_time=False, domain_id=a.robot_domain)
+            self.bridges.append(robot_bridge)
+        robot = self.robot
+        # the robot's graph publishes /clock on a domain of its own; without a robot the host does
+        clocks = [robot_bridge] if robot_bridge is not None and not (robot is not None and robot.owns_clock) else []
+        sim_ros = SimRos(svc, private, clock_bridges=clocks, robot_ros=robot_bridge,
+                         graph_owned=robot.graph_owned if robot is not None else ())
+        if robot is not None:
+            robot.attach_ros(svc.world, private, robot_bridge)
         for b in self.bridges:
             b.start()
         vram = VramSampler().start()
@@ -311,7 +354,7 @@ class IsaacHost:
                               "headed": bool(a.headed), "private_domain": a.private_domain,
                               "robot_domain": a.robot_domain, "fps": a.fps})
         log.info("isaac host up: %s on domain %d%s, waiting for %s", self.loaded.scenario.id, a.private_domain,
-                 f" (+ /clock on {a.robot_domain})" if clocks else "", ", ".join(sorted(svc.waiting)) or "nothing")
+                 f" (+ the robot on {a.robot_domain})" if robot_bridge is not None else "", ", ".join(sorted(svc.waiting)) or "nothing")
         loop = HostLoop(svc, sim_ros, self.app, self.timeline, bridges=self.bridges, time_scale=a.time_scale,
                         vram=lambda: vram.last, vram_peak=lambda: vram.peak)
         try:

@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from wardzero_agents.config.loader import load_scenario
-from wardzero_agents.contracts import Control, Intent
+from wardzero_agents.contracts import Control, Heard, Intent
 from wardzero_agents.isaac_host.bodies import IsaacBodies
 from wardzero_agents.ros import stub_sim_node, topics
 from wardzero_agents.ros.sim_service import SimOutputs, SimRos, SimService
@@ -190,3 +190,60 @@ def test_sim_ros_subscribes_people_who_join(tmp_path):
     newcomer = s.world.roster(0.0).people[0].model_copy(update={"id": "N9"})
     sr.publish(SimOutputs(clock=0.0, roster=s.world.roster(0.0).model_copy(update={"people": [newcomer]})))
     assert topics.intent("N9") in ros.subs
+
+
+# ---- the robot's own domain (Isaac host) ----------------------------------------------------
+def test_robot_topics_can_live_on_the_robots_bridge(tmp_path):
+    s = make(tmp_path)
+    private, robot = FakeBridge(), FakeBridge()
+    sr = SimRos(s, private, msgs=MSGS, robot_ros=robot, graph_owned=("bbox_3d", "odom"))
+    rt = topics.robot_topics(s.loaded.scenario.robot.ns)
+    for key in ("say", "cmd_vel", "goal_pose", "task_action"):
+        assert rt[key] in robot.subs and rt[key] not in private.subs
+    for t in (topics.CONTROL, topics.WORLD_EVENT, topics.PENDING, topics.intent("P1")):
+        assert t in private.subs and t not in robot.subs  # the people's side stays private
+    out = s.step(0.25)
+    out.detections, out.objects = {"detections": []}, {"items": []}
+    out.odom = {"x": 1.0, "y": 2.0, "yaw": 0.0, "vx": 0.0, "wz": 0.0}
+    out.task_results = [{"id": "a1", "action": "press_call", "ok": True, "reason": "ok", "t": 0.2}]
+    sr.publish(out)
+    ns = f"/{s.loaded.scenario.robot.ns}/"
+    assert not [t for t, _ in private.sent if t.startswith(ns)]  # nothing of the robot's on the private domain
+    on_robot = {t for t, _ in robot.sent}
+    assert {rt["objects"], rt["task_result"]} <= on_robot
+    assert rt["bbox_3d"] not in on_robot and rt["odom"] not in on_robot  # the Isaac graph publishes these
+    assert rt["bbox_3d"] not in robot.pubs and rt["odom"] not in robot.pubs
+
+
+def test_robot_speech_heard_goes_to_the_robots_bridge(tmp_path):
+    s = make(tmp_path)
+    private, robot = FakeBridge(), FakeBridge()
+    sr = SimRos(s, private, msgs=MSGS, robot_ros=robot)
+    heard = Heard(source_kind="person", source_id="unknown", text="hello", received_db=60.0, partial=False, addressed_to_me=True)
+    sr.publish(SimOutputs(clock=0.0, robot_heard=[heard]))
+    assert [t for t, _ in robot.sent if t.endswith("/audio/heard")]
+    assert not [t for t, _ in private.sent if t.endswith("/audio/heard")]
+
+
+def test_default_is_one_bridge_for_everything(tmp_path):
+    s = make(tmp_path)
+    ros = FakeBridge()
+    SimRos(s, ros, msgs=MSGS)
+    rt = topics.robot_topics(s.loaded.scenario.robot.ns)
+    assert rt["say"] in ros.subs and rt["bbox_3d"] in ros.pubs
+
+
+def test_isaac_bodies_call_the_robot_driver_after_the_poses_are_read_back(tmp_path):
+    seen = []
+
+    class Driver:
+        def update(self, world, t, dt):
+            seen.append((t, dt, world.robot.pose))
+
+    s = make(tmp_path)
+    bodies = IsaacBodies(robot=lambda: (-1.0, -0.5, 1.2))
+    bodies.robot_driver = Driver()
+    bodies.step(s.world, 0.5)
+    bodies.step(s.world, 0.6)
+    assert seen[0][2] == (-1.0, -0.5, 1.2)  # the driver sees this frame's pose, not last frame's
+    assert seen[1][0] == 0.6 and seen[1][1] == pytest.approx(0.1)

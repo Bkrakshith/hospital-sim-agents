@@ -345,13 +345,20 @@ def default_msgs():
 
 
 class SimRos:
-    """A SimService's topics on a RosBridge: wz.v1 on the private domain plus, until the Isaac robot
-    graph (I4), the robot's stand-in topics. ``clock_bridges`` get /clock too (the robot domain)."""
+    """A SimService's topics on a RosBridge: wz.v1 on the private domain plus the robot's topics (audio/heard,
+    speech/say, goal_pose, task/*, perception/objects and the stand-ins for what a sensor would give).
 
-    def __init__(self, svc: SimService, ros: Any, clock_bridges: Iterable[Any] = (), msgs: Any = None):
+    ``clock_bridges`` get /clock too. ``robot_ros`` is the robot's own bridge (the Isaac host's robot domain): every
+    robot topic goes there and the people's stay on ``ros``; without it all topics share ``ros``. ``graph_owned`` are
+    robot_topics keys (``bbox_3d``, ``odom``) that the Isaac robot graph publishes, so the service does not."""
+
+    def __init__(self, svc: SimService, ros: Any, clock_bridges: Iterable[Any] = (), msgs: Any = None,
+                 robot_ros: Any = None, graph_owned: Iterable[str] = ()):
         import json
 
         self.svc, self.ros = svc, ros
+        self.robot_ros = rr = robot_ros if robot_ros is not None else ros
+        self.graph_owned = frozenset(graph_owned)
         self.m = m = msgs if msgs is not None else default_msgs()
         self._json = json
         self.clock_pubs = [ros.publisher(topics.CLOCK, m.Clock, m.QOS)]
@@ -366,16 +373,17 @@ class SimRos:
             say_topics.add(topics.G1_SAY)
             self.heard_topics.append(topics.G1_HEARD)
         for name in sorted(say_topics):
-            ros.subscribe(m.String, name, svc.on_robot_say, m.QOS, convert=lambda msg: msg.data)
-        ros.subscribe(m.Twist, rt["cmd_vel"], svc.on_cmd_vel, m.QOS,
-                      convert=lambda msg: (msg.linear.x, msg.angular.z))
-        ros.subscribe(m.PoseStamped, rt["goal_pose"], self._on_goal, m.QOS)
-        ros.subscribe(m.String, rt["task_action"], svc.on_task_action, m.QOS, convert=self._parse_action)
-        self.odom_pub = ros.publisher(rt["odom"], m.Odometry, m.QOS)
+            rr.subscribe(m.String, name, svc.on_robot_say, m.QOS, convert=lambda msg: msg.data)
+        rr.subscribe(m.Twist, rt["cmd_vel"], svc.on_cmd_vel, m.QOS,
+                     convert=lambda msg: (msg.linear.x, msg.angular.z))
+        rr.subscribe(m.PoseStamped, rt["goal_pose"], self._on_goal, m.QOS)
+        rr.subscribe(m.String, rt["task_action"], svc.on_task_action, m.QOS, convert=self._parse_action)
+        self.odom_pub = None if "odom" in self.graph_owned else rr.publisher(rt["odom"], m.Odometry, m.QOS)
         for key in ("bbox_3d", "objects", "task_result"):
-            ros.publisher(rt[key], m.String, m.QOS)
+            if key not in self.graph_owned:
+                rr.publisher(rt[key], m.String, m.QOS)
         if svc.robot_brief is not None:
-            ros.publish_text(rt["task_brief"], json.dumps(svc.robot_brief), m.QOS_LATCHED)
+            rr.publish_text(rt["task_brief"], json.dumps(svc.robot_brief), m.QOS_LATCHED)
         ros.subscribe_json(WorldEvent, topics.WORLD_EVENT, svc.on_world_event)
         ros.subscribe_json(Control, topics.CONTROL, svc.control)
         ros.subscribe(m.Int32, topics.PENDING, self._on_pending, m.QOS, convert=lambda msg: int(msg.data))
@@ -420,8 +428,8 @@ class SimRos:
             ros.publish_json(topics.observation(obs.person), obs)
         for h in out.robot_heard:
             for name in self.heard_topics:
-                ros.publish_json(name, h)
-        if out.odom is not None:
+                self.robot_ros.publish_json(name, h)
+        if out.odom is not None and self.odom_pub is not None:
             o = m.Odometry()
             o.header.frame_id, o.child_frame_id = "map", "base_link"
             o.header.stamp = msg.clock
@@ -431,10 +439,11 @@ class SimRos:
             o.twist.twist.linear.x, o.twist.twist.angular.z = out.odom["vx"], out.odom["wz"]
             self.odom_pub.publish(o)
         if out.detections is not None:
-            ros.publish_text(rt["bbox_3d"], self._json.dumps(out.detections))
-            ros.publish_text(rt["objects"], self._json.dumps(out.objects))
+            if "bbox_3d" not in self.graph_owned:
+                self.robot_ros.publish_text(rt["bbox_3d"], self._json.dumps(out.detections))
+            self.robot_ros.publish_text(rt["objects"], self._json.dumps(out.objects))
         for r in out.task_results:
-            ros.publish_text(rt["task_result"], self._json.dumps(r))
+            self.robot_ros.publish_text(rt["task_result"], self._json.dumps(r))
         for n in out.nudges:
             ros.publish_json(topics.nudge(n.person), n)
 

@@ -72,6 +72,30 @@ def robot_topics(ns: str = "robot") -> dict[str, str]:
     }
 
 
+def raw_detection_topics(ns: str = "robot") -> dict[str, str]:
+    """Isaac's own camera detections, before the host turns them into the robot's bbox_3d. Private domain only:
+    world-frame boxes with numeric classes are the host's input, not a robot topic."""
+    ns = ns.strip("/") or "robot"
+    return {"bbox_3d": f"/wz/{ns}/bbox_3d_raw", "labels": f"/wz/{ns}/semantic_labels_raw"}
+
+
+def isaac_graph_keys(base: str, can_move: bool, sensor_kinds=()) -> tuple[str, ...]:
+    """The robot_topics keys the Isaac robot graph publishes or listens on for this robot.
+
+    Always the clock, the TF tree and the joint topics. A colour camera gives camera_rgb, camera_info and bbox_3d
+    (the host's adapter publishes the last), a depth camera (kind rgbd) camera_depth too. A wheeled base that can
+    move gets odom and cmd_vel. Lidar point clouds are not part of the graph yet."""
+    kinds = set(sensor_kinds)
+    keys = ["clock", "tf", "joint_states", "joint_command"]
+    if kinds & {"rgb", "rgbd"}:
+        keys += ["camera_rgb", "camera_info", "bbox_3d"]
+    if "rgbd" in kinds:
+        keys.append("camera_depth")
+    if base == "wheeled" and can_move:
+        keys += ["odom", "cmd_vel"]
+    return tuple(keys)
+
+
 STUB_LIVE = ("clock", "odom", "cmd_vel", "goal_pose", "bbox_3d", "objects", "heard", "say",
              "task_action", "task_result", "task_brief")
 

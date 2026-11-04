@@ -25,11 +25,11 @@ for `speech/say`, a mobile base for `cmd_vel` and `goal_pose`).
 |---|---|---|---|
 | `/clock` | `rosgraph_msgs/Clock` | in | Sim time. Use it (`use_sim_time`). |
 | `/tf` | `tf2_msgs/TFMessage` | in | Isaac host only. |
-| `<ns>/joint_states` | `sensor_msgs/JointState` | in | For the Isaac host. Not working end to end yet. |
-| `<ns>/joint_command` | `sensor_msgs/JointState` | out | For the Isaac host. Joint-level control is not working end to end yet; use `cmd_vel` and `goal_pose`. |
+| `<ns>/joint_states` | `sensor_msgs/JointState` | in | Isaac host. Every joint of the articulation. |
+| `<ns>/joint_command` | `sensor_msgs/JointState` | out | Isaac host. Position targets by joint name; a robot with its own controller drives its arms and hands this way. The built-in G1 moves its own arm for hand-overs, so leave it alone. |
 | `<ns>/cmd_vel` | `geometry_msgs/Twist` | out | Linear x and angular z. Mobile robots only. |
 | `<ns>/odom` | `nav_msgs/Odometry` | in | 20 Hz, frame `map`. |
-| `<ns>/camera/rgb`, `camera/depth`, `camera/camera_info` | image types | in | Isaac host only. |
+| `<ns>/camera/rgb`, `camera/depth`, `camera/camera_info` | `sensor_msgs/Image`, `CameraInfo` | in | Isaac host only. 10 Hz, from the robot's camera mount (frame = the sensor's link). `depth` only for a depth camera (kind `rgbd`). |
 | `<ns>/camera/bbox_3d` | `std_msgs/String` (JSON) | in | 5 Hz. Anonymous person tracks (see below). |
 | `<ns>/lidar/point_cloud` | `sensor_msgs/PointCloud2` | in | Isaac host only. |
 | `<ns>/perception/objects` | `std_msgs/String` (JSON) | in | 5 Hz. Items, held items, beds, fires, call lights in view. |
@@ -42,7 +42,11 @@ for `speech/say`, a mobile base for `cmd_vel` and `goal_pose`).
 
 The stub sim publishes only: clock, odom, bbox_3d, objects, audio/heard, task/result and
 task/brief, and listens on cmd_vel, goal_pose, speech/say and task/action. The Isaac host adds
-the rest.
+the rest, from the robot's OmniGraph on the robot domain: `/clock`, `/tf`, joint states and
+commands, the camera, and for a wheeled base that can move `odom` and `cmd_vel` as a Twist into a
+differential drive. Its `camera/bbox_3d` is the same JSON as the stub's: the host turns Isaac's
+camera boxes (world frame, numeric classes) into box centres in the `map` frame with anonymous
+tracks (10 Hz, only people fully inside the camera image: Isaac drops boxes cut by the image border). Lidar point clouds and walking legged bases (`cmd_vel` for the G1) are not wired yet.
 
 ## Task actions (`task/action`)
 

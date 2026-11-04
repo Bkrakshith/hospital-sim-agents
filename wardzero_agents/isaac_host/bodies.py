@@ -38,6 +38,7 @@ class IsaacBodies(Bodies):
         self.controllers: dict[str, "PersonController"] = {}
         self.props: dict[str, object] = {}  # person id -> the lying prop (people.BedProp) of a patient in a bed
         self.objects = None  # objects_isaac.IsaacObjects (I3): mirrors items, fires and call lights once a frame
+        self.robot_driver = None  # robot_isaac.IsaacRobot (I4): arm gestures, the obstacle cylinder, the detection link
         self.spawner = spawner  # makes a controller for a person who joined after the start (None: stays kinematic)
         self._unserved: set[str] = set()
         self._last_t: Optional[float] = None
@@ -80,6 +81,8 @@ class IsaacBodies(Bodies):
             p = world.people.get(pid)
             if p is not None and p.posture == "lying" and hasattr(prop, "set_sitting_up"):
                 prop.set_sitting_up(p.sitting_up)
+        if self.robot_driver is not None:
+            self.robot_driver.update(world, t, dt)
         if self.objects is not None:
             self.objects.update()  # after the poses: held items go where their holder is now
 
