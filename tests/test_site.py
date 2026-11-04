@@ -119,3 +119,75 @@ def test_main_places_reachable(site, occ):
                  "B6_centre", "Ward_Corridor_centre"]:
         lm = site["landmarks"][name]
         assert cell(occ, lm["x"], lm["y"]) in seen, name
+
+
+# ---- Site model ----
+from wardzero_agents.site import load_site  # noqa: E402
+
+
+@pytest.fixture(scope="module")
+def model():
+    return load_site(ROOT / "config")
+
+
+def test_room_at_and_resolve(model):
+    assert model.room_at(*model.resolve("bed:B1")) == "B1"
+    assert model.resolve("reception_g1") == (1.05, 1.62)
+    assert model.room_at(-500, 0) is None
+
+
+def test_room_at_smallest_overlap(model):
+    a, b = model.rooms["Ward_Corridor"], model.rooms["Ward_Entrance"]
+    xs = [p[0] for r in (a, b) for p in r.poly]
+    ys = [p[1] for r in (a, b) for p in r.poly]
+    found = None
+    for i in range(int((max(xs) - min(xs)) / 0.1)):
+        for j in range(int((max(ys) - min(ys)) / 0.1)):
+            x, y = min(xs) + i * 0.1, min(ys) + j * 0.1
+            if a.contains(x, y) and b.contains(x, y):
+                found = (x, y)
+                break
+        if found:
+            break
+    assert found, "rooms do not overlap"
+    small = min((a, b), key=lambda r: r.area)
+    assert model.room_at(*found) == small.id
+
+
+def test_resolve_prefixes_and_order(model):
+    seat = model.seats["B2"]
+    assert model.resolve("B2") == (seat.x, seat.y)
+    assert model.resolve("seat:B2") == (seat.x, seat.y)
+    assert model.resolve("landmark:entrance") == model.resolve("entrance")
+    assert model.resolve("room:B2") != model.resolve("seat:B2")
+    assert model.room_at(*model.resolve("room:B2")) == "B2"
+    bed = model.beds["B2"]
+    assert model.resolve("bed:B2") == bed.side_point("right")
+    fid = next(iter(model.furniture))
+    f = model.furniture[fid]
+    assert model.resolve(f"furniture:{fid}") == (f.x, f.y)
+    assert model.resolve("nope") is None and model.resolve("room:nope") is None
+
+
+def test_bed_side_point(model):
+    b = model.beds["B1"]
+    l, r = b.side_point("left"), b.side_point("right")
+    assert math.hypot(l[0] - b.x, l[1] - b.y) == pytest.approx(0.6)
+    assert math.hypot(r[0] - b.x, r[1] - b.y) == pytest.approx(0.6)
+    assert l != r
+
+
+def test_place_rejects_wall(model):
+    g = model.grid
+    iy, ix = [int(v[0]) for v in np.nonzero(g.occ == 1)]
+    x, y = g.to_world(iy, ix)
+    assert model.check_place(x, y) == "inside a wall"
+    assert model.check_place(-500, 0) == "outside the building"
+    assert model.check_place(*model.resolve("entrance")) is None
+    bed = model.beds["B3"]
+    assert model.check_place(bed.x, bed.y, occupied_beds=["B3"]) == "bed B3 already has a patient"
+
+
+def test_summary_for_prompt(model):
+    s = model.summary_for_prompt(["B1", "Lobby"])
+    assert "B1" in s and "Lobby" in s
