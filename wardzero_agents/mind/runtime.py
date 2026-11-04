@@ -57,6 +57,10 @@ class MindDeps:
     run_dir: Optional[Path] = None
     checkpointer: Any = None
     robot_id: str = "g1"
+    # Campaign state, fixed at the start of the run because the persona card is a cached prefix.
+    trust_stage: int = 0
+    robot_memories: bool = False
+    word_of_mouth: Optional[bool] = None  # None: not a campaign
     # The sim clock; intents and speech are stamped with it when sent. None: the decision's start.
     clock: Optional[Callable[[], float]] = None
 

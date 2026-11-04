@@ -122,6 +122,8 @@ class Scenario(_Model):
     robot: RobotConfig = Field(default_factory=RobotConfig)
     robot_brief: Optional[dict] = None  # the job told to the robot; published latched on task/brief
     objects: list[dict] = Field(default_factory=list)  # items and call bells present at the start
+    campaign: bool = False  # trust carries across runs and word of mouth is rolled (Studio sets it)
+    ladder: dict[int, str] = Field(default_factory=dict)  # what each trust stage looks like (0..4)
     cast: list[CastEntry]
 
 

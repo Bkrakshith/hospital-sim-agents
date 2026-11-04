@@ -611,7 +611,8 @@ class StubWorld:
             near = [(pid, p.x, p.y) for pid, p in self.people.items() if p.posture not in ("gone", "lying")]
             for pid in self.robot.step(dt, self.site.grid, near):
                 self._log.append(("world", {"t": t, "kind": "contact", "person": pid,
-                                            "x": round(self.robot.x, 3), "y": round(self.robot.y, 3)}))
+                                            "x": round(self.robot.x, 3), "y": round(self.robot.y, 3),
+                                            "speed": round(self.robot.speed, 3)}))
             touching = set()
             if self.robot.speed > 0.05:
                 touching = {b.id for b in self.site.beds.values()

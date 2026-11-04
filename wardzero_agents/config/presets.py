@@ -282,7 +282,8 @@ def preset_to_scenario(preset: ScenarioPreset, root: "str | Path", dest: "str | 
         "id": preset.id, "known_places": preset.known_places, "duration_min": preset.duration_min, "seed": 7,
         "provider": "claude", "storyboard": f"../storyboards/{preset.id}.yaml", "deck": "../cards/studio.yaml",
         "robot": {"x": preset.robot_start.x, "y": preset.robot_start.y, "yaw": preset.robot_start.yaw},
-        "robot_brief": preset.robot_brief, "objects": preset.objects, "cast": cast}
+        "robot_brief": preset.robot_brief, "objects": preset.objects,
+        "ladder": {int(k): v for k, v in preset.ladder.items()}, "cast": cast}
     path = dest / "scenarios" / f"{preset.id}.yaml"
     path.write_text(yaml.safe_dump(scenario, sort_keys=False))
     return load_scenario(path)

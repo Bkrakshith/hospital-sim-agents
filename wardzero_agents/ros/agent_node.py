@@ -269,6 +269,12 @@ class AgentService:
             "latency_s": res.latency_s})
         self._track_provider(res)
 
+    def on_robot_experience(self, ev: dict) -> None:
+        """Something happened between a person and the robot that the debrief will weigh for trust."""
+        rec = {"t": self.now(), **ev, "kind": "robot_experience"}
+        self.runlog.write("world", rec)
+        self._event("robot_experience", f"{ev.get('person', '?')}: {ev.get('hint') or ev.get('what', '')}")
+
     def _event(self, kind: str, text: str) -> None:
         if self.events is None:
             return
@@ -388,6 +394,25 @@ def _prepare_memory(loaded: LoadedScenario, run_id: str, embedder):
     return ltm, mem, run_index, snap_in, pre
 
 
+def _prepare_campaign(loaded: LoadedScenario, ltm, mem, run_index: int):
+    from ..campaign import start_campaign
+    from ..config.presets import load_roles
+    try:
+        roles = load_roles(loaded.root)
+    except Exception:  # a scenario folder without role presets: neutral defaults
+        roles = {}
+    return start_campaign(loaded, ltm, mem, run_index, roles)
+
+
+def _campaign_args(camp, inst: PersonInstance) -> dict:
+    """MindDeps fields for one person; nothing for a scenario that is not a campaign."""
+    if camp is None:
+        return {}
+    stages, mems, wom = camp
+    return {"trust_stage": stages.get(inst.memory_key, 0),
+            "robot_memories": mems.get(inst.memory_key, False), "word_of_mouth": wom}
+
+
 def _prepare_kb(loaded: LoadedScenario, embedder):
     from ..kb.index import KnowledgeBase, build_default_kb, default_kb_sha256
     from ..memory import data_dir
@@ -431,6 +456,9 @@ async def _serve(args, loaded: LoadedScenario, run_dir: Path, run_id: str, test_
     ltm, mem, run_index, snap_in, snap_pre = await asyncio.to_thread(_prepare_memory, loaded, run_id,
                                                                      embedder)
     kb = await asyncio.to_thread(_prepare_kb, loaded, embedder)
+    camp = None
+    if loaded.scenario.campaign:
+        camp = await asyncio.to_thread(_prepare_campaign, loaded, ltm, mem, run_index)
     runlog = RunLog(run_dir)
     runlog.copy_configs(loaded)
     models = loaded.scenario.models
@@ -443,6 +471,9 @@ async def _serve(args, loaded: LoadedScenario, run_dir: Path, run_id: str, test_
         "snapshot_pre_restore": snap_pre, "snapshot_in": snap_in, "snapshot_out": None,
         "budget_usd": loaded.scenario.budget_usd, "cost_usd": 0.0, "started_at": started, "kb_sources_sha256": kb.sources_sha256,
     }
+    if camp is not None:
+        base_meta.update({"word_of_mouth": camp[2], "run_index": run_index,
+                          "project_seed": loaded.scenario.seed})
     _write_meta(runlog, run_dir, {"mode": "live", **base_meta} if not (run_dir / "meta.json").exists()
                 else base_meta)
 
@@ -470,7 +501,8 @@ async def _serve(args, loaded: LoadedScenario, run_dir: Path, run_id: str, test_
         def mind_factory(inst: PersonInstance, effects: AgentService) -> Mind:
             return Mind(MindDeps(inst=inst, loaded=loaded, gateway=effects.guard(gateway), kb=kb, ltm=ltm,
                                  run_id=run_id, run_index=run_index, effects=effects, runlog=runlog,
-                                 run_dir=run_dir, checkpointer=saver, clock=effects.now))
+                                 run_dir=run_dir, checkpointer=saver, clock=effects.now,
+                                 **_campaign_args(camp, inst)))
 
         svc = AgentService(loaded, runlog, _Out(), mind_factory, now=ros.now, ltm=ltm, events=publish_event)
         holder["svc"] = svc

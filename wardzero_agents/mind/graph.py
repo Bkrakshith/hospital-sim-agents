@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import re
 import uuid
 from typing import TYPE_CHECKING, Any, Iterable, Optional, TypedDict
 
@@ -11,6 +12,7 @@ from langgraph.graph import END, START, StateGraph
 
 from ..contracts import Intent, Nudge, Observation, Say, Status
 from ..llm.gateway import LLMRequest
+from ..memory.longterm import render_memory, robot_tag
 from .prompts import (
     INTENT_KINDS, KB_HEADER, MAX_MEMORIES, MOODS, SUMMARY_FIXED, SUMMARY_SCHEMA,
     SYSTEM_FIXED, decision_schema, persona_card, render_situation, role_kinds, system_fixed)
@@ -140,10 +142,21 @@ def _event_line(t: float, frame: dict, decision: Optional[dict], error: Optional
     return "; ".join(parts)
 
 
+_ROBOT_WORDS = re.compile(r"\b(robot|g1)\b", re.I)
+
+
+def _robot_tag_for(text: str, robot_id: str) -> Optional[str]:
+    """A memory that talks about the robot is tagged with it, so a different robot is not credited."""
+    return robot_tag(robot_id) if _ROBOT_WORDS.search(text) else None
+
+
 def build_graph(deps: "MindDeps", checkpointer: Any = None):
     """Compile the mind graph for one person. thread_id in the run config must be the person id."""
     inst, loaded = deps.inst, deps.loaded
-    card = persona_card(inst, loaded.area, loaded.site, loaded.scenario.known_places)
+    card = persona_card(inst, loaded.area, loaded.site, loaded.scenario.known_places,
+                        trust_stage=deps.trust_stage, ladder=loaded.scenario.ladder or None,
+                        robot_memories=deps.robot_memories,
+                        word_of_mouth=deps.word_of_mouth if loaded.scenario.campaign else None)
     person = inst.person_id
     n_persona = sum(1 for c in deps.kb.chunks if c.file == "<persona>") if deps.kb is not None else 0
 
@@ -176,7 +189,7 @@ def build_graph(deps: "MindDeps", checkpointer: Any = None):
         if deps.ltm is not None:
             mem = await asyncio.to_thread(deps.ltm.search, inst.memory_key, q, LTM_K,
                                           run_index=deps.run_index)
-            ltm_hits = [h.text for h in mem]
+            ltm_hits = [render_memory(h, deps.robot_id) for h in mem]
         return {"kb_hits": kb_hits, "ltm_hits": ltm_hits}
 
     def history_blocks(state: MindState) -> list[str]:
@@ -269,8 +282,10 @@ def build_graph(deps: "MindDeps", checkpointer: Any = None):
                 text = m["text"].strip()
                 imp = _clamp01(float(m["importance"])) if _is_number(m.get("importance")) else 0.5
                 if deps.ltm is not None:
+                    tag = _robot_tag_for(text, deps.robot_id)
+                    extra = {"tag": tag} if tag else {}
                     await asyncio.to_thread(deps.ltm.add, inst.memory_key, deps.run_id, t, "episode",
-                                            text, imp)
+                                            text, imp, **extra)
                 record["memories"].append({"text": text, "importance": imp})
         except Exception as exc:
             # The summary itself worked, so trim anyway; retrying would only repeat the same call.

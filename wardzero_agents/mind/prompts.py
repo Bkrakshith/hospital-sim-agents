@@ -164,8 +164,20 @@ def _level(x: float) -> str:
     return "low" if x < 0.35 else "moderate" if x < 0.65 else "high"
 
 
-def persona_card(inst: PersonInstance, area: WaitingArea, site=None, known_places=()) -> str:
-    """Stable description of one person and the places they can name. It is the cached prompt block."""
+TRUST_HEADER = "What you think of this robot, from experience:"
+TRUST_USE = ("Whether you use it depends on how much you trust it against how sure you are of doing "
+             "this yourself, how urgent things are, and whether anyone else can help.")
+WOM_YES = "If it comes up naturally, you may tell others what you think of the robot."
+WOM_NO = "Keep your opinion of the robot to yourself unless asked."
+
+
+def persona_card(inst: PersonInstance, area: WaitingArea, site=None, known_places=(), *,
+                 trust_stage: int = 0, ladder: "dict[int, str] | None" = None,
+                 robot_memories: bool = False, word_of_mouth: "bool | None" = None) -> str:
+    """Stable description of one person and the places they can name. It is the cached prompt block.
+
+    The trust section is added only for a campaign person who has moved off stage 0 or remembers the
+    robot; word_of_mouth is None outside campaigns, so existing scenarios keep their exact prompt."""
     lines = [
         f"You are {inst.display_name} (person id {inst.person_id}), {inst.age}, {inst.sex}.",
         f"Role: {inst.role}. Why you are here: {inst.condition}",
@@ -202,6 +214,13 @@ def persona_card(inst: PersonInstance, area: WaitingArea, site=None, known_place
     else:
         lines += _known_places(inst, site, known_places)
     lines.append("The reception robot is g1.")
+    if trust_stage > 0 or robot_memories:
+        lines.append(TRUST_HEADER)
+        if ladder and ladder.get(trust_stage):
+            lines.append(ladder[trust_stage])
+        lines.append(TRUST_USE)
+    if word_of_mouth is not None:
+        lines.append(WOM_YES if word_of_mouth else WOM_NO)
     return "\n".join(lines)
 
 
