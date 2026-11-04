@@ -5,6 +5,10 @@ thread; the asyncio loop runs in the main thread and owns all node state. ROS ca
 parse the message and hand it to the loop with call_soon_threadsafe, so state is never touched
 from two threads. Publishing happens on the loop thread.
 
+The Isaac host has no asyncio loop: its bridges are built with loop=None and an explicit
+domain_id (one rclpy Context per domain, S1 Q3), callbacks are queued and the frame loop runs them
+with drain().
+
 Only the nodes' main() functions import this module, so the service classes stay testable
 without a sourced ROS environment.
 """
@@ -13,6 +17,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import queue
 import signal
 import threading
 from typing import Any, Callable, Optional
@@ -47,8 +52,8 @@ def base_args(description: str) -> argparse.ArgumentParser:
     return p
 
 
-def make_node(name: str, use_sim_time: bool = True) -> Node:
-    return Node(name, parameter_overrides=[
+def make_node(name: str, use_sim_time: bool = True, context=None) -> Node:
+    return Node(name, context=context, parameter_overrides=[
         Parameter("use_sim_time", Parameter.Type.BOOL, use_sim_time)])
 
 
@@ -57,17 +62,30 @@ def sim_now(node: Node) -> float:
 
 
 class RosBridge:
-    """One node, its executor thread and the asyncio loop it hands callbacks to."""
+    """One node, its executor thread and the asyncio loop it hands callbacks to.
 
-    def __init__(self, name: str, loop: asyncio.AbstractEventLoop, use_sim_time: bool = True):
-        rclpy.init(signal_handler_options=SignalHandlerOptions.NO)
-        self.node = make_node(name, use_sim_time)
+    With loop=None the callbacks wait in a queue until drain() runs them on the caller's thread.
+    With a domain_id the bridge has its own rclpy Context on that domain (the default context and
+    ROS_DOMAIN_ID otherwise)."""
+
+    def __init__(self, name: str, loop: Optional[asyncio.AbstractEventLoop], use_sim_time: bool = True,
+                 domain_id: Optional[int] = None):
+        self.context = None
+        if domain_id is None:
+            rclpy.init(signal_handler_options=SignalHandlerOptions.NO)
+        else:
+            self.context = rclpy.Context()
+            rclpy.init(context=self.context, domain_id=int(domain_id),
+                       signal_handler_options=SignalHandlerOptions.NO)
+        self.domain_id = domain_id
+        self.node = make_node(name, use_sim_time, self.context)
         self.loop = loop
+        self._queue: "queue.SimpleQueue[tuple[Callable, tuple]]" = queue.SimpleQueue()
         self._pubs: dict[str, Any] = {}
         self._subs: dict[str, Any] = {}
         self._lock = threading.Lock()
         self._bad: dict[str, int] = {}
-        self.executor = MultiThreadedExecutor()
+        self.executor = MultiThreadedExecutor(context=self.context)
         self.executor.add_node(self.node)
         self._thread = threading.Thread(target=self._spin, name=f"{name}-spin", daemon=True)
 
@@ -87,10 +105,28 @@ class RosBridge:
 
     # ---- hand-off ------------------------------------------------------------------------
     def _to_loop(self, fn: Callable, *args) -> None:
+        if self.loop is None:
+            self._queue.put((fn, args))
+            return
         try:
             self.loop.call_soon_threadsafe(fn, *args)
         except RuntimeError:
             pass  # the loop is closing
+
+    def drain(self, limit: int = 10000) -> int:
+        """Run the queued callbacks (loop=None bridges). Returns how many ran."""
+        n = 0
+        while n < limit:
+            try:
+                fn, args = self._queue.get_nowait()
+            except queue.Empty:
+                break
+            n += 1
+            try:
+                fn(*args)
+            except Exception:  # a bad message must not stop the frame loop (asyncio logs and goes on too)
+                log.exception("ROS callback failed")
+        return n
 
     def _warn_bad(self, topic: str, exc: Exception) -> None:
         n = self._bad.get(topic, 0) + 1
@@ -151,9 +187,13 @@ class RosBridge:
             self.node.destroy_node()
         except Exception:
             pass
-        if rclpy.ok():
+        if self.context is not None:
+            if self.context.ok():
+                rclpy.shutdown(context=self.context)
+        elif rclpy.ok():
             rclpy.shutdown()
-        self._thread.join(timeout=2.0)
+        if self._thread.ident is not None:  # started
+            self._thread.join(timeout=2.0)
 
 
 def install_stop_signals(loop: asyncio.AbstractEventLoop, stop: asyncio.Event) -> None:

@@ -17,6 +17,7 @@ from .keys import redact
 STREAMS = (
     "decisions", "intents", "says", "nudges", "reflex", "world",
     "cards", "audio", "status", "tokens", "fairness", "summaries", "objects", "robot_tasks", "robot_pose",
+    "host",  # the Isaac host: frame times and VRAM
 )
 
 

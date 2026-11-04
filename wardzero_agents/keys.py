@@ -3,6 +3,9 @@
 Every user brings their own Claude or OpenAI account. Keys live in the OS keyring
 (or a mode-600 JSON file) and never appear in logs, topics, run folders or git.
 Exception messages never contain a key or key file contents.
+
+The provider SDKs and keyring are imported inside the functions that use them, so the redaction
+and the exceptions import without them (the Isaac host's Python has neither, and never needs a key).
 """
 from __future__ import annotations
 
@@ -13,11 +16,6 @@ import os
 import re
 import stat
 from typing import Any, Literal
-
-import anthropic
-import keyring
-import keyring.errors
-import openai
 
 SERVICE = "wardzero-agents"
 Provider = Literal["claude", "openai"]
@@ -41,10 +39,13 @@ class ModelUnavailable(Exception):
 
 
 def set_key(provider: Provider, secret: str) -> None:
+    import keyring
     keyring.set_password(SERVICE, provider, secret)
 
 
 def clear_key(provider: Provider) -> None:
+    import keyring
+    import keyring.errors
     try:
         keyring.delete_password(SERVICE, provider)
     except keyring.errors.PasswordDeleteError:
@@ -79,6 +80,8 @@ def _file_key(provider: str) -> str | None:
 
 def get_key(provider: Provider) -> str | None:
     """Keyring first, then the mode-600 key file, else None."""
+    import keyring
+    import keyring.errors
     try:
         value = keyring.get_password(SERVICE, provider)
     except keyring.errors.KeyringError:
@@ -89,6 +92,8 @@ def get_key(provider: Provider) -> str | None:
 
 
 def make_client(provider: Provider):
+    import anthropic
+    import openai
     key = get_key(provider)
     if provider == "claude":
         try:
@@ -104,6 +109,7 @@ def make_client(provider: Provider):
 
 
 def _no_credentials(provider: str, exc: BaseException) -> bool:
+    import openai
     text = str(exc)
     if provider == "claude":
         return isinstance(exc, TypeError) and "authentication" in text.lower()
@@ -114,6 +120,8 @@ def _no_credentials(provider: str, exc: BaseException) -> bool:
 
 async def check(provider: Provider, client: Any, model: str) -> None:
     """Prove the credential works and the model is reachable. Raises a fix-it error."""
+    import anthropic
+    import openai
     mod = anthropic if provider == "claude" else openai
     try:
         await client.models.retrieve(model)
