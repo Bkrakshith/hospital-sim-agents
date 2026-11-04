@@ -53,3 +53,11 @@ def test_live_audit_skips_nodes_that_vanish():
             return [("gone", "/"), *self.graph]
 
     assert live_audit(Flaky({("reception_bot", "/"): ["/g1/audio/heard"]})) == []
+
+
+def test_fairness_flags_new_forbidden_topics():
+    from wardzero_agents.ros.topics import robot_topics
+    live = list(robot_topics("robot").values())
+    assert audit({"my_robot_stack": live}) == []  # the whole robot-side table is allowed
+    v = audit({"my_robot_stack": live + ["/humans/P1/status", "/humans/roster"]})
+    assert [x["topic"] for x in v] == ["/humans/P1/status", "/humans/roster"]

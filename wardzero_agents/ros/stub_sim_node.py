@@ -4,7 +4,8 @@ It owns the world and the sim clock. Each wall step it advances sim time by time
 (not while paused, not while it waits for the other nodes to come up, and in lockstep not while
 any decision is pending), then publishes /clock, the roster (on change), statuses (10 Hz sim),
 observations (2 Hz sim, and at once when there is new audio), every audio event and what the
-robot's microphone hears.
+robot's microphone hears. With a robot it also moves the body (cmd_vel, goal_pose), runs the task
+actions and publishes odom (20 Hz), camera/bbox_3d, perception/objects (5 Hz) and task/result.
 
     python -m wardzero_agents.ros.stub_sim_node --run-dir DIR --scenario FILE [--time-scale F]
         [--lockstep] [--wait-for agents,director] [--ready-timeout 600]
@@ -21,10 +22,14 @@ from dataclasses import dataclass, field
 from typing import Callable, Iterable, Optional
 
 from ..config.loader import ConfigError, LoadedScenario, load_scenario
-from ..contracts import AudioEvent, Control, Heard, Intent, Observation, Roster, Say, Status, WorldEvent
+from ..contracts import (
+    AudioEvent, Control, Heard, Intent, Nudge, Observation, Roster, Say, Status, WorldEvent,
+)
 from ..runlog import RunLog
 from ..world import audio
 from ..world.oracle import Pose
+from ..world.perception import bbox_3d, perceive_objects
+from ..world.robot_tasks import RobotTasks
 from ..world.stub_world import StubWorld
 
 log = logging.getLogger("wardzero.stub_sim")
@@ -33,6 +38,8 @@ STEP_HZ = 100.0
 STATUS_PERIOD_S = 0.1
 STATUS_RECORD_PERIOD_S = 0.5
 OBS_PERIOD_S = 0.5
+ODOM_PERIOD_S = 0.05  # 20 Hz
+PERCEPTION_PERIOD_S = 0.2  # 5 Hz
 OBS_WINDOW_S = 2.0
 MAX_WALL_DT = 0.5  # a stalled loop does not make the sim jump further than this
 REPLY_WINDOW_S = 20.0  # a robot reply goes to whoever it last heard speak, if that was this recent
@@ -50,6 +57,11 @@ class SimOutputs:
     observations: list[Observation] = field(default_factory=list)
     audio: list[AudioEvent] = field(default_factory=list)
     robot_heard: list[Heard] = field(default_factory=list)
+    odom: Optional[dict] = None  # robot pose and twist, 20 Hz
+    detections: Optional[dict] = None  # camera/bbox_3d message, 5 Hz
+    objects: Optional[dict] = None  # perception/objects message, 5 Hz
+    task_results: list[dict] = field(default_factory=list)
+    nudges: list[Nudge] = field(default_factory=list)  # to the people the robot offers to guide
     stop: bool = False
 
 
@@ -67,6 +79,9 @@ class StubSimService:
         self.lockstep = lockstep
         self.world = StubWorld(loaded, loaded.scenario.seed if seed is None else seed)
         self.robot = loaded.scenario.robot.enabled
+        self.tasks = RobotTasks(self.world)
+        self._next_odom = 0.0
+        self._next_percept = 0.0
         self.duration_s = loaded.scenario.duration_min * 60.0
         self.t = 0.0
         self.paused = False
@@ -194,6 +209,47 @@ class StubSimService:
             ev = ev.model_copy(update={"addressee": min(near)[1]})
         self._emit([ev])
 
+    # ---- the robot's body and tasks --------------------------------------------------------
+    @property
+    def robot_brief(self) -> Optional[dict]:
+        """The task brief to publish latched on task/brief, from the scenario's robot_brief."""
+        brief = getattr(self.loaded.scenario, "robot_brief", None)
+        if brief is None:
+            return None
+        return brief.model_dump(mode="json") if hasattr(brief, "model_dump") else dict(brief)
+
+    def on_cmd_vel(self, cmd: "tuple[float, float]") -> None:
+        if self.robot:
+            self.world.robot.set_cmd_vel(*cmd)
+
+    def on_goal(self, x: float, y: float, yaw: Optional[float] = None) -> None:
+        if self.robot and not self.world.robot.set_goal(x, y, yaw):
+            log.warning("goal_pose (%.2f, %.2f) has no route; ignored", x, y)
+
+    def on_task_action(self, msg: dict) -> None:
+        if not self.robot or not isinstance(msg, dict):
+            return
+        self.runlog.write("robot_tasks", {"t": self.t, "kind": "action", **{k: v for k, v in msg.items()
+                                                                           if k != "t"}})
+        self.tasks.handle(msg, self.t)
+
+    def _robot_step(self, dt: float, out: SimOutputs) -> None:
+        res = self.tasks.step(self.t, dt)
+        self._emit(res.audio)
+        out.nudges = list(res.nudges)
+        out.task_results = res.results
+        for r in res.results:
+            self.runlog.write("robot_tasks", {"kind": "result", **r})
+        if self.t >= self._next_odom - 1e-9:
+            x, y, yaw = self.world.robot.pose
+            out.odom = {"t": self.t, "x": x, "y": y, "yaw": yaw, "vx": self.world.robot.vx,
+                        "wz": self.world.robot.wz}
+            self._next_odom = self.t + ODOM_PERIOD_S
+        if self.t >= self._next_percept - 1e-9:
+            out.detections = bbox_3d(self.world, self.world.robot, self.t)
+            out.objects = {"t": self.t, **perceive_objects(self.world, self.world.robot)}
+            self._next_percept = self.t + PERCEPTION_PERIOD_S
+
     def on_world_event(self, ev: WorldEvent) -> None:
         self._emit(self.world.apply_world_event(ev.model_copy(update={"t": self.t})))
 
@@ -213,11 +269,15 @@ class StubSimService:
         wall_dt = min(max(0.0, wall_dt), MAX_WALL_DT)
         held = (self.paused or bool(self.waiting) or (self.lockstep and self._pending_now() > 0)
                 or self.t >= self.duration_s)
+        t0 = self.t
         if not held and not self._stop:
             self.t = min(self.duration_s, self.t + self.time_scale * wall_dt)
             self.world.step(self.t)
         self._flush_world()
         out = SimOutputs(clock=self.t)
+        if self.robot:
+            self._robot_step(self.t - t0, out)
+            self._flush_world()
 
         roster = self.world.roster(self.t)
         key = tuple((p.id, p.persona) for p in roster.people)
@@ -262,6 +322,10 @@ def _parse(argv):
 
 
 async def _run(args) -> int:
+    import json
+
+    from geometry_msgs.msg import PoseStamped, Twist
+    from nav_msgs.msg import Odometry
     from rosgraph_msgs.msg import Clock
     from std_msgs.msg import Int32, String
 
@@ -293,7 +357,38 @@ async def _run(args) -> int:
 
     for pid in svc.world.people:
         subscribe_person(pid)
-    ros.subscribe(String, topics.G1_SAY, svc.on_robot_say, QOS, convert=lambda m: m.data)
+    rcfg = loaded.scenario.robot
+    rt = topics.robot_topics(rcfg.ns)
+    say_topics = {rt["say"]}
+    heard_topics = [rt["heard"]]
+    if topics.uses_g1_alias(rcfg.ns, rcfg.profile):  # the reception bot and old tests keep working
+        say_topics.add(topics.G1_SAY)
+        heard_topics.append(topics.G1_HEARD)
+    for name in sorted(say_topics):
+        ros.subscribe(String, name, svc.on_robot_say, QOS, convert=lambda m: m.data)
+    ros.subscribe(Twist, rt["cmd_vel"], svc.on_cmd_vel, QOS,
+                  convert=lambda m: (m.linear.x, m.angular.z))
+
+    def on_goal(m) -> None:
+        q = m.pose.orientation
+        yaw = math.atan2(2 * (q.w * q.z + q.x * q.y), 1 - 2 * (q.y * q.y + q.z * q.z))
+        svc.on_goal(m.pose.position.x, m.pose.position.y, yaw)
+
+    ros.subscribe(PoseStamped, rt["goal_pose"], on_goal, QOS)
+
+    def parse_action(m):
+        try:
+            d = json.loads(m.data)
+            return d if isinstance(d, dict) else {}
+        except ValueError:
+            return {}
+
+    ros.subscribe(String, rt["task_action"], svc.on_task_action, QOS, convert=parse_action)
+    odom_pub = ros.publisher(rt["odom"], Odometry, QOS)
+    for key in ("bbox_3d", "objects", "task_result"):
+        ros.publisher(rt[key], String, QOS)
+    if svc.robot_brief is not None:
+        ros.publish_text(rt["task_brief"], json.dumps(svc.robot_brief), QOS_LATCHED)
     ros.subscribe_json(WorldEvent, topics.WORLD_EVENT, svc.on_world_event)
     ros.subscribe_json(Control, topics.CONTROL, svc.control)
 
@@ -332,7 +427,24 @@ async def _run(args) -> int:
             for obs in out.observations:
                 ros.publish_json(topics.observation(obs.person), obs)
             for h in out.robot_heard:
-                ros.publish_json(topics.G1_HEARD, h)
+                for name in heard_topics:
+                    ros.publish_json(name, h)
+            if out.odom is not None:
+                o = Odometry()
+                o.header.frame_id, o.child_frame_id = "map", "base_link"
+                o.header.stamp = msg.clock
+                o.pose.pose.position.x, o.pose.pose.position.y = out.odom["x"], out.odom["y"]
+                o.pose.pose.orientation.z = math.sin(out.odom["yaw"] / 2)
+                o.pose.pose.orientation.w = math.cos(out.odom["yaw"] / 2)
+                o.twist.twist.linear.x, o.twist.twist.angular.z = out.odom["vx"], out.odom["wz"]
+                odom_pub.publish(o)
+            if out.detections is not None:
+                ros.publish_text(rt["bbox_3d"], json.dumps(out.detections))
+                ros.publish_text(rt["objects"], json.dumps(out.objects))
+            for r in out.task_results:
+                ros.publish_text(rt["task_result"], json.dumps(r))
+            for n in out.nudges:
+                ros.publish_json(topics.nudge(n.person), n)
             if out.stop:
                 log.info("scenario over at t=%.1f s; stopping the run", out.clock)
                 ros.publish_json(topics.CONTROL, Control(action="stop"))

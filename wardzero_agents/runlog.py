@@ -16,7 +16,7 @@ from .keys import redact
 
 STREAMS = (
     "decisions", "intents", "says", "nudges", "reflex", "world",
-    "cards", "audio", "status", "tokens", "fairness", "summaries", "objects",
+    "cards", "audio", "status", "tokens", "fairness", "summaries", "objects", "robot_tasks",
 )
 
 

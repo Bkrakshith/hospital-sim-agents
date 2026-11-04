@@ -88,9 +88,16 @@ class Chaos(_Model):
 
 class RobotConfig(_Model):
     enabled: bool = True
+    profile: str = "g1_claude"
+    ns: str = "robot"
     x: float = 1.05
     y: float = 1.62
     yaw: float = -1.5708
+    reach: tuple[float, float] = (0.6, 1.3)  # [zmin, zmax] the hands can put things at, metres
+    radius: float = Field(default=0.3, gt=0)
+    max_speed: float = Field(default=1.0, gt=0)
+    fov_deg: float = Field(default=87.0, gt=0, le=360)
+    range_m: float = Field(default=6.0, gt=0)
 
 
 class Scenario(_Model):

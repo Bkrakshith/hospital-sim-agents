@@ -42,6 +42,8 @@ from wardzero_agents.world.objects import (
 )
 from wardzero_agents.world.reach import giver_reach_ok, receiver_zone_ok
 from wardzero_agents.world.oracle import Entity, Pose, visible
+from wardzero_agents.world.perception import Tracks
+from wardzero_agents.world.robot_body import RobotBody
 
 ROBOT_ID = "g1"
 APPROACH_GAP_M = 1.0
@@ -57,7 +59,6 @@ LOS_STEP_M = 0.1
 STATIC_ROLE = "patient_static"
 STATIC_PERSONA = "static_patient"
 
-ROBOT_REACH_Z = (0.4, 1.5)
 PERSON_REACH_Z = (0.5, 1.6)
 GIVE_RANGE_M = 1.5
 TAKE_RANGE_M = 1.2
@@ -142,7 +143,10 @@ class StubWorld:
         self._sight = self._wall_cells()
         self._seats = dict(self.site.seats)
         r = loaded.scenario.robot
-        self.robot_pose = Pose(r.x, r.y, r.yaw)
+        self.robot = RobotBody(r.x, r.y, r.yaw, r.radius, r.max_speed, self.router)
+        self.robot_reach = tuple(r.reach)
+        self.tracks = Tracks()
+        self.robot_results: list[dict] = []  # resolved robot hand-over offers, drained by the sim node
         self.objects = WorldObjects()
         self.experience: list[dict] = []  # failure hints for the robot's experience log
         self._outbox: list[AudioEvent] = []  # audio the world raised by itself (fire alarm)
@@ -171,6 +175,14 @@ class StubWorld:
                     self.people[f"S{b.id}"] = self._static_patient(b)
 
     # ---- helpers -------------------------------------------------------------------------
+    @property
+    def robot_pose(self) -> Pose:
+        return Pose(*self.robot.pose)
+
+    @robot_pose.setter
+    def robot_pose(self, pose: Pose) -> None:
+        self.robot.teleport(pose.x, pose.y, pose.yaw)
+
     def _static_patient(self, bed) -> _Person:
         """A patient lying in a bed: no mind, a fixed status, seen but never heard."""
         sid = f"S{bed.id}"
@@ -577,6 +589,11 @@ class StubWorld:
         for pid, p in self.people.items():
             if p.plan:
                 self._advance(pid, p, dt)
+        if self.loaded.scenario.robot.enabled:
+            near = [(pid, p.x, p.y) for pid, p in self.people.items() if p.posture != "gone"]
+            for pid in self.robot.step(dt, self.site.grid, near):
+                self._log.append(("world", {"t": t, "kind": "contact", "person": pid,
+                                            "x": round(self.robot.x, 3), "y": round(self.robot.y, 3)}))
         self._step_objects(t, dt)
 
     def _wall_cells(self) -> np.ndarray:
@@ -797,7 +814,7 @@ class StubWorld:
         if item is None or item.holder != giver:
             return "not_holding"
         gpos = self._pos(giver)
-        reach = ROBOT_REACH_Z if giver == ROBOT_ID else PERSON_REACH_Z
+        reach = self.robot_reach if giver == ROBOT_ID else PERSON_REACH_Z
         if gpos is None or not giver_reach_ok(gpos, reach, place):
             return "out_of_reach_giver"
         if receiver != ROBOT_ID:
@@ -847,6 +864,9 @@ class StubWorld:
                 continue
             del self._offers[receiver]
             ok, why = self.hand_over(o["giver"], receiver, o["item"], o["place"], max(t, resp[1] if resp else t))
+            if o["giver"] == ROBOT_ID:
+                self.robot_results.append({"id": o["intent"], "action": "hand_over", "ok": ok,
+                                           "reason": why})
             if giver is not None and giver.intent_id == o["intent"]:
                 giver.state, giver.reason = ("done", None) if ok else ("failed", why)
                 giver.progress = 1.0 if ok else giver.progress
