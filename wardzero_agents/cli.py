@@ -375,7 +375,9 @@ def _robot_override(loaded, args) -> dict:
 def _claude_key_present() -> bool:
     """Whether a Claude credential is configured (not whether it works; the run checks that)."""
     if os.environ.get("WARDZERO_TEST_FAKE_LLM") == "1":
-        return False  # tests and demos without a provider keep the placeholder robot
+        # tests and demos without a provider keep the placeholder robot, unless a smoke test asks for the built-in
+        # Claude robot on the fake model (WARDZERO_TEST_CLAUDE_BOT=1: no key, no spend)
+        return os.environ.get("WARDZERO_TEST_CLAUDE_BOT") == "1"
     return key_source("claude") != KEY_LABELS[3]
 
 

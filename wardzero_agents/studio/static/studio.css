@@ -345,7 +345,8 @@ main { flex: 1; min-height: 0; display: flex; }
 /* run page */
 .settings { border: 0; margin: 0; padding: 0; min-width: 0; display: flex; flex-direction: column; gap: 14px; }
 .settings:disabled { opacity: .55; }
-.field.inline { flex-direction: row; align-items: center; justify-content: space-between; gap: 12px; }
+.field.inline { flex-direction: row; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px 12px; }
+.field.inline .hint { flex-basis: 100%; margin: 0; }
 .numwrap { position: relative; width: 140px; }
 .numwrap input.text { padding-right: 52px; text-align: right; font-variant-numeric: tabular-nums; }
 .numwrap em { position: absolute; right: 12px; top: 50%; transform: translateY(-50%); font-style: normal; color: var(--dim); font-size: 13px; pointer-events: none; }

@@ -67,6 +67,7 @@ def write_variant(tmp_path: Path) -> Path:
     src = cfg / "scenarios" / "waiting_area_v1.yaml"
     scenario = yaml.safe_load(src.read_text())
     scenario.update(id=SCENARIO_ID, duration_min=3, robot_brief=BRIEF)
+    scenario["robot"] = {**scenario.get("robot", {}), "x": -2.0, "y": 0.6, "yaw": 3.1416}  # facing the waiting area
     out = cfg / "scenarios" / f"{SCENARIO_ID}.yaml"
     out.write_text(yaml.safe_dump(scenario, sort_keys=False))
     return out
