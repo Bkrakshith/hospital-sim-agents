@@ -42,7 +42,7 @@ def test_check_numbers_drops_invented():
     rep = {"trays": {"correct": 5, "total": 9}, "pass_rate": 0.5, "mean_wait_s": 12.46, "name": "P1"}
     text = ("The robot delivered 7 of 9 trays. It delivered 5 of 9 trays [03:12]. "
             "Half were wrong, which is 50% of them. About 12.5 seconds went by. It took 12.9 seconds. "
-            "P1 was upset at [10:45].\nA second paragraph with 41%.\nA third, kept.")
+            "P1 was upset at [10:45].\nA second paragraph with 41%.\nA closing paragraph, kept.")
     out = check_numbers(text, rep)
     assert "7 of 9" not in out and "12.9" not in out and "41%" not in out
     assert "5 of 9 trays [03:12]." in out          # the stamp is exempt, the figures are known
@@ -165,6 +165,7 @@ def test_batch_restores_snapshot_between_repeats(tmp_path):
 
     batch = run_batch(Staged, 3, False, False, runner=runner, preset=AE, batch_root=tmp_path / "out", mem_path=mem)
     assert starts[0] == starts[1] == starts[2] and len(starts[0]) == 1
+    assert db_state(mem) == starts[0]                  # the user's memory is back as it was
     assert calls == [(100, None), (101, None), (102, None)]
     data = json.loads((batch / "batch.json").read_text())
     assert data["label"] == "repeatability" and data["snapshot"].startswith("batch-") and data["n"] == 3
@@ -290,3 +291,72 @@ def test_run_repeat_makes_a_batch(tmp_path, monkeypatch, capsys):
     assert data["label"] == "repeatability" and data["seeds"] == [data["seeds"][0], data["seeds"][0] + 1]
     assert len([p for p in runs if not p.name.startswith("batch-")]) == 2
     assert "repeatability" in capsys.readouterr().out
+
+
+def test_batch_puts_memory_back_after_an_exception_and_removes_a_db_it_created(tmp_path):
+    mem = memory_path(data_dir())
+    ltm = LongTermMemory(mem, HashEmbedder())
+    ltm.ensure_seed("P1", ["I like gardens."])
+    start = db_state(mem)
+
+    def boom(seed, profile):
+        ltm.ensure_seed("extra", ["changed"])
+        raise RuntimeError("run failed")
+    with pytest.raises(RuntimeError):
+        run_batch(Staged, 2, False, False, runner=boom, preset=AE, batch_root=tmp_path / "out", mem_path=mem)
+    assert db_state(mem) == start
+    mem.unlink()
+
+    def create(seed, profile):
+        LongTermMemory(mem, HashEmbedder()).ensure_seed("P1", ["x"])
+        return make_ae_run(tmp_path / "rr")
+    run_batch(Staged, 1, False, False, runner=create, preset=AE, batch_root=tmp_path / "out", mem_path=mem)
+    assert not mem.exists()
+
+
+def test_batch_with_carry_memory_keeps_the_last_state(tmp_path):
+    mem = memory_path(data_dir())
+    ltm = LongTermMemory(mem, HashEmbedder())
+    ltm.ensure_seed("P1", ["I like gardens."])
+
+    def runner(seed, profile):
+        ltm.ensure_seed(f"extra{seed}", ["new"])
+        return make_ae_run(tmp_path / f"c{seed}")
+    run_batch(Staged, 2, True, False, runner=runner, preset=AE, batch_root=tmp_path / "out", mem_path=mem)
+    assert len(db_state(mem)) == 3
+
+
+def test_batch_headline_counts_invalid_runs(tmp_path):
+    mem = memory_path(data_dir())
+    LongTermMemory(mem, HashEmbedder()).ensure_seed("P1", ["x"])
+
+    def runner(seed, profile):
+        rd = make_ae_run(tmp_path / f"i{seed}")
+        write(rd, "fairness", [{"t": 1.0, "node": "n", "topic": "/t"}])
+        return rd
+    b = run_batch(Staged, 2, False, False, runner=runner, preset=AE, batch_root=tmp_path / "out", mem_path=mem)
+    assert "2 INVALID" in (b / "report.html").read_text()
+
+
+def test_number_words_and_multipliers_are_checked():
+    rep = {"trays": {"correct": 5, "total": 9}, "metrics": {"contacts": 0.0}}
+    out = check_numbers("Seven of nine trays were delivered. Five of nine trays were delivered. Twice the robot "
+                        "stopped. Half of them waited. No one complained. The third try failed.", rep)
+    assert "Seven" not in out and "Twice" not in out and "third" not in out and "Half" not in out
+    assert "Five of nine trays were delivered." in out and "No one complained." in out
+    assert "Twice the robot stopped." in check_numbers("Twice the robot stopped.", {"metrics": {"stops": 2}})
+    assert "Half of them waited." in check_numbers("Half of them waited.", {"share": 0.5})
+
+
+def test_seed_run_index_and_tokens_are_not_citable():
+    rep = {"run": {"seed": 7, "run_index": 4, "duration_s": 300.0}, "tokens": {"input": 1234, "cost_usd": 0.31},
+           "metrics": {"contacts": 2.0}, "narrative": "It touched 9 people."}
+    out = check_numbers("The robot stopped 7 times. It was run number 4. It used 1234 tokens. It cost 0.31. "
+                        "It touched 2 people. The run lasted 300 seconds.", rep)
+    assert out == "It touched 2 people. The run lasted 300 seconds."
+
+
+def test_narrative_text_cannot_trigger_a_placeholder(tmp_path):
+    rd = debriefed_run(tmp_path)
+    page = build_report(rd, AE, FakeGateway(report_policy("Look {{facts}} and {{title}} here [01:00]."))).read_text()
+    assert "{{facts}}" in page and page.count('id="facts"') == 1

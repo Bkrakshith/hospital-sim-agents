@@ -107,14 +107,18 @@ def run_batch(scenario, n: int, carry_memory: bool = False, baseline: bool = Fal
         else:
             arms.append(("baseline", BASELINE_PROFILE))
     out_arms = {}
-    for arm, profile in arms:
-        rows = []
-        for i, seed in enumerate(seeds):
-            if not carry_memory or i == 0:
-                reset()
-            log(f"{arm}: run {i + 1} of {n}, seed {seed}")
-            rows.append(_run_row(Path(runner(seed=seed, profile=profile)), seed, preset))
-        out_arms[arm] = {"profile": profile or sc.robot.profile, **summarise_arm(rows)}
+    try:
+        for arm, profile in arms:
+            rows = []
+            for i, seed in enumerate(seeds):
+                if not carry_memory or i == 0:
+                    reset()
+                log(f"{arm}: run {i + 1} of {n}, seed {seed}")
+                rows.append(_run_row(Path(runner(seed=seed, profile=profile)), seed, preset))
+            out_arms[arm] = {"profile": profile or sc.robot.profile, **summarise_arm(rows)}
+    finally:
+        if not carry_memory:  # the user's campaign goes back to how it was before the batch
+            reset()
     batch = {"label": LABEL, "batch_id": batch_id, "scenario_id": sc.id, "title": getattr(preset, "title", sc.id),
              "n": n, "carry_memory": carry_memory, "baseline": "baseline" in out_arms, "baseline_note": skipped,
              "seeds": seeds, "snapshot": snap if had_memory else None, "arms": out_arms}
@@ -149,7 +153,9 @@ def render_batch_html(batch: dict) -> str:
     pr = "".join(
         f'<td>{_e(arms[a]["pass_rate"]["k"])} of {_e(arms[a]["pass_rate"]["n"])} passed '
         f'({_pct(arms[a]["pass_rate"]["rate"])}); 95% Wilson interval {_pct(arms[a]["pass_rate"]["lo"])} to '
-        f'{_pct(arms[a]["pass_rate"]["hi"])}</td>' for a in arms)
+        f'{_pct(arms[a]["pass_rate"]["hi"])}'
+        + (f'; <strong>{sum(1 for r in arms[a]["runs"] if not r["valid"])} INVALID (fairness audit failed)</strong>'
+           if any(not r["valid"] for r in arms[a]["runs"]) else "") + "</td>" for a in arms)
     metric_names = [m for m in METRIC_NAMES if any(m in arms[a]["metrics"] for a in arms)]
     rows = ""
     for m in metric_names:

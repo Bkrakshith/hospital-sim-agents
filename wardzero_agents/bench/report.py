@@ -34,8 +34,9 @@ REPORT_SYSTEM = (
     "2. Cite every claim about an event with its time in square brackets as [mm:ss], using only times "
     "that appear in the excerpts or the data.\n"
     "3. Write no figure that is not in the data: no counts, durations, percentages, scores or dates of "
-    "your own, and do not calculate new ones. Use a figure only as the data gives it, or describe it in "
-    "words. Any sentence holding a figure that is not in the data is deleted.\n"
+    "your own, and do not calculate new ones. Write every figure you do use as digits, exactly as the data "
+    "gives it. Number words and multipliers (seven, twice, half, a dozen, third) count as figures too. "
+    "Any sentence holding a figure that is not in the data is deleted.\n"
     "4. Give concrete suggestions for improving the robot's behaviour, each tied to a failed criterion, a "
     "low rating or a moment in the excerpts: say what to change and why. No general advice.\n"
     "5. Plain, direct English. Do not name any other scenario, product or robot.\n"
@@ -49,17 +50,38 @@ REPORT_SCHEMA = {
 # ---- check_numbers ------------------------------------------------------------------------------
 _STAMP = re.compile(r"\[\d{1,3}:\d{2}\]")
 _NUM = re.compile(r"(?<![A-Za-z_\d.])(\d{1,3}(?:,\d{3})+|\d+)(\.\d+)?")
+_UNITS = ("zero one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen "
+          "sixteen seventeen eighteen nineteen twenty").split()
+_WORDS: dict[str, float] = {w: float(i) for i, w in enumerate(_UNITS)}
+_WORDS.update({w: float(10 * (i + 3)) for i, w in enumerate("thirty forty fifty sixty seventy eighty ninety".split())})
+_WORDS.update({"hundred": 100.0, "half": 0.5, "twice": 2.0, "thrice": 3.0, "once": 1.0, "dozen": 12.0, "pair": 2.0,
+               "first": 1.0, "second": 2.0, "third": 3.0, "fourth": 4.0, "fifth": 5.0, "sixth": 6.0,
+               "seventh": 7.0, "eighth": 8.0, "ninth": 9.0, "tenth": 10.0})
+del _WORDS["second"]  # also a unit of time: "10 seconds", "a second later"
+_WORD = re.compile(r"(?<![A-Za-z])(" + "|".join(sorted(_WORDS, key=len, reverse=True)) + r")(?![A-Za-z])", re.I)
+_ONE_NOT_A_COUNT = re.compile(r"\b(no|any|every|each|which|the|this|that|what|some|every)\s+one\b|"
+                              r"\bone\s+(another|can|could|should|would|might|may|must|else|who)\b", re.I)
 
 
 def _numbers(text: str) -> list[tuple[float, int]]:
-    """(value, decimals shown) of each number in text, not counting [mm:ss] stamps or digits that are
-    part of a name such as P1."""
+    """(value, decimals shown) of each number in text: digits (not in [mm:ss] stamps or names such as P1)
+    and number words and multipliers (seven, twice, half, a dozen, third ...)."""
+    text = _STAMP.sub(" ", text)
     out = []
-    for m in _NUM.finditer(_STAMP.sub(" ", text)):
+    for m in _NUM.finditer(text):
         whole = m.group(1).replace(",", "")
         frac = (m.group(2) or "")[1:]
         out.append((float(whole + ("." + frac if frac else "")), len(frac)))
+    masked = _ONE_NOT_A_COUNT.sub(" ", text)
+    for m in _WORD.finditer(masked):
+        v = _WORDS[m.group(1).lower()]
+        out.append((v, 0 if v == int(v) else 1))
     return out
+
+
+# What the narrative may quote: figures the code computed from the run. Not the seed, run index, token
+# or cost figures, nor the narrative itself.
+_EXCLUDED_TOP = ("run", "tokens", "narrative", "suggestions", "valid", "fairness_violations")
 
 
 def _collect(obj, acc: list[float]) -> None:
@@ -78,6 +100,20 @@ def _collect(obj, acc: list[float]) -> None:
             _collect(v, acc)
 
 
+def known_numbers(report_json: dict) -> list[float]:
+    """The pool: metric values, criterion values, thresholds and weights, rating values and means, trust
+    before, after and stages, counts the code derived, moment times and numbers in the quoted excerpts, and
+    the run's duration."""
+    pool: list[float] = []
+    for k, v in report_json.items():
+        if k not in _EXCLUDED_TOP:
+            _collect(v, pool)
+    dur = (report_json.get("run") or {}).get("duration_s")
+    if isinstance(dur, (int, float)) and not isinstance(dur, bool):
+        pool.append(float(dur))
+    return pool
+
+
 def _known(known: list[float], x: float, decimals: int) -> bool:
     for v in known:
         if abs(round(v, decimals) - x) < 1e-9:
@@ -88,11 +124,11 @@ def _known(known: list[float], x: float, decimals: int) -> bool:
 
 
 def check_numbers(narrative: str, report_json: dict) -> str:
-    """The narrative without the sentences that hold a number not found in report_json (compared after
-    rounding to the precision the sentence shows; a share may be written as a percentage). Numbers
-    inside [mm:ss] stamps and digits that are part of a name (P1) are exempt."""
-    known: list[float] = []
-    _collect(report_json, known)
+    """The narrative without the sentences that hold a number not found in the report's pool (see
+    known_numbers), digits or words, compared after rounding to the precision the sentence shows; a share
+    may be written as a percentage. Numbers inside [mm:ss] stamps and digits that are part of a name (P1)
+    are exempt."""
+    known = known_numbers(report_json)
     paragraphs = []
     for para in narrative.split("\n"):
         parts = re.split(r"(?<=[.!?])(\s+)", para)
@@ -193,6 +229,11 @@ def build_facts(run_dir: Path, preset, narrative: Optional[dict] = None) -> dict
             ratings.append({"person": p, "name": names.get(p, p), "role": d.role(p),
                             **{k: r.get(k) for k in ("likeability", "safety", "competence", "trust")},
                             "comment": str(r.get("comment") or "")})
+    rating_mean = {}
+    for k in ("likeability", "safety", "competence", "trust"):
+        vals = [r[k] for r in ratings if isinstance(r.get(k), (int, float))]
+        if vals:
+            rating_mean[k] = round(sum(vals) / len(vals), 2)
     trust = [{"person": r.get("person"), "name": names.get(r.get("person"), r.get("person")),
               **{k: _r(r.get(k)) for k in ("before", "after", "stage_before", "stage_after")}} for r in d.trust]
     return {
@@ -205,7 +246,10 @@ def build_facts(run_dir: Path, preset, narrative: Optional[dict] = None) -> dict
         "verdict": verdict, "score": _r(res.score),
         "criteria": [{**row, "value": _r(row["value"]), "threshold": _r(row["threshold"])} for row in res.rows],
         "metrics": {k: _r(v) for k, v in compute_all(d).items() if v is not None},
-        "moments": moments, "ratings": ratings, "trust": trust,
+        "counts": {"people": len(people), "criteria": len(res.rows),
+                   "criteria_passed": sum(1 for r in res.rows if r["passed"]),
+                   "criteria_failed": sum(1 for r in res.rows if not r["passed"])},
+        "moments": moments, "ratings": ratings, "ratings_mean": rating_mean, "trust": trust,
         "tokens": _tokens(d), "narrative": "", "suggestions": [],
     }
 
@@ -321,10 +365,10 @@ def render_html(facts: dict) -> str:
     facts_html = "<dl>" + "".join(f"<dt>{_e(k)}</dt><dd>{_e(v)}</dd>" for k, v in facts_rows) + "</dl>"
     sub = f"Scenario {_e(run['scenario_id'])}; run {_e(run['run_id'])}"
     page = TEMPLATE.read_text(encoding="utf-8")
-    for key, val in (("title", _e(run["title"])), ("subtitle", sub), ("banner", banner), ("criteria", criteria),
-                     ("timeline", timeline), ("ratings", ratings), ("trust", trust), ("narrative", narrative),
-                     ("facts", facts_html)):
-        page = page.replace("{{" + key + "}}", val)
+    vals = {"title": _e(run["title"]), "subtitle": sub, "banner": banner, "criteria": criteria,
+            "timeline": timeline, "ratings": ratings, "trust": trust, "narrative": narrative,
+            "facts": facts_html}
+    page = re.sub(r"\{\{(\w+)\}\}", lambda m: vals.get(m.group(1), m.group(0)), page)  # one pass
     return page
 
 
@@ -353,7 +397,9 @@ async def post_run(run_dir: "str | Path", *, report: bool = True, narrative: boo
     run_dir = Path(run_dir)
     gateway = make_post_gateway(run_dir)
     preset = preset_for_run(RunData.load(run_dir).meta)
-    await debrief(run_dir, gateway, preset=preset, force=force_debrief)
+    res = await debrief(run_dir, gateway, preset=preset, force=force_debrief)
+    if not res.ok:
+        raise RuntimeError("no debrief questionnaire could be used, so no trust was applied")
     if not report:
         return None
     return await build_report_async(run_dir, preset, gateway if narrative else None)

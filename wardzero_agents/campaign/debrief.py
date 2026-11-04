@@ -68,6 +68,7 @@ class DebriefResult:
     experiences: list[Experience] = field(default_factory=list)
     skipped: list[str] = field(default_factory=list)  # people whose questionnaire could not be used
     already: bool = False
+    ok: bool = True  # False when no questionnaire could be used: nothing was written or applied
 
 
 def _rows(path: Path) -> list[dict]:
@@ -188,7 +189,7 @@ async def _hearsay(gateway: Gateway, says: list[dict], people: set[str]) -> list
 async def debrief(run_dir: "str | Path", gateway: Gateway, *, preset=None, roles: Optional[dict] = None,
                   db_path: "str | Path | None" = None, force: bool = False) -> DebriefResult:
     """Run the debrief of a finished run. Trust is applied to the campaign db once: a run already
-    debriefed (meta "debriefed") is returned as it was unless force."""
+    debriefed (marked in the db in the same transaction as the trust) is returned as it was; force re-applies it from the states it started from."""
     from ..bench.metrics import RunData
     from ..config.presets import DEFAULT_CONFIG_ROOT, load_roles, preset_for_run
     from ..memory import data_dir, memory_path
@@ -198,7 +199,10 @@ async def debrief(run_dir: "str | Path", gateway: Gateway, *, preset=None, roles
     run_dir = Path(run_dir)
     d = RunData.load(run_dir)
     meta = d.meta
-    if meta.get("debriefed") and not force:
+    store = TrustStore(db_path or memory_path(data_dir()))
+    run_id = str(meta.get("run_id") or run_dir.name)
+    stored_before = store.debriefed_before(run_id)  # the db is the authority on whether trust was applied
+    if stored_before is not None and not force:
         return DebriefResult(ratings=_rows(run_dir / "debrief.jsonl"), trust=_rows(run_dir / "trust.jsonl"),
                              already=True)
     preset = preset if preset is not None else preset_for_run(meta)
@@ -226,6 +230,10 @@ async def debrief(run_dir: "str | Path", gateway: Gateway, *, preset=None, roles
             log.warning("debrief: no usable questionnaire for %s", pid)
             continue
         result.ratings.append({"person": pid, **row})
+    if people and not result.ratings:
+        log.error("debrief: no questionnaire could be used, so nothing was written or applied")
+        result.ok = False
+        return result
     _write_jsonl(run_dir / "debrief.jsonl", result.ratings)
 
     # 2. hearsay, only when people talked about the robot to each other in this run
@@ -235,17 +243,18 @@ async def debrief(run_dir: "str | Path", gateway: Gateway, *, preset=None, roles
     result.experiences = events
 
     # 3. trust: events in time order, a seeded d20 for each, then the end of the run
-    store = TrustStore(db_path or memory_path(data_dir()))
     seed = meta.get("project_seed", meta.get("seed", 0))
     run_index = int(meta.get("run_index") or 0)
-    after_states, trust_rows = [], []
+    after_states, before_states, trust_rows = [], [], []
     for pid in people:
         inst = instances.get(pid)
         key = inst.memory_key if inst else pid
         info = (meta.get("people") or {}).get(pid) or {}
         role = info.get("preset_role") or info.get("role") or (inst.role if inst else "visitor")
-        state = store.get(key, ROBOT_ID, role_defaults(roles, role))
+        # with --force the run starts again from the states it started from the first time
+        state = (stored_before or {}).get(key) or store.get(key, ROBOT_ID, role_defaults(roles, role))
         before = state
+        before_states.append(state)
         k = 0
         mine = [e for e in events if e.person == pid]
         for e in mine:
@@ -256,7 +265,7 @@ async def debrief(run_dir: "str | Path", gateway: Gateway, *, preset=None, roles
         trust_rows.append({"person": pid, "robot_id": ROBOT_ID, "before": round(before.trust, 4),
                            "after": round(state.trust, 4), "stage_before": stage_for(before.trust),
                            "stage_after": state.stage})
-    store.put_many(after_states)
+    store.put_many(after_states, mark_run=run_id, before=before_states)  # trust and marker, one transaction
     result.trust = trust_rows
     _write_jsonl(run_dir / "trust.jsonl", trust_rows)
     RunLog(run_dir).write_meta({**meta, "debriefed": True})

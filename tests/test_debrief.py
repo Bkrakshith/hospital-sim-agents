@@ -144,3 +144,34 @@ def test_post_gateway_logs_costs_as_debrief_and_report(tmp_path, monkeypatch):
     run(debrief(rd, make_post_gateway(rd)))
     rows = [json.loads(x) for x in (rd / "tokens.jsonl").read_text().splitlines()]
     assert {r["person"] for r in rows[1:]} == {"debrief"} and len(rows) == 4
+
+
+def test_failed_questionnaires_apply_nothing_and_do_not_mark(tmp_path):
+    from wardzero_agents.llm.fake import FakeRefusal
+    rd = make_ae_run(tmp_path / "r1")
+
+    def policy(req):
+        if "likeability" in req.schema.get("properties", {}):
+            raise FakeRefusal()
+        return default_policy(req)
+    res = run(debrief(rd, FakeGateway(policy)))
+    assert res.ok is False and not (rd / "trust.jsonl").exists() and not (rd / "debrief.jsonl").exists()
+    store = TrustStore(memory_path(data_dir()))
+    assert store.debriefed_before("r1") is None and store.snapshot_rows() == []
+    assert not RunData.load(rd).meta.get("debriefed")
+    # a later debrief that works is not blocked
+    assert run(debrief(rd, FakeGateway(policy_with(R)))).ok
+
+
+def test_force_resets_to_the_recorded_start_and_is_idempotent(tmp_path):
+    rd = make_ae_run(tmp_path / "r1")
+    store = TrustStore(memory_path(data_dir()))
+    run(debrief(rd, FakeGateway(policy_with(R))))
+    once = store.snapshot_rows()
+    before = [json.loads(x) for x in (rd / "trust.jsonl").read_text().splitlines()]
+    for _ in range(2):
+        res = run(debrief(rd, FakeGateway(policy_with(R)), force=True))
+        assert res.ok and not res.already
+        assert store.snapshot_rows() == once          # the same as after the first debrief
+    again = [json.loads(x) for x in (rd / "trust.jsonl").read_text().splitlines()]
+    assert {r["person"]: r["before"] for r in again} == {r["person"]: r["before"] for r in before}

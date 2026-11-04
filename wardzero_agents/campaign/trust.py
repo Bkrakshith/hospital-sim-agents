@@ -3,6 +3,7 @@
 All numbers are first guesses to tune, not measured constants."""
 from __future__ import annotations
 
+import json
 import sqlite3
 from contextlib import closing
 from dataclasses import asdict, dataclass, fields, replace
@@ -108,6 +109,7 @@ CREATE TABLE IF NOT EXISTS trust(
   ceiling REAL NOT NULL, stage INTEGER NOT NULL CHECK(stage BETWEEN 0 AND 4),
   runs INTEGER NOT NULL, last_run INTEGER NOT NULL, last_drop REAL NOT NULL,
   PRIMARY KEY(person_key, robot_id));
+CREATE TABLE IF NOT EXISTS debriefed(run_id TEXT PRIMARY KEY, before TEXT NOT NULL);
 """
 _COLS = [f.name for f in fields(TrustState)]
 
@@ -132,12 +134,23 @@ class TrustStore:
                             (person_key, robot_id)).fetchone()
         return TrustState(*row) if row else self.initial(person_key, robot_id, defaults)
 
-    def put_many(self, states: list[TrustState]) -> None:
-        """All rows or none."""
+    def put_many(self, states: list[TrustState], mark_run: Optional[str] = None,
+                 before: Optional[list[TrustState]] = None) -> None:
+        """All rows or none. With mark_run, the run is recorded as debriefed (with the states it started
+        from) in the same transaction, so trust applied and the marker never disagree."""
         rows = [tuple(asdict(s)[c] for c in _COLS) for s in states]
         with closing(sqlite3.connect(self.path)) as c, c:
             c.executemany(f"INSERT OR REPLACE INTO trust({','.join(_COLS)}) "
                           f"VALUES({','.join('?' * len(_COLS))})", rows)
+            if mark_run is not None:
+                c.execute("INSERT OR REPLACE INTO debriefed(run_id, before) VALUES(?, ?)",
+                          (mark_run, json.dumps([asdict(s) for s in (before or [])])))
+
+    def debriefed_before(self, run_id: str) -> Optional[dict[str, TrustState]]:
+        """The states (by person key) a debriefed run started from; None if it was not debriefed here."""
+        with closing(sqlite3.connect(self.path)) as c:
+            row = c.execute("SELECT before FROM debriefed WHERE run_id=?", (run_id,)).fetchone()
+        return None if row is None else {d["person_key"]: TrustState(**d) for d in json.loads(row[0])}
 
     def reset(self, person_keys: list[str]) -> None:
         with closing(sqlite3.connect(self.path)) as c, c:
