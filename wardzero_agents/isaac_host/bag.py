@@ -1,8 +1,8 @@
 """A rosbag of the robot's ROS domain, recorded next to the run (``<run>/robot_bag``).
 
-``ros2 bag record -a`` runs as a child of the Isaac host, in the system's Humble (Python 3.10), not Isaac's bundled
-rclpy (Python 3.12): the host's own environment is stripped and the system's is sourced from ``env.sh``. Messages are
-zstd-compressed: the camera and /tf are about 30 MB per sim second raw. The bag is
+``ros2 bag record`` of an explicit list of the robot's topics runs as a child of the Isaac host, in the system's Humble (Python 3.10), not Isaac's bundled
+rclpy (Python 3.12): the host's own environment is stripped and the system's is sourced from ``env.sh``. The list is the robot's own
+topics (no images unless asked: rgb and depth were 90% of a raw bag); messages are zstd-compressed. The bag is
 finalised by SIGINT (its ``metadata.yaml`` is written then), so ``stop`` always signals the child's process group and
 waits; the child also asks the kernel for a SIGINT of its own when the host dies, so it is never left orphaned.
 """
@@ -35,16 +35,26 @@ def bag_env(domain: int, base: Optional[dict] = None) -> dict:
     return env
 
 
-def bag_argv(env_sh: Path, out_dir: Path) -> list[str]:
-    """bash sources the system ROS, then becomes ``ros2 bag record`` (so the signal reaches it)."""
-    return ["bash", "-c", 'source "$1" >/dev/null 2>&1 && exec ros2 bag record -a -o "$2" --compression-mode message --compression-format zstd', "wardzero-bag",
-            str(env_sh), str(out_dir)]
+IMAGE_KEYS = ("camera_rgb", "camera_depth", "lidar")  # big: only with --bag-images
+BAG_KEYS = ("clock", "tf", "joint_states", "joint_command", "odom", "cmd_vel", "camera_info", "bbox_3d", "heard", "say",
+            "goal_pose", "task_action", "task_result", "task_brief")
 
 
-def _die_with_parent() -> None:  # runs in the child between fork and exec: SIGINT it when the host dies
-    import ctypes
+def bag_topics(ns: str = "robot", images: bool = False) -> list[str]:
+    """The robot's own topics, from the one table (``ros.topics.robot_topics``): never a wildcard."""
+    from ..ros import topics
 
-    ctypes.CDLL("libc.so.6", use_errno=True).prctl(1, int(signal.SIGINT), 0, 0, 0)  # PR_SET_PDEATHSIG
+    rt = topics.robot_topics(ns)
+    return [rt[k] for k in BAG_KEYS + (IMAGE_KEYS if images else ())]
+
+
+def bag_argv(env_sh: Path, out_dir: Path, topic_list: list[str]) -> list[str]:
+    """``setpriv`` asks the kernel for a SIGINT when the host dies; bash sources the system ROS, then becomes
+    ``ros2 bag record`` (so the signal reaches it)."""
+    return ["setpriv", "--pdeathsig", "INT", "--", "bash", "-c",
+            'source "$1" >/dev/null 2>&1 && o="$2" && shift 2 && exec ros2 bag record -o "$o" '
+            '--compression-mode message --compression-format zstd "$@"',
+            "wardzero-bag", str(env_sh), str(out_dir), *topic_list]
 
 
 def _killpg(proc, sig: int) -> None:
@@ -58,10 +68,12 @@ def _killpg(proc, sig: int) -> None:
 
 
 class BagRecorder:
-    def __init__(self, run_dir: Path, domain: int, env_sh: Optional[Path] = None, popen: Callable = subprocess.Popen,
+    def __init__(self, run_dir: Path, domain: int, private_domain: int, ns: str = "robot", images: bool = False,
+                 env_sh: Optional[Path] = None, popen: Callable = subprocess.Popen,
                  signaller: Callable = _killpg, stop_wait_s: float = STOP_WAIT_S, term_wait_s: float = TERM_WAIT_S):
         self.out_dir = Path(run_dir) / BAG_DIR
-        self.domain = int(domain)
+        self.domain, self.private_domain = int(domain), int(private_domain)
+        self.topics = bag_topics(ns, images)
         self.env_sh = Path(env_sh or os.environ.get("WARDZERO_ROS_ENV_SH") or DEFAULT_ENV_SH)
         self._popen, self._signal = popen, signaller
         self._stop_wait, self._term_wait = stop_wait_s, term_wait_s
@@ -72,13 +84,17 @@ class BagRecorder:
         """Start recording; False (and a warning) when it cannot start: a run is never failed by its bag."""
         if self.proc is not None:
             return True
+        if self.domain == self.private_domain:
+            log.error("no rosbag: the robot is on the private domain (%d), where the people's minds and the director "
+                      "live; give the robot a domain of its own (--robot-domain)", self.domain)
+            return False
         if not self.env_sh.is_file():
             log.warning("no rosbag: %s is missing", self.env_sh)
             return False
         try:
-            self.proc = self._popen(bag_argv(self.env_sh, self.out_dir), env=bag_env(self.domain),
+            self.proc = self._popen(bag_argv(self.env_sh, self.out_dir, self.topics), env=bag_env(self.domain),
                                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                                    start_new_session=True, preexec_fn=_die_with_parent)
+                                    start_new_session=True)
         except OSError as exc:
             log.warning("no rosbag: %s", exc)
             return False

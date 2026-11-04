@@ -31,8 +31,9 @@ def connected(g, a, b):
 def test_static_g1_graph_has_the_s1_nodes_and_no_drive():
     g = g1_graph()
     t = types(g)
-    assert t["tick"] == "omni.graph.action.OnPlaybackTick"
-    for n, ty in (("clock", "ROS2PublishClock"), ("tf", "ROS2PublishTransformTree"), ("js_pub", "ROS2PublishJointState"),
+    assert t["tick"] == "omni.graph.action.OnImpulseEvent"  # one evaluation per host frame, fired by the host
+    assert "ROS2PublishClock" not in "".join(t.values())  # /clock comes from SimRos (svc.t), never from the graph
+    for n, ty in (("tf", "ROS2PublishTransformTree"), ("js_pub", "ROS2PublishJointState"),
                   ("js_sub", "ROS2SubscribeJointState"), ("cam_rgb", "ROS2CameraHelper"), ("cam_depth", "ROS2CameraHelper"),
                   ("cam_info", "ROS2CameraInfoHelper"), ("cam_bbox", "ROS2CameraHelper")):
         assert t[n] == f"isaacsim.ros2.bridge.{ty}"
@@ -43,7 +44,7 @@ def test_static_g1_graph_has_the_s1_nodes_and_no_drive():
 def test_topics_come_from_the_table():
     g = g1_graph()
     rt = topics.robot_topics(G1_CLAUDE.ns)
-    for key, node, attr in (("clock", "clock", "topicName"), ("tf", "tf", "topicName"), ("joint_states", "js_pub", "topicName"),
+    for key, node, attr in (("tf", "tf", "topicName"), ("joint_states", "js_pub", "topicName"),
                             ("joint_command", "js_sub", "topicName"), ("camera_rgb", "cam_rgb", "topicName"),
                             ("camera_depth", "cam_depth", "topicName"), ("camera_info", "cam_info", "topicName")):
         assert value(g, f"{node}.inputs:{attr}") == rt[key]
@@ -60,7 +61,7 @@ def test_raw_detections_go_to_the_private_domain_not_the_robot_s():
     assert value(g, "cam_bbox.inputs:enableSemanticLabels") is True
     assert value(g, "ctx_robot.inputs:domain_id") == 41 and value(g, "ctx_private.inputs:domain_id") == 42
     assert connected(g, "ctx_private.outputs:context", "cam_bbox.inputs:context")
-    for n in ("clock", "tf", "js_pub", "js_sub", "cam_rgb", "cam_depth", "cam_info"):
+    for n in ("tf", "js_pub", "js_sub", "cam_rgb", "cam_depth", "cam_info"):
         assert connected(g, "ctx_robot.outputs:context", f"{n}.inputs:context")
     assert not connected(g, "ctx_robot.outputs:context", "cam_bbox.inputs:context")  # the robot never sees the raw boxes
     assert g.topics_private == raw
@@ -72,10 +73,10 @@ def test_one_context_when_the_domains_are_the_same():
     assert connected(g, "ctx_robot.outputs:context", "cam_bbox.inputs:context")
 
 
-def test_no_second_clock_when_the_robot_shares_the_private_domain():
-    g = g1_graph(private_domain=41)
-    assert "clock" not in types(g) and "clock" not in g.topics  # SimRos already publishes /clock there
-    assert "clock" in types(g1_graph())
+def test_the_graph_never_publishes_a_clock():
+    for domain in (41, 42):  # a robot domain of its own or shared with the private one
+        g = g1_graph(private_domain=domain)
+        assert "clock" not in types(g) and "clock" not in g.topics
 
 
 def test_ros_contexts_never_follow_the_environment():
@@ -86,9 +87,9 @@ def test_ros_contexts_never_follow_the_environment():
 
 def test_everything_is_ticked_and_stamped_with_sim_time():
     g = g1_graph()
-    for n in ("clock", "tf", "js_pub", "js_sub", "cam_rgb", "cam_depth", "cam_info", "cam_bbox"):
-        assert connected(g, "tick.outputs:tick", f"{n}.inputs:execIn")
-    for n in ("clock", "tf", "js_pub"):
+    for n in ("tf", "js_pub", "js_sub", "cam_rgb", "cam_depth", "cam_info", "cam_bbox"):
+        assert connected(g, "tick.outputs:execOut", f"{n}.inputs:execIn")
+    for n in ("tf", "js_pub"):
         assert connected(g, "simtime.outputs:simulationTime", f"{n}.inputs:timeStamp")
     assert connected(g, "js_sub.outputs:execOut", "artctl.inputs:execIn")
     assert connected(g, "js_sub.outputs:jointNames", "artctl.inputs:jointNames")
@@ -174,7 +175,7 @@ def test_a_wheeled_robot_that_cannot_move_has_no_drive():
 
 
 def test_topic_key_rules():
-    assert topics.isaac_graph_keys("static", False, []) == ("clock", "tf", "joint_states", "joint_command")
+    assert topics.isaac_graph_keys("static", False, []) == ("tf", "joint_states", "joint_command")
     assert "camera_depth" not in topics.isaac_graph_keys("static", False, ["rgb"])
     assert "odom" not in topics.isaac_graph_keys("legged", True, ["rgbd"])  # SONIC walking is a later task
     assert topics.raw_detection_topics("g1")["bbox_3d"] == "/wz/g1/bbox_3d_raw"

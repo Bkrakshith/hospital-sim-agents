@@ -2,7 +2,7 @@
 nodes, values and connections, and ``robot_isaac`` applies them with ``og.Controller.edit``.
 
 What it publishes and listens on (names from ``ros.topics.robot_topics``, all absolute, so the table is the one truth):
-/clock (when the robot has a domain of its own), /tf, ``joint_states``, ``joint_command`` (-> the Articulation Controller), and for a camera ``camera/rgb``,
+/tf, ``joint_states``, ``joint_command`` (-> the Articulation Controller), and for a camera ``camera/rgb``,
 ``camera/depth`` (a depth camera), ``camera/camera_info``. A wheeled base that can move also gets ``odom`` and ``cmd_vel``
 (Twist -> differential drive -> wheel joint velocities).
 
@@ -23,6 +23,7 @@ BRIDGE = "isaacsim.ros2.bridge"
 CAMERA_HZ = 5.0  # the camera's tick rate (omni:sensor:tickRate on its prim, set by robot_isaac): it throttles the
 # render product itself, which is what a 1280x720 image every frame costs. rgb, depth, camera_info and the boxes follow it.
 GRAPH_PATH = "/World/RobotGraph"
+IMPULSE_ATTR = f"{GRAPH_PATH}/tick.state:enableImpulse"  # set True once per frame: one evaluation, one message per topic
 
 
 class PrimPath(str):
@@ -66,7 +67,7 @@ def build_robot_graph(profile: RobotProfile, art_root: str, robot_domain: int, p
 
     def tick_and_context(names, ctx="ctx_robot"):
         for n in names:
-            link("tick.outputs:tick", f"{n}.inputs:execIn")
+            link("tick.outputs:execOut", f"{n}.inputs:execIn")
             link(f"{ctx}.outputs:context", f"{n}.inputs:context")
 
     def absolute(name, topic, extra=()):
@@ -75,34 +76,30 @@ def build_robot_graph(profile: RobotProfile, art_root: str, robot_domain: int, p
         for k, v in extra:
             val(name, k, v)
 
-    node("tick", "omni.graph.action.OnPlaybackTick")
+    node("tick", "omni.graph.action.OnImpulseEvent")  # the host fires it once per frame (IsaacRobot.fire)
     node("simtime", "isaacsim.core.nodes.IsaacReadSimulationTime")
     node("ctx_robot", "ROS2Context")
     val("ctx_robot", "domain_id", int(robot_domain))
     val("ctx_robot", "useDomainIDEnvVar", False)
 
-    # clock, TF, joints. The host's own /clock already covers a robot that shares the private domain.
-    own_clock = int(robot_domain) != int(private_domain)
-    if own_clock:
-        node("clock", "ROS2PublishClock")
+    # TF and joints. There is no clock node: SimRos publishes /clock from the service's time (svc.t) on every domain, and
+    # the timeline is zeroed at the start of the loop, so the graph's stamps are on that time base too.
     node("tf", "ROS2PublishTransformTree")
     node("js_pub", "ROS2PublishJointState")
     node("js_sub", "ROS2SubscribeJointState")
     node("artctl", "isaacsim.core.nodes.IsaacArticulationController")
     root = PrimPath(art_root)
-    if own_clock:
-        absolute("clock", rt["clock"])
     absolute("tf", rt["tf"], [("targetPrims", [root])])
     absolute("js_pub", rt["joint_states"], [("targetPrim", [root])])
     absolute("js_sub", rt["joint_command"])
     val("artctl", "targetPrim", [root])
-    tick_and_context((["clock"] if own_clock else []) + ["tf", "js_pub", "js_sub"])
-    for n in (["clock"] if own_clock else []) + ["tf", "js_pub"]:
+    tick_and_context(["tf", "js_pub", "js_sub"])
+    for n in ("tf", "js_pub"):
         link("simtime.outputs:simulationTime", f"{n}.inputs:timeStamp")
     link("js_sub.outputs:execOut", "artctl.inputs:execIn")
     for out in ("jointNames", "positionCommand", "velocityCommand", "effortCommand"):
         link(f"js_sub.outputs:{out}", f"artctl.inputs:{out}")
-    g.topics.update({k: rt[k] for k in (["clock"] if own_clock else []) + ["tf", "joint_states", "joint_command"]})
+    g.topics.update({k: rt[k] for k in ("tf", "joint_states", "joint_command")})
 
     # camera: rgb, depth and camera_info to the robot; raw boxes to the private domain
     if cams:
@@ -148,11 +145,11 @@ def build_robot_graph(profile: RobotProfile, art_root: str, robot_domain: int, p
         val("diff", "wheelDistance", float(drive["wheel_distance"]))
         val("artctl_drive", "targetPrim", [root])
         val("artctl_drive", "jointNames", list(drive["wheel_joints"]))
-        link("tick.outputs:tick", "odom_calc.inputs:execIn")
+        link("tick.outputs:execOut", "odom_calc.inputs:execIn")
         link("odom_calc.outputs:execOut", "odom_pub.inputs:execIn")
         for n in ("odom_pub", "twist_sub"):
             link("ctx_robot.outputs:context", f"{n}.inputs:context")
-        link("tick.outputs:tick", "twist_sub.inputs:execIn")
+        link("tick.outputs:execOut", "twist_sub.inputs:execIn")
         link("simtime.outputs:simulationTime", "odom_pub.inputs:timeStamp")
         for o in ("position", "orientation", "linearVelocity", "angularVelocity"):
             link(f"odom_calc.outputs:{o}", f"odom_pub.inputs:{o}")

@@ -7,10 +7,10 @@ import shutil
 import tempfile
 import uuid
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, ValidationError
 
 from ..config.presets import CharacterSpec, RobotStart, ScenarioPreset
 
@@ -41,6 +41,12 @@ class Project(BaseModel):
     repeat: int = Field(default=1, ge=1, le=20)
     carry_memory: bool = False
     baseline: bool = False
+    # the Run page's Simulator group: Isaac Sim or the quick 2D stub; Isaac with a window or headless (with the live
+    # preview); recording (two MP4s and a rosbag) and its resolution
+    sim: Literal["isaac", "stub"] = "stub"
+    headed: StrictBool = False
+    record: StrictBool = False
+    record_res: Literal["1280x720", "1920x1080"] = "1280x720"
 
 
 def valid_id(pid: str) -> bool:

@@ -144,6 +144,53 @@ def bag_messages(bag: Path, topic: str) -> int:
     return row[0]
 
 
+def bag_stamps(bag: Path, topic: str) -> list:
+    """Header stamps (s) of every message of a /clock or JointState topic, read from the CDR bytes (no ROS needed)."""
+    import struct
+    db = next(iter(sorted(bag.glob("*.db3"))))
+    con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+    try:
+        rows = con.execute("select m.data from messages m join topics t on t.id = m.topic_id where t.name = ? "
+                           "order by m.id", (topic,)).fetchall()
+    finally:
+        con.close()
+    out = []
+    for (data,) in rows:
+        if bytes(data[:4]) == b"\x28\xb5\x2f\xfd":  # the bag is zstd per message: the CDR is inside
+            import zstandard
+            data = zstandard.ZstdDecompressor().decompress(bytes(data))
+        sec, nsec = struct.unpack("<iI", bytes(data[4:12]))
+        out.append(sec + nsec * 1e-9)
+    return out
+
+
+def check_one_time_base(run: Path, bag: Path) -> dict:
+    """The robot domain's /clock and joint stamps are the run's own time (svc.t), once per frame, never repeated."""
+    run_t = max(r["t"] for r in stream(run, "status"))
+    out = {}
+    for topic in ("/clock", "/robot/joint_states"):
+        ts = bag_stamps(bag, topic)
+        assert len(ts) > SECONDS * 20, (topic, len(ts))
+        assert all(b > a for a, b in zip(ts, ts[1:])), f"{topic}: stamps repeat or go back"  # strictly increasing
+        assert ts[0] < 0.5 and abs(ts[-1] - run_t) <= 1 / 30 + 1e-6, (topic, ts[0], ts[-1], run_t)  # same base as svc.t
+        out[topic] = {"n": len(ts), "first": round(ts[0], 3), "last": round(ts[-1], 3)}
+    out["run_t"] = run_t
+    return out
+
+
+def bag_mb(bag: Path) -> float:
+    return sum(f.stat().st_size for f in bag.iterdir()) / 1e6
+
+
+def _bag_topics(bag: Path) -> set:
+    db = next(iter(sorted(bag.glob("*.db3"))))
+    con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+    try:
+        return {r[0] for r in con.execute("select name from topics")}
+    finally:
+        con.close()
+
+
 def check_recording(run: Path, res: str) -> dict:
     w, h = (int(v) for v in res.split("x"))
     out = {}
@@ -170,6 +217,11 @@ def check_recording(run: Path, res: str) -> dict:
     bag = run / "robot_bag"
     assert (bag / "metadata.yaml").is_file(), list(bag.iterdir()) if bag.exists() else "no bag"
     assert bag_messages(bag, BAG_TOPIC) > 0
+    topics = _bag_topics(bag)
+    assert "/robot/camera/rgb" not in topics and "/robot/camera/depth" not in topics  # no images by default
+    assert "/clock" in topics and not any(t.startswith("/wz") for t in topics)  # nothing private
+    out["clock"] = check_one_time_base(run, bag)
+    out["bag_mb"] = round(bag_mb(bag), 1)
     out["host"] = host[-1]
     return out
 
@@ -177,14 +229,14 @@ def check_recording(run: Path, res: str) -> dict:
 def test_headless_record_10s_720p(tmp_path, isaac_free):
     run = run_host(tmp_path, "1280x720")
     r = check_recording(run, "1280x720")
-    print("720p:", json.dumps(r["host"]))
+    print("720p:", json.dumps(r["host"]), "clock:", json.dumps(r["clock"]), "bag MB:", r["bag_mb"])
     assert not (run / "preview").exists()  # no --preview, no preview
 
 
 def test_headless_record_10s_1080p(tmp_path, isaac_free):
     run = run_host(tmp_path, "1920x1080")
     r = check_recording(run, "1920x1080")
-    print("1080p:", json.dumps(r["host"]))
+    print("1080p:", json.dumps(r["host"]), "bag MB:", r["bag_mb"])
 
 
 @pytest.mark.skipif(os.environ.get("WARDZERO_ISAAC_HEADED") != "1", reason="set WARDZERO_ISAAC_HEADED=1 (needs a display)")
@@ -229,3 +281,18 @@ def test_record_with_preview_writes_both(tmp_path, isaac_free):
     check_recording(run, "1280x720")
     import io
     assert seen and Image.open(io.BytesIO(seen[-1])).size == (640, 360)  # a stride of the 1280x720 frame
+
+
+def test_the_clock_is_the_runs_own_time_without_recording_too(tmp_path, isaac_free):
+    """No --record: a probe bag on the robot domain (the same ros2 bag the host uses) sees the same single time base."""
+    from wardzero_agents.isaac_host import bag as B
+    probe = B.BagRecorder(tmp_path / "probe", ROBOT_DOMAIN, private_domain=PRIVATE_DOMAIN, images=False)
+    assert probe.start()
+    time.sleep(3)
+    try:
+        run = run_host(tmp_path, "1280x720", flags=("--preview",))
+    finally:
+        probe.stop()
+    assert probe.finalised
+    r = check_one_time_base(run, probe.out_dir)
+    print("no record:", json.dumps(r))

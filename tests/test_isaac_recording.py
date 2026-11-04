@@ -173,3 +173,66 @@ def test_recording_and_preview_together_downscale_the_record_frame(tmp_path):
         rec.step()
     assert kit.log.count("encode") == 6  # every frame to the video
     assert PIL.open(tmp_path / "preview" / "latest.jpg").size == (640, 360)  # a stride of the 1280x720 render
+
+
+# ---- one frame, one robot tick, one time base ---------------------------------------------------
+class Tl:
+    def __init__(self, playing=True):
+        self.playing, self.t = playing, 7.0
+
+    def is_playing(self):
+        return self.playing
+
+    def set_current_time(self, t):
+        self.t = t
+
+
+def fake_host(playing=True, recorder=None):
+    from types import SimpleNamespace
+
+    from wardzero_agents.isaac_host import app as A
+    log = []
+    h = A.IsaacHost.__new__(A.IsaacHost)
+    h.timeline = Tl(playing)
+    h.app = SimpleNamespace(update=lambda: log.append("update"))
+    h.robot = SimpleNamespace(fire=lambda: log.append("fire"))
+    h.recorder = recorder
+    return h, log
+
+
+def test_the_robot_graph_fires_once_before_each_running_frame():
+    h, log = fake_host()
+    h.advance()
+    h.advance()
+    assert log == ["fire", "update", "fire", "update"]
+
+
+def test_a_held_frame_fires_nothing():
+    h, log = fake_host(playing=False)
+    h.advance()
+    assert log == ["update"]  # the timeline is paused: no new message, no repeated stamp
+
+
+def test_the_recorder_steps_instead_of_update_but_the_graph_still_fires_once():
+    from types import SimpleNamespace
+    rec_log = []
+    h, log = fake_host(recorder=SimpleNamespace(step=lambda: rec_log.append("step")))
+    h.advance()
+    assert log == ["fire"] and rec_log == ["step"]
+
+
+def test_the_timeline_is_zeroed_so_isaac_stamps_match_the_service_time():
+    h, log = fake_host()
+    h._updates = lambda n: log.append(("updates", n))
+    h.zero_clock()
+    assert h.timeline.t == 0.0
+
+
+def test_a_header_that_cannot_be_patched_is_warned_about(tmp_path, caplog):
+    kit = FakeKit()
+    rec = recorder(kit, tmp_path, record=True)
+    bad = tmp_path / "x.mp4"
+    bad.write_bytes(b"junk")
+    with caplog.at_level("WARNING"):
+        rec._fix_header(bad, 10)
+    assert "header duration" in caplog.text

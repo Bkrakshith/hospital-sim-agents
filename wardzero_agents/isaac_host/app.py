@@ -89,6 +89,8 @@ def parse_args(argv=None) -> argparse.Namespace:
     p.add_argument("--record", action="store_true",
                    help="record the run to <run>/video (overhead.mp4, follow.mp4) and the robot domain to "
                         "<run>/robot_bag; recorded runs are in lockstep (sim time per frame is fixed at 1/fps)")
+    p.add_argument("--bag-images", action="store_true",
+                   help="with --record: also put the robot's rgb, depth and point cloud in the rosbag (large)")
     p.add_argument("--record-res", type=recording.parse_res, default=recording.DEFAULT_RES, metavar="WxH",
                    help="resolution of the recorded videos (default 1280x720; 1920x1080 for the overhead film)")
     p.add_argument("--preview", action="store_true",
@@ -333,11 +335,13 @@ class IsaacHost:
             return 2
         try:
             if self.args.record and self.loaded.scenario.robot.enabled:  # before Kit: it is up when the robot speaks
-                self.bag = BagRecorder(self.run_dir, self.robot_domain)
+                self.bag = BagRecorder(self.run_dir, self.robot_domain, self.args.private_domain,
+                                       ns=self.loaded.scenario.robot.ns, images=self.args.bag_images)
                 self.bag.start()
             self.boot_sequence()
             self.frame_view()
             self.start_recording()
+            self.zero_clock()
             return self.loop()
         except Exception:
             log.exception("the Isaac host failed")
@@ -354,6 +358,19 @@ class IsaacHost:
         self.recorder.start()
         self._updates(2)
         self._mark("recording")
+
+    def zero_clock(self) -> None:
+        """The timeline starts at 0 with the loop, so Isaac's own stamps (tf, joints, camera) are on the service's time."""
+        self.timeline.set_current_time(0.0)
+        self._updates(1)
+        self.timeline.set_current_time(0.0)
+
+    def advance(self) -> None:
+        """One frame for the loop: fire the robot's graph once (while the timeline runs), then update, or render for the
+        recorder. A frame with several Kit updates (the recorder's) still gives one message per topic."""
+        if self.robot is not None and self.timeline.is_playing():
+            self.robot.fire()
+        (self.recorder.step if self.recorder is not None else self.app.update)()
 
     def finish_recording(self) -> None:
         if self.recorder is not None:
@@ -381,8 +398,8 @@ class IsaacHost:
             robot_bridge = RosBridge("wardzero_isaac_robot_side", None, use_sim_time=False, domain_id=a.robot_domain)
             self.bridges.append(robot_bridge)
         robot = self.robot
-        # the robot's graph publishes /clock on a domain of its own; without a robot the host does
-        clocks = [robot_bridge] if robot_bridge is not None and not (robot is not None and robot.owns_clock) else []
+        # /clock is the service's time (svc.t) on every domain: the robot's graph publishes none
+        clocks = [robot_bridge] if robot_bridge is not None else []
         sim_ros = SimRos(svc, private, clock_bridges=clocks, robot_ros=robot_bridge,
                          graph_owned=robot.graph_owned if robot is not None else ())
         if robot is not None:
@@ -398,7 +415,7 @@ class IsaacHost:
                  f" (+ the robot on {a.robot_domain})" if robot_bridge is not None else "", ", ".join(sorted(svc.waiting)) or "nothing")
         loop = HostLoop(svc, sim_ros, self.app, self.timeline, bridges=self.bridges, time_scale=a.time_scale,
                         vram=lambda: vram.last, vram_peak=lambda: vram.peak,
-                        advance=self.recorder.step if self.recorder is not None else None)
+                        advance=self.advance)
         try:
             return loop.run(stop_requested=lambda: self._stop, ready_timeout=a.ready_timeout)
         finally:

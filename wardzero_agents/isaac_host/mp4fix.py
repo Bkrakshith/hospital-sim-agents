@@ -3,7 +3,7 @@
 Isaac's encoder (``omni.videoencoding``) writes a fragmented MP4 and takes the clip's length from the ``nframes`` it was
 given at ``start_encoding``. A recording streams frames without knowing how many there will be (0 reads back as
 143165576.5 s, and a wrong guess reads back as the guess), but the fragments themselves are right. This sets the three
-header durations (``mvhd``, ``tkhd``, ``mdhd``) from the real count, in place.
+header durations (``mvhd``, ``tkhd``, ``mdhd``, and ``mehd`` when there is one) from the real count, in place.
 """
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ import mmap
 import struct
 from pathlib import Path
 
-CONTAINERS = (b"moov", b"trak", b"mdia")
+CONTAINERS = (b"moov", b"trak", b"mdia", b"mvex")
 
 
 def _boxes(buf, start: int, end: int):
@@ -44,6 +44,9 @@ def _patch(buf, start: int, end: int, frames: int, fps: float, movie_scale: list
     for kind, p, e in _boxes(buf, start, end):
         if kind in CONTAINERS:
             n += _patch(buf, p, e, frames, fps, movie_scale)
+        elif kind == b"mehd":  # fragment_duration, in the movie timescale (optional)
+            size = 8 if buf[p] == 1 else 4
+            buf[p + 4:p + 4 + size] = round(frames / fps * movie_scale[0]).to_bytes(size, "big")
         elif kind in (b"mvhd", b"tkhd", b"mdhd"):
             off, size, scale_at = _duration_fields(buf, kind, p)
             if scale_at >= 0:

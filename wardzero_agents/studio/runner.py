@@ -36,17 +36,21 @@ PREVIEW_FILE = Path("preview") / "latest.jpg"  # the Isaac host's 5 fps overhead
 PREVIEW_TOKEN_BYTES = 24  # 192 bits
 
 
-def studio_sim() -> str:
-    """$WARDZERO_STUDIO_SIM: isaac (headless, with the live preview) or stub (the default)."""
-    return "isaac" if os.environ.get("WARDZERO_STUDIO_SIM", "").strip() == "isaac" else "stub"
+def studio_sim(project: Project) -> str:
+    """The project's simulator; $WARDZERO_STUDIO_SIM (isaac or stub) overrides it."""
+    env = os.environ.get("WARDZERO_STUDIO_SIM", "").strip()
+    return env if env in ("isaac", "stub") else project.sim
 
 
 def default_command(project: Project, staged: Path, bot: str, robot_domain: Optional[int]) -> list[str]:
-    sim = studio_sim()
+    sim = studio_sim(project)
     argv = [sys.executable, "-m", "wardzero_agents.cli", "run", str(staged), "--sim", sim, "--bot", bot,
             "--no-panel", "--project-id", project.id]
     if sim == "isaac":
-        argv += ["--headless", "--preview"]
+        # a window is its own live view; headless gets the preview the Run page streams
+        argv += ["--headed"] if project.headed else ["--headless", "--preview"]
+        if project.record:
+            argv += ["--record", "--record-res", project.record_res]
     if robot_domain is not None:
         argv += ["--robot-domain", str(robot_domain)]
     if project.repeat > 1 or project.baseline:

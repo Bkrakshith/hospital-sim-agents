@@ -92,12 +92,16 @@ def ros_available() -> bool:
     return bool(os.environ.get("ROS_DISTRO")) and importlib.util.find_spec("rclpy") is not None
 
 
+def isaac_installed() -> bool:
+    return ISAAC_ROOT.is_dir()
+
+
 def default_sim() -> str:
     """$WARDZERO_SIM when set, else isaac when Isaac Sim is installed, else the stub."""
     env = os.environ.get("WARDZERO_SIM", "").strip()
     if env in SIMS:
         return env
-    return "isaac" if ISAAC_ROOT.is_dir() else "stub"
+    return "isaac" if isaac_installed() else "stub"
 
 
 def _resolve_sim(args) -> None:
@@ -411,6 +415,7 @@ def _sim_child(args, rd: str, sp: str, ts: float, ready: float) -> Child:
                 *lock, "--headed" if args.headed else "--headless"]
         argv += ["--record", "--record-res", args.record_res] if args.record else []
         argv += ["--preview"] if getattr(args, "preview", False) else []
+        argv += ["--bag-images"] if getattr(args, "bag_images", False) else []
         argv += ["--full-site"] if args.full_site else []
         if getattr(args, "robot_domain", None) is not None:
             argv += ["--robot-domain", str(args.robot_domain)]
@@ -895,6 +900,8 @@ def _live_flags() -> argparse.ArgumentParser:
     mode.add_argument("--headless", dest="headed", action="store_false", help="Isaac: no window (the default)")
     p.add_argument("--record", action="store_true",
                    help="Isaac: record the run to <run>/video and the robot domain to <run>/robot_bag (lockstep)")
+    p.add_argument("--bag-images", action="store_true",
+                   help="Isaac --record: also put the robot's rgb, depth and point cloud in the rosbag (large)")
     p.add_argument("--record-res", default="1280x720", metavar="WxH", type=_record_res,
                    help="Isaac: resolution of the recorded videos (1920x1080 for a film)")
     p.add_argument("--preview", action="store_true",

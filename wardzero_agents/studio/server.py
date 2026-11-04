@@ -28,7 +28,7 @@ from ..robots.urdf import parse_urdf
 from ..site import load_site
 from . import characters as chars
 from .project import NotFound, Project, ProjectError, ProjectStore, defaults_from_preset, valid_id, validation_message
-from .runner import Runner, RunnerBusy
+from .runner import Runner, RunnerBusy, studio_sim
 
 log = logging.getLogger("wardzero.studio")
 STATIC = Path(__file__).parent / "static"
@@ -58,7 +58,7 @@ class Ctx:
     """What the handlers share: where things live, and the long-lived pieces."""
 
     def __init__(self, data: Path, config_root: Path, runs_dir: Path, runner: Runner,
-                 convert_command=None, probe=None, probe_every: float = PROBE_EVERY_S):
+                 convert_command=None, probe=None, probe_every: float = PROBE_EVERY_S, isaac_installed=None):
         self.data, self.config_root, self.runs_dir, self.runner = data, config_root, runs_dir, runner
         self.projects = ProjectStore(data)
         self.roles, self.moods = load_roles(config_root), load_moods(config_root)
@@ -71,6 +71,7 @@ class Ctx:
         self.probe_every = probe_every
         self.probe_target = (0, "robot")  # robot domain and namespace the last /api/connection asked about
         self.lights = dict(NO_LIGHTS)
+        self.isaac_installed = isaac_installed or _isaac_installed
 
 
 # ---- helpers ----------------------------------------------------------------------------------
@@ -95,6 +96,16 @@ async def _errors(request: web.Request, handler):
     except Exception as e:  # never leak details
         log.error("studio API call failed: %s", type(e).__name__)
         return _err(500, "The Studio could not do that. See its terminal for the error type.")
+
+
+def _isaac_installed() -> bool:
+    from ..cli import isaac_installed
+    return isaac_installed()
+
+
+def check_sim(ctx: Ctx, project: Project) -> None:
+    if studio_sim(project) == "isaac" and not ctx.isaac_installed():
+        raise ProjectError("Isaac Sim is not installed on this computer. Pick Quick 2D, or set ISAAC_SIM_ROOT.")
 
 
 def check_robot_profile(ctx: Ctx, project: Project) -> None:
@@ -252,6 +263,15 @@ async def refresh_lights(ctx: "Ctx") -> None:
         await asyncio.sleep(ctx.probe_every)
 
 
+def _read_frame(path: Path, last) -> tuple:
+    """(mtime, the frame bytes if it is newer than ``last``, else None)."""
+    try:
+        mtime = path.stat().st_mtime_ns
+        return mtime, (path.read_bytes() if mtime != last else None)
+    except OSError:
+        return last, None
+
+
 def default_convert_command(urdf: Path, sensors: Path, out: Path) -> list[str]:
     py = os.environ.get("WARDZERO_ISAAC_PYTHON") or str(Path.home() / "isaacsim" / "python.sh")
     return [py, str(SCRIPTS / "isaac_import_urdf.py"), "--urdf", str(urdf), "--sensors", str(sensors),
@@ -290,7 +310,8 @@ def make_app(ctx: Ctx) -> web.Application:
     async def presets(request):
         return j({"roles": [x.model_dump(mode="json") for x in ctx.roles.values()],
                   "moods": [x.model_dump(mode="json") for x in ctx.moods.values()],
-                  "scenarios": [x.model_dump(mode="json") for x in ctx.presets.values()]})
+                  "scenarios": [x.model_dump(mode="json") for x in ctx.presets.values()],
+                  "isaac_available": bool(ctx.isaac_installed())})
 
     # projects
     @r.get("/api/projects")
@@ -306,6 +327,7 @@ def make_app(ctx: Ctx) -> web.Application:
         data = {**defaults_from_preset(ctx.presets[sid]), **d, "id": ctx.projects.new_id()}
         project = chars.check_all(Project.model_validate(data), ctx.site, ctx.roles, ctx.moods)
         check_robot_profile(ctx, project)
+        check_sim(ctx, project)
         ctx.projects.save(project)
         return j(project.model_dump(mode="json"), 201)
 
@@ -327,6 +349,7 @@ def make_app(ctx: Ctx) -> web.Application:
                     merged[k] = v
         project = chars.check_all(Project.model_validate(merged), ctx.site, ctx.roles, ctx.moods)
         check_robot_profile(ctx, project)
+        check_sim(ctx, project)
         ctx.projects.save(project)
         return j(project.model_dump(mode="json"))
 
@@ -536,6 +559,7 @@ def make_app(ctx: Ctx) -> web.Application:
         if not isinstance(pid, str):
             raise BadRequest("'project_id' is required.")
         project = ctx.projects.get(pid)
+        check_sim(ctx, project)
         conn = read_connection(ctx.data)
         try:
             run_id = await asyncio.to_thread(ctx.runner.start, project, conn["robot_domain"])
@@ -591,14 +615,10 @@ def make_app(ctx: Ctx) -> web.Application:
         last = None
         try:
             while not request.app[CLOSING].is_set():
-                path = ctx.runner.preview_file(token)
+                path = await asyncio.to_thread(ctx.runner.preview_file, token)  # takes the runner's lock and reads its log
                 if path is None:
                     break  # the run stopped (or a new one began): end the stream
-                try:
-                    mtime = path.stat().st_mtime_ns
-                    frame = path.read_bytes() if mtime != last else None
-                except OSError:
-                    frame = None
+                mtime, frame = await asyncio.to_thread(_read_frame, path, last)
                 if frame:
                     last = mtime
                     await resp.write(f"--{PREVIEW_BOUNDARY}\r\nContent-Type: image/jpeg\r\n"

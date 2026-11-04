@@ -70,14 +70,14 @@ def make_loop(host, extra_bridges=()):
     rb = RosBridge("wardzero_isaac_robot_side", None, use_sim_time=False, domain_id=host.robot_domain) \
         if host.robot_domain != a.private_domain else None
     host.bridges = [b for b in (private, rb) if b is not None]
-    clocks = [rb] if rb is not None and not robot.owns_clock else []
+    clocks = [rb] if rb is not None else []
     sim_ros = SimRos(svc, private, clock_bridges=clocks, robot_ros=rb, graph_owned=robot.graph_owned)
     robot.attach_ros(svc.world, private, rb)
     for b in host.bridges + list(extra_bridges):
         b.start()
     vram = VramSampler().start()
     vram.sample()
-    loop = HostLoop(svc, sim_ros, host.app, host.timeline, bridges=host.bridges + list(extra_bridges), time_scale=0.0,
+    loop = HostLoop(svc, sim_ros, host.app, host.timeline, bridges=host.bridges + list(extra_bridges), time_scale=0.0, advance=host.advance,
                     vram=lambda: vram.last, vram_peak=lambda: vram.peak)
     return loop, vram
 

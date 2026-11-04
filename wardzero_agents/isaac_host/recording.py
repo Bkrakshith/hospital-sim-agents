@@ -291,7 +291,7 @@ class Recorder:
         except Exception as exc:
             log.warning("the writers did not finish cleanly: %s", exc)
         self._enc.finalize_encoding()
-        mp4fix.set_duration(cfg.overhead_mp4, self.encoded, cfg.fps)  # the encoder was told no length at the start
+        self._fix_header(cfg.overhead_mp4, self.encoded)  # the encoder was told no length at the start
         stats["overhead_frames"] = self.encoded
         if self._follow_writer is not None:
             stats["follow_frames"] = self._encode_follow()
@@ -310,5 +310,10 @@ class Recorder:
         for p in files:
             self._enc.encode_next_frame_from_file(str(p))
         self._enc.finalize_encoding()
+        self._fix_header(cfg.follow_mp4, len(files))
         shutil.rmtree(folder, ignore_errors=True)
         return len(files)
+
+    def _fix_header(self, mp4: Path, frames: int) -> None:
+        if not mp4fix.set_duration(mp4, frames, self.cfg.fps):
+            log.warning("could not set the header duration of %s: players may show a wrong length", mp4)

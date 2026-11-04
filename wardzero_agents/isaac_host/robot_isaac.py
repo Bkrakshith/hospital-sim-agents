@@ -22,7 +22,7 @@ from ..robots import sanitise
 from ..robots.profile import RobotProfile
 from . import robot as rb
 from . import stage as stage_mod
-from .robot_graph import CAMERA_HZ, PrimPath, build_robot_graph
+from .robot_graph import CAMERA_HZ, IMPULSE_ATTR, PrimPath, build_robot_graph
 
 log = logging.getLogger("wardzero.isaac.robot")
 
@@ -176,9 +176,11 @@ class IsaacRobot:
         return tuple(k for k in ("bbox_3d", "odom") if self.graph is not None and
                      (k in self.graph.topics or (k == "bbox_3d" and self.graph.topics_private)))
 
-    @property
-    def owns_clock(self) -> bool:
-        return self.graph is not None and "clock" in self.graph.topics
+    def fire(self) -> None:
+        """One evaluation of the robot's graph: call once per frame, while the timeline runs."""
+        import omni.graph.core as og
+
+        og.Controller.attribute(IMPULSE_ATTR).set(True)
 
     # ---- per frame ---------------------------------------------------------------------------
     def pose(self):

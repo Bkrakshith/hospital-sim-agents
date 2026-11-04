@@ -77,3 +77,18 @@ def test_zero_frames_changes_nothing(tmp_path):
     f = tmp_path / "d.mp4"
     f.write_bytes(mp4())
     assert mp4fix.set_duration(f, 0, 30.0) is False and f.read_bytes() == mp4()
+
+
+def test_mehd_is_patched_when_present(tmp_path):
+    f = tmp_path / "e.mp4"
+    data = mp4(movie_scale=1000)
+    mehd = box(b"mehd", struct.pack(">B3xI", 0, 0xFFFFFFFF))
+    data = data.replace(box(b"mvex", b"\0" * 8), box(b"mvex", mehd))
+    # the moov box grew: rebuild its size
+    i = data.index(b"moov") - 4
+    moov_len = struct.unpack(">I", data[i:i + 4])[0] + (len(mehd) - 8)
+    data = data[:i] + struct.pack(">I", moov_len) + data[i + 4:]
+    f.write_bytes(data)
+    assert mp4fix.set_duration(f, 301, 30.0) is True
+    d = f.read_bytes()
+    assert struct.unpack(">I", d[d.index(b"mehd") + 8:d.index(b"mehd") + 12])[0] == 10033

@@ -82,11 +82,11 @@ def raw_detection_topics(ns: str = "robot") -> dict[str, str]:
 def isaac_graph_keys(base: str, can_move: bool, sensor_kinds=()) -> tuple[str, ...]:
     """The robot_topics keys the Isaac robot graph publishes or listens on for this robot.
 
-    Always the clock, the TF tree and the joint topics. A colour camera gives camera_rgb, camera_info and bbox_3d
+    Always the TF tree and the joint topics (never the clock: the host publishes /clock from its own time). A colour camera gives camera_rgb, camera_info and bbox_3d
     (the host's adapter publishes the last), a depth camera (kind rgbd) camera_depth too. A wheeled base that can
     move gets odom and cmd_vel. Lidar point clouds are not part of the graph yet."""
     kinds = set(sensor_kinds)
-    keys = ["clock", "tf", "joint_states", "joint_command"]
+    keys = ["tf", "joint_states", "joint_command"]
     if kinds & {"rgb", "rgbd"}:
         keys += ["camera_rgb", "camera_info", "bbox_3d"]
     if "rgbd" in kinds:

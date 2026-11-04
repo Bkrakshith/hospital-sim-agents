@@ -21,14 +21,14 @@ class FakeProc:
 
 
 class Rig:
-    def __init__(self, tmp_path, hang_on=(), env_sh=True):
+    def __init__(self, tmp_path, hang_on=(), env_sh=True, **kw):
         self.proc = FakeProc()
         self.hang_on, self.launches = set(hang_on), []
         sh = tmp_path / "env.sh"
         if env_sh:
             sh.write_text("")
-        self.rec = B.BagRecorder(tmp_path / "run", 42, env_sh=sh, popen=self.popen, signaller=self.signal,
-                                 stop_wait_s=0.01, term_wait_s=0.01)
+        self.rec = B.BagRecorder(tmp_path / "run", 42, private_domain=7, env_sh=sh, popen=self.popen,
+                                 signaller=self.signal, stop_wait_s=0.01, term_wait_s=0.01, **kw)
 
     def popen(self, argv, **kw):
         self.launches.append((argv, kw))
@@ -48,13 +48,14 @@ def test_starts_ros2_bag_on_the_robot_domain_with_a_clean_environment(tmp_path, 
     r = Rig(tmp_path)
     assert r.rec.start() is True and r.rec.running
     (argv, kw), = r.launches
-    assert argv[:2] == ["bash", "-c"] and "ros2 bag record -a" in argv[2] and "exec" in argv[2]
-    assert "--compression-format zstd" in argv[2]  # raw, a sim second is about 30 MB
-    assert argv[-2:] == [str(tmp_path / "env.sh"), str(tmp_path / "run" / "robot_bag")]
+    assert argv[:5] == ["setpriv", "--pdeathsig", "INT", "--", "bash"]  # SIGINT when the host dies, no preexec_fn
+    assert "ros2 bag record" in argv[6] and "exec" in argv[6] and " -a" not in argv[6].replace("--all", "")
+    assert "--compression-format zstd" in argv[6]
+    assert argv[8:10] == [str(tmp_path / "env.sh"), str(tmp_path / "run" / "robot_bag")]
     env = kw["env"]
     assert env["ROS_DOMAIN_ID"] == "42"
     assert not {"LD_LIBRARY_PATH", "PYTHONPATH", "ANTHROPIC_API_KEY"} & env.keys()
-    assert kw["start_new_session"] is True and kw["preexec_fn"] is B._die_with_parent
+    assert kw["start_new_session"] is True and "preexec_fn" not in kw
     r.rec.stop()
 
 
@@ -89,7 +90,7 @@ def test_a_missing_env_sh_or_ros2_never_fails_the_run(tmp_path):
 
     def boom(*a, **k):
         raise FileNotFoundError("bash")
-    rec = B.BagRecorder(tmp_path / "run", 1, env_sh=tmp_path / "env.sh", popen=boom)
+    rec = B.BagRecorder(tmp_path / "run", 1, private_domain=2, env_sh=tmp_path / "env.sh", popen=boom)
     (tmp_path / "env.sh").write_text("")
     assert rec.start() is False and rec.stop() is None
 
@@ -100,3 +101,44 @@ def test_finalised_means_metadata_yaml_exists(tmp_path):
     (tmp_path / "run" / "robot_bag").mkdir(parents=True)
     (tmp_path / "run" / "robot_bag" / "metadata.yaml").write_text("x")
     assert r.rec.finalised
+
+
+def test_it_records_an_allowlist_without_images_by_default(tmp_path):
+    from wardzero_agents.ros import topics
+    r = Rig(tmp_path)
+    r.rec.start()
+    (argv, _), = r.launches
+    rec = argv[10:]
+    rt = topics.robot_topics("robot")
+    want = {rt[k] for k in ("clock", "tf", "joint_states", "joint_command", "odom", "cmd_vel", "camera_info", "bbox_3d",
+                            "heard", "say", "goal_pose", "task_action", "task_result", "task_brief")}
+    assert set(rec) == want
+    assert not {rt["camera_rgb"], rt["camera_depth"], rt["lidar"]} & set(rec)
+    # nothing of the people's private wz.v1 topics, and no wildcard
+    assert not any(t.startswith("/wz") for t in rec) and "-a" not in rec and "--all" not in rec
+
+
+def test_bag_images_adds_rgb_depth_and_the_point_cloud(tmp_path):
+    from wardzero_agents.ros import topics
+    r = Rig(tmp_path, images=True)
+    r.rec.start()
+    (argv, _), = r.launches
+    rt = topics.robot_topics("robot")
+    assert {rt["camera_rgb"], rt["camera_depth"], rt["lidar"]} <= set(argv[10:])
+
+
+def test_the_topics_follow_the_robot_namespace(tmp_path):
+    r = Rig(tmp_path, ns="g1")
+    r.rec.start()
+    (argv, _), = r.launches
+    assert "/g1/camera/bbox_3d" in argv and "/robot/camera/bbox_3d" not in argv
+
+
+def test_it_refuses_the_private_domain(tmp_path, caplog):
+    sh = tmp_path / "env.sh"
+    sh.write_text("")
+    launched = []
+    rec = B.BagRecorder(tmp_path / "run", 9, private_domain=9, env_sh=sh, popen=lambda *a, **k: launched.append(1))
+    with caplog.at_level("ERROR"):
+        assert rec.start() is False
+    assert launched == [] and "private domain" in caplog.text  # the people's minds and director live there

@@ -64,6 +64,25 @@
         input, h("small.muted", "How likely people are to tell each other what they thought of the robot."));
     }
 
+    // Simulator: sim, window, recording. Saved per project; the preview shows only for headless Isaac.
+    function selectField(key, label, options, hint, bool) {
+      const input = set[key] = h("select", { id: "s-" + key });
+      const cur = () => String(P()[key]);
+      for (const [value, text, disabled] of options) input.append(h("option", { value, disabled: !!disabled, selected: cur() === value }, text));
+      input.addEventListener("change", () => save({ [key]: bool ? input.value === "true" : input.value }, input, cur()).then(drawSettings));
+      return h("div.field", h("label.flabel", { for: "s-" + key }, label), input, hint ? h("small.muted", hint) : null);
+    }
+    function simulator() {
+      const isaac = !!(WZ.presets && WZ.presets.isaac_available), p = P(), onIsaac = p.sim === "isaac";
+      return h("fieldset.sim-group", { "aria-label": "Simulator" },
+        h("legend.flabel", "Simulator"),
+        selectField("sim", "Simulator", [["isaac", isaac ? "Isaac Sim" : "Isaac Sim (not installed)", !isaac], ["stub", "Quick 2D"]],
+          isaac ? "Isaac Sim is the 3D hospital. Quick 2D is a fast stand-in without rendering." : "Isaac Sim is not installed on this computer (set ISAAC_SIM_ROOT), so only Quick 2D is available."),
+        onIsaac ? selectField("headed", "Window", [["false", "Headless (preview here)"], ["true", "Headed (Isaac window)"]], null, true) : null,
+        onIsaac ? switchRow("record", "Record the run", "Saves overhead and robot-view videos and a rosbag of the robot. The run is slower than real time.") : null,
+        onIsaac && p.record ? selectField("record_res", "Video size", [["1280x720", "1280 x 720"], ["1920x1080", "1920 x 1080"]]) : null);
+    }
+
     const startBtn = h("button.btn.primary.wide.big", { type: "button", onclick: start }, "Start run");
     const stopBtn = h("button.btn.danger-solid.wide.big", { type: "button", onclick: stop }, "Stop run");
     const stateBox = h("div.runstate");
@@ -84,6 +103,7 @@
             numField("budget_usd", "Spending limit", 0.5, 1000, 0.5, "USD"),
             numField("repeat", "Repeats", 1, 20, 1, "runs", { int: true }),
             wom(),
+            simulator(),
             switchRow("carry_memory", "Carry memory between repeats", "People remember the earlier run. Applies when repeats is more than 1."),
             switchRow("baseline", "Also run the built-in robot", "Runs the same seeds with the built-in G1 to compare."))),
         h("section.rsec.actions", startBtn, stopBtn, errBox, stateBox, phases, reportBtn),
