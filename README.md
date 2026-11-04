@@ -98,7 +98,7 @@ The robot fairness rule: the robot sees the world only through its own senses.
 
 - The robot hears people only on `/g1/audio/heard`.
 - It speaks by publishing plain text on `/g1/speech/say`.
-- Robot speech is 72 dB at 1 m. Text with no addressee goes to the nearest person within 2.5 m.
+- Robot speech is 72 dB at 1 m. It is addressed to the person whose speech the robot last heard (within 20 s, once); otherwise to the nearest person within 2.5 m. The robot itself never sees who spoke.
 - In the stub the robot gets no lidar or camera. People's bodies in the sensors come in Plan 2
   with Isaac.
 
