@@ -233,11 +233,17 @@ async def refresh_lights(ctx: "Ctx") -> None:
     """Keep ctx.lights fresh: one graph probe every few seconds, for the robot the page last asked about."""
     from ..cli import ros_available
     while True:
-        if ros_available():
-            domain, ns = ctx.probe_target
-            seen = await ctx.probe(domain, ns)
-            ctx.lights = {k: bool((seen or {}).get(k)) for k in NO_LIGHTS}
-        else:
+        try:
+            if ros_available():
+                domain, ns = ctx.probe_target
+                seen = await ctx.probe(domain, ns)
+                ctx.lights = {k: bool((seen or {}).get(k)) for k in NO_LIGHTS}
+            else:
+                ctx.lights = dict(NO_LIGHTS)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:  # one failed probe must not freeze the lights
+            log.error("connection probe failed: %s", type(e).__name__)
             ctx.lights = dict(NO_LIGHTS)
         await asyncio.sleep(ctx.probe_every)
 

@@ -58,6 +58,7 @@ FASTEMBED_ADVICE = ("The fastembed embedder needs the optional extra. Install it
 DEFAULT_PANEL_PORT = 8765
 DEFAULT_READY_TIMEOUT_S = 600.0
 TERM_AFTER_S = 10.0  # SIGINT, then SIGTERM after this long
+STOP_MARKER = "Stopping the run"  # printed when the orderly stop of all children begins
 KILL_AFTER_S = 5.0  # SIGTERM, then SIGKILL after this long
 AGENT_KILL_AFTER_S = 80.0  # the agent node drains its minds for up to 60 s, then saves the snapshot
 EARLY_EXIT_GRACE_S = 5.0  # a clean exit of another child this long before the run's end is an early exit
@@ -188,7 +189,7 @@ def supervise(children: list[Child], *, term_after_s: float = TERM_AFTER_S, kill
             on_start(procs)
         while code is None:
             if signals:
-                print("Stopping the run (Ctrl+C again to hurry).", flush=True)
+                print(STOP_MARKER + " (Ctrl+C again to hurry).", flush=True)
                 code = 130
                 break
             exited = {n: p.returncode for n, p in procs.items() if p.poll() is not None}
@@ -211,6 +212,8 @@ def supervise(children: list[Child], *, term_after_s: float = TERM_AFTER_S, kill
                     code = 1
                     break
             time.sleep(poll_s)
+        if not signals:  # a signal already printed it above
+            print(STOP_MARKER + " (orderly stop).", flush=True)  # the Studio watches for this line
         problems = _stop_all(procs, by_name, signals, term_after_s, kill_after_s, poll_s)
         for name, why in problems:
             if clean or code == 130:
@@ -447,7 +450,8 @@ def _mark_stopped_early(run_dir: Path, loaded, force: bool = False) -> None:
                 end = max(end, float(json.loads(line).get("t") or 0.0))
         except (OSError, ValueError):
             pass
-        if force or end < 0.95 * loaded.scenario.duration_min * 60:
+        # no status records at all says nothing about when the run ended: only a user stop (force) counts
+        if force or (end > 0 and end < 0.95 * loaded.scenario.duration_min * 60):
             RunLog(run_dir).write_meta({**meta, "stopped_early": True})
     except (OSError, ValueError):
         pass

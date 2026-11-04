@@ -21,7 +21,9 @@ from .project import Project
 TAIL_STREAMS = ("status", "says", "audio", "tokens", "robot_pose", "objects")
 SAYS_TAIL = 20
 RUN_FOLDER = re.compile(r"^Run folder: (.+)$")
-STOP_GRACE_S = 10.0  # after the stop message the run must have left its running phase, else SIGINT
+STOP_GRACE_S = 10.0  # after the stop message the run must have begun its orderly stop, else SIGINT
+STOP_HARD_S = 120.0  # once it has begun, it gets this long in all (agents drain for up to 60 s) before SIGINT
+STOP_MARKER = "Stopping the run"  # the line the CLI prints when its orderly stop begins
 AGENTS_ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -47,12 +49,13 @@ class Runner:
     def __init__(self, data: Path, config_root: Path, runs_dir: Path, *,
                  command: Callable[..., list[str]] = default_command,
                  stop_publisher: Optional[Callable[[str], bool]] = None,
-                 stop_grace_s: float = STOP_GRACE_S,
+                 stop_grace_s: float = STOP_GRACE_S, stop_hard_s: float = STOP_HARD_S,
                  key_present: Optional[Callable[[], bool]] = None):
         self.data, self.config_root, self.runs_dir = Path(data), Path(config_root), Path(runs_dir)
         self._command = command
         self._stop_publisher = stop_publisher or publish_stop
-        self._grace = stop_grace_s
+        self._grace, self._hard = stop_grace_s, stop_hard_s
+        self._hard_timer_armed = False
         self._timer: Optional[threading.Timer] = None
         self._run_domain = os.environ.get("ROS_DOMAIN_ID", "0")
         self._key_present = key_present or _claude_key_present
@@ -63,7 +66,7 @@ class Runner:
         self._run_id: Optional[str] = None
         self._project: Optional[Project] = None
         self._folder: Optional[str] = None
-        self._log_pos, self._log_partial, self._finished = 0, b"", False
+        self._log_pos, self._log_partial, self._finished, self._stopping = 0, b"", False, False
         self._log_lines: collections.deque = collections.deque(maxlen=8)
         self._reset_view()
 
@@ -99,41 +102,56 @@ class Runner:
             self._project = project
             self._reset_view()
             self._folder = None
-            self._log_pos, self._log_partial, self._finished = 0, b"", False
+            self._log_pos, self._log_partial, self._finished, self._stopping = 0, b"", False, False
             self._log_lines = collections.deque(maxlen=8)
             return self._run_id
 
     def stop(self) -> dict:
-        """Stop the run. The stop goes out on the scenario control topic, like the panel's stop; if that
-        cannot be sent, the run process gets SIGINT. A stop during the debrief or the report is refused
-        politely: both finish by themselves in moments, and cutting them off would lose the trust update."""
+        """Stop the run. The stop goes out on the scenario control topic, like the panel's stop; if nobody
+        took it, the run process gets SIGINT. A stop during the debrief or the report is refused politely:
+        both finish by themselves in moments, and cutting them off would lose the trust update.
+
+        After a control stop the CLI prints a marker line as soon as it begins its orderly stop. The run
+        is interrupted only if that line has not appeared within the grace period (it never began
+        stopping), or if it is still running long after (the stop itself hangs). Once it has begun
+        stopping, the agents may be draining their memory for a minute: no signal in between."""
         with self._lock:
             if not self._alive():
                 return {"ok": True, "stopped": False, "note": "No run is going."}
-            phase = self._phase()
-            if phase in ("debrief", "report"):
+            self._read_log()
+            if self._phase() in ("debrief", "report"):
                 return {"ok": True, "stopped": False,
                         "note": "The run is already over; the debrief and report are finishing."}
+            domain = self._run_domain
+        sent = False
+        try:
+            sent = bool(self._stop_publisher(domain))  # True only when a subscriber got it; not under the lock
+        except Exception:
             sent = False
-            try:
-                sent = bool(self._stop_publisher(self._run_domain))  # True only when a subscriber got it
-            except Exception:
-                sent = False
+        with self._lock:
             if not sent:
                 self._signal(signal.SIGINT)
                 return {"ok": True, "stopped": True, "via": "sigint"}
-            # the message went out; if the run has not left its running phase soon, interrupt it
-            self._cancel_timer()
-            self._timer = threading.Timer(self._grace, self._escalate)
-            self._timer.daemon = True
-            self._timer.start()
+            self._hard_timer_armed = False
+            self._arm_timer(self._grace)
             return {"ok": True, "stopped": True, "via": "control"}
+
+    def _arm_timer(self, seconds: float) -> None:
+        self._cancel_timer()
+        self._timer = threading.Timer(seconds, self._escalate)
+        self._timer.daemon = True
+        self._timer.start()
 
     def _escalate(self) -> None:
         with self._lock:
             self._read_log()
-            if self._alive() and self._phase() == "running":
-                self._signal(signal.SIGINT)
+            if not self._alive() or self._phase() != "running":
+                return  # over, or already debriefing: leave it alone
+            if self._stopping and not self._hard_timer_armed:
+                self._hard_timer_armed = True  # it began stopping: wait out the drain, then one last look
+                self._arm_timer(max(0.0, self._hard - self._grace))
+                return
+            self._signal(signal.SIGINT)
 
     def _cancel_timer(self) -> None:
         if self._timer is not None:
@@ -141,8 +159,8 @@ class Runner:
             self._timer = None
 
     def shutdown(self) -> None:
-        self._cancel_timer()
         """The Studio is closing: do not leave a paid run behind, but never cut a debrief short."""
+        self._cancel_timer()
         with self._lock:
             if self._alive() and self._phase() == "running":
                 self._signal(signal.SIGINT)
@@ -204,6 +222,8 @@ class Runner:
             m = RUN_FOLDER.match(line)
             if m:
                 self._folder, self._finished = m.group(1).strip(), False
+            elif line.startswith(STOP_MARKER):
+                self._stopping = True
             elif line.startswith("Run finished"):
                 self._finished = True
 
