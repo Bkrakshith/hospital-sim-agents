@@ -23,6 +23,21 @@ IntentKind = Literal[
     "gesture",
     "cough",
     "leave",
+    "attend",
+    "give_item",
+    "take_item",
+    "call_for_help",
+    "escort",
+    "evacuate",
+    "call_bell",
+    "accept_item",
+    "refuse_item",
+    "request_instrument",
+    "reject_item",
+    "take_instrument_self",
+    "use_extinguisher",
+    "sit_up_in_bed",
+    "lie_back",
 ]
 
 
@@ -128,12 +143,26 @@ class ReflexOverride(_Envelope):
 class WorldEvent(_Envelope):
     id: str
     t: float
-    kind: Literal["pa_announcement", "alarm", "wet_floor", "arrival", "person_exit"]
+    kind: Literal["pa_announcement", "alarm", "wet_floor", "arrival", "person_exit", "fire_start"]
     text: Optional[str] = None
     x: Optional[float] = None
     y: Optional[float] = None
     persona: Optional[str] = None
     person: Optional[str] = None
+
+
+class ObjectState(_Envelope):
+    """One world object (item, fire or call bell) as logged on the objects stream."""
+    id: str
+    kind: Literal["tray", "specimen_box", "instrument", "extinguisher", "fire", "call_bell"]
+    label: str = ""
+    owner: Optional[str] = None
+    holder: Optional[str] = None
+    x: float = 0.0
+    y: float = 0.0
+    z: float = 0.0
+    size: Optional[float] = None  # fire: 0..1
+    active: Optional[bool] = None  # fire: burning; call bell: ringing
 
 
 class RosterEntry(_Envelope):

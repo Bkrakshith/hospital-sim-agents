@@ -16,6 +16,7 @@ from wardzero_agents.llm.fake import FakeGateway, FakeRefusal, default_policy
 from wardzero_agents.llm.gateway import LLMRequest, LLMResult
 from wardzero_agents.memory.longterm import LongTermMemory
 from wardzero_agents.mind.graph import validate_decision
+from wardzero_agents.config.presets import BASIC_INTENTS
 from wardzero_agents.mind.prompts import (
     DECISION_SCHEMA, SUMMARY_SCHEMA, SYSTEM_FIXED, persona_card, render_situation)
 from wardzero_agents.mind.runtime import Mind, MindDeps
@@ -143,9 +144,10 @@ def test_schema_is_strict():
 
 def test_schema_enums():
     props = DECISION_SCHEMA["properties"]
-    assert props["intent"]["properties"]["kind"]["enum"] == list(get_args(IntentKind))
+    assert props["intent"]["properties"]["kind"]["enum"] == [k for k in get_args(IntentKind) if k in BASIC_INTENTS]
     assert len(props["intent"]["properties"]["kind"]["enum"]) == 14
-    assert props["mood"]["enum"] == ["calm", "anxious", "frustrated", "distressed"]
+    assert set(props["mood"]["enum"]) == {"calm", "happy", "sad", "anxious", "stressed", "excited",
+                                          "relieved", "frustrated", "distressed"}
     assert props["patience_delta"]["type"] == "number"
     for nullable in (props["say"], props["addressee"], props["intent"]["properties"]["target"],
                      props["intent"]["properties"]["text"]):
@@ -266,6 +268,32 @@ def test_validate_decision():
     # empty strings from models are treated as null
     out = v(decision("sit_idle", target="", say="", addressee=""))
     assert out["intent"]["target"] is None and out["say"] is None and out["addressee"] is None
+
+
+def test_check_decision_by_role():
+    from wardzero_agents.mind.graph import check_decision
+
+    def c(d, role):
+        return check_decision(d, LOADED.area, LOADED.signs, ROSTER, "g1", role)
+
+    assert c(decision("call_bell"), None)[0] is None  # not a basic intent
+    assert c(decision("call_bell"), "patient")[0] is not None
+    assert c(decision("call_bell"), "surgeon")[0] is None
+    assert c(decision("walk_to", "clinic_corridor"), "surgeon")[0] is None
+    assert c(decision("leave"), "surgeon")[0] is None
+    assert c(decision("give_item", None, text="T1"), "ward_nurse") == (None, "invalid_target")
+    assert c(decision("give_item", "P3", text="T1"), "ward_nurse")[0] is not None
+    assert c(decision("request_instrument", None, text=""), "surgeon")[0] is None
+    out = c(decision("request_instrument", None, text="scalpel"), "surgeon")[0]
+    assert out["addressee"] == "g1" and out["intent"]["text"] == "scalpel"
+    assert c(decision("sit_idle", mood="stressed"), None)[0] is not None
+
+
+def test_system_fixed_by_role():
+    from wardzero_agents.mind.prompts import system_fixed
+    assert system_fixed("custom") == SYSTEM_FIXED
+    assert "call_bell" in system_fixed("patient") and "call_bell" not in SYSTEM_FIXED
+    assert "does not let you choose: " in system_fixed("surgeon")
 
 
 # ---------- runtime ----------

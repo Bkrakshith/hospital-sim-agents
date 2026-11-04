@@ -36,6 +36,10 @@ from wardzero_agents.contracts import (
 )
 from wardzero_agents.site import Router
 from wardzero_agents.world import audio
+from wardzero_agents.world.objects import (
+    ACCEPT_WINDOW_S, PERSON_EXTINGUISH_PER_S, ROBOT_EXTINGUISH_PER_S, SURGEON_WINDOW_S, WorldObjects,
+)
+from wardzero_agents.world.reach import giver_reach_ok, receiver_zone_ok
 from wardzero_agents.world.oracle import Entity, Pose, visible
 
 ROBOT_ID = "g1"
@@ -51,6 +55,17 @@ REROUTE_M = 0.5  # an approach re-plans its route once the person it follows has
 LOS_STEP_M = 0.1
 STATIC_ROLE = "patient_static"
 STATIC_PERSONA = "static_patient"
+
+ROBOT_REACH_Z = (0.4, 1.5)
+PERSON_REACH_Z = (0.5, 1.6)
+GIVE_RANGE_M = 1.5
+TAKE_RANGE_M = 1.2
+BELL_DB = 55.0
+ALARM_DB = 100.0
+APPROACH_KINDS = ("approach", "attend", "escort", "evacuate")
+ROLE_KINDS = ("give_item", "take_item", "call_for_help", "call_bell", "accept_item", "refuse_item",
+              "request_instrument", "reject_item", "take_instrument_self", "use_extinguisher",
+              "sit_up_in_bed", "lie_back")
 
 log = logging.getLogger(__name__)
 
@@ -105,6 +120,7 @@ class _Person:
     final_yaw: Optional[float] = None
     kind: str = "mind"  # "static" for a patient lying in a bed with no mind
     bed: Optional[str] = None
+    sitting_up: bool = False  # in a bed: propped up (posture stays "lying")
 
 
 class StubWorld:
@@ -122,6 +138,14 @@ class StubWorld:
         self._seats = dict(self.site.seats)
         r = loaded.scenario.robot
         self.robot_pose = Pose(r.x, r.y, r.yaw)
+        self.objects = WorldObjects()
+        self.experience: list[dict] = []  # failure hints for the robot's experience log
+        self._outbox: list[AudioEvent] = []  # audio the world raised by itself (fire alarm)
+        self._log: list[tuple[str, dict]] = []  # (run stream, record) not yet drained
+        self._responses: dict[str, tuple[str, float]] = {}  # person -> (accept_item|refuse_item, t)
+        self._offers: dict[str, dict] = {}  # receiver -> open give_item offer
+        self._fighting: dict[str, str] = {}  # person -> fire id they are putting out
+        self._logged_objects = None
         self.people: dict[str, _Person] = {}
         taken_beds: set[str] = set()
         for inst in loaded.instances:
@@ -265,6 +289,9 @@ class StubWorld:
             self._fail(p, intent, "patient is in bed")
             return []
         kind = intent.kind
+        self._fighting.pop(intent.person, None)
+        if kind in ROLE_KINDS:
+            return self._role_action(p, intent)
         if kind in OVERLAYS:
             if kind == "cough":
                 return [self.cough(intent.person, p.inst.cough_severity, intent.t)]
@@ -298,7 +325,7 @@ class StubWorld:
                 return []
             self._begin(p, intent)
             self._start(p, self._stand_phase(p) + [walk])
-        elif kind == "approach":
+        elif kind in APPROACH_KINDS:
             tgt = intent.target
             if tgt is None or tgt == intent.person or self._pos(tgt) is None:
                 self._fail(p, intent, "unknown target")
@@ -465,6 +492,7 @@ class StubWorld:
         for pid, p in self.people.items():
             if p.plan:
                 self._advance(pid, p, dt)
+        self._step_objects(t, dt)
 
     def _wall_cells(self) -> np.ndarray:
         """Cells the building's wall segments pass through (doorways are already gaps in them).
@@ -574,6 +602,10 @@ class StubWorld:
             self.signs.append(sign)
             self._omni.add(sign.id)
             return []
+        if ev.kind == "fire_start":
+            self.objects.start_fire(x, y)
+            self._log_objects(ev.t)
+            return []
         if ev.kind == "arrival":
             persona = ev.persona or (
                 "anxious_first_timer" if "anxious_first_timer" in self.loaded.personas
@@ -592,4 +624,221 @@ class StubWorld:
             self.apply_intent(
                 Intent(id=f"exit_{ev.id}", person=ev.person, t=ev.t, kind="leave", target=self.loaded.area.entrance)
             )
+        return []
+
+    # ---- objects, hand-overs and role actions --------------------------------------------
+    def _log_objects(self, t: float) -> None:
+        """Queue an objects.jsonl record when something changed (fire size in 5 % steps)."""
+        snap = self.objects.snapshot()
+        key = [(o.id, o.holder, o.active, None if o.size is None else round(o.size * 20), o.x, o.y, o.z)
+               for o in snap]
+        if key != self._logged_objects:
+            self._logged_objects = key
+            self._log.append(("objects", {"t": t, "objects": [o.model_dump(exclude={"schema_"}) for o in snap]}))
+
+    def drain_log(self) -> list[tuple[str, dict]]:
+        """(run stream, record) pairs raised since the last call; the host writes them to the RunLog."""
+        out, self._log = self._log, []
+        return out
+
+    def drain_audio(self) -> list[AudioEvent]:
+        """Audio the world raised by itself since the last call (a fire alarm)."""
+        out, self._outbox = self._outbox, []
+        return out
+
+    def _step_objects(self, t: float, dt: float) -> None:
+        for f in self.objects.step(dt):
+            self._outbox.append(self._event(t, "alarm", f.id, f.x, f.y, 2.5, ALARM_DB, "Fire alarm"))
+        for pid, fid in list(self._fighting.items()):
+            p, f = self.people.get(pid), self.objects.fires.get(fid)
+            if p is None or f is None or p.posture == "gone":
+                self._fighting.pop(pid, None)
+            elif f.out:
+                self._fighting.pop(pid)
+                p.state, p.progress = "done", 1.0
+            elif math.hypot(f.x - p.x, f.y - p.y) > 2.0:
+                self._fighting.pop(pid)
+                p.state, p.reason = "failed", "out of range"
+            else:
+                f.reduce(PERSON_EXTINGUISH_PER_S * dt)
+                if f.out:
+                    self._fighting.pop(pid)
+                    p.state, p.progress = "done", 1.0
+        self._resolve_offers(t)
+        self._log_objects(t)
+
+    def extinguish(self, by: str, t: float, dt: float) -> bool:
+        """by (the robot or a person) sprays the nearest fire within 2 m for dt seconds."""
+        pos = self._pos(by)
+        if pos is None:
+            return False
+        f = self.objects.nearest_fire(*pos)
+        if f is None:
+            return False
+        f.reduce((ROBOT_EXTINGUISH_PER_S if by == ROBOT_ID else PERSON_EXTINGUISH_PER_S) * dt)
+        self._log_objects(t)
+        return True
+
+    def _check_hand_over(self, giver: str, receiver: str, item_id: str,
+                         place: tuple[float, float, float]) -> str:
+        item = self.objects.items.get(item_id)
+        giver = ROBOT_ID if giver == "robot" else giver
+        receiver = ROBOT_ID if receiver == "robot" else receiver
+        if item is None or item.holder != giver:
+            return "not_holding"
+        gpos = self._pos(giver)
+        reach = ROBOT_REACH_Z if giver == ROBOT_ID else PERSON_REACH_Z
+        if gpos is None or not giver_reach_ok(gpos, reach, place):
+            return "out_of_reach_giver"
+        if receiver != ROBOT_ID:
+            r = self._get(receiver)
+            if r.posture == "gone" or not receiver_zone_ok(
+                    r.posture, r.bed is not None and r.posture == "lying", r.sitting_up, (r.x, r.y),
+                    r.yaw, self.site.beds.get(r.bed or ""), place, item_kind=item.kind):
+                return "out_of_reach_receiver"
+        return "ok"
+
+    def _window(self, receiver: str) -> float:
+        r = self.people.get(receiver)
+        return SURGEON_WINDOW_S if r is not None and r.inst.role == "surgeon" else ACCEPT_WINDOW_S
+
+    def _accepted(self, receiver: str, t: float) -> bool:
+        r = self.people.get(receiver)
+        if receiver in (ROBOT_ID, "robot") or (r is not None and r.kind == "static"):
+            return True
+        resp = self._responses.get(receiver)
+        return resp is not None and resp[0] == "accept_item" and resp[1] >= t - self._window(receiver)
+
+    def hand_over(self, giver: str, receiver: str, item_id: str, place: tuple[float, float, float],
+                  t: float) -> tuple[bool, str]:
+        """Move item_id from giver to receiver at place. Reason: ok, out_of_reach_giver,
+        out_of_reach_receiver, refused or not_holding. The receiver accepted when their latest
+        accept_item/refuse_item decision is an accept_item at most 10 s (surgeon 5 s) before t;
+        mindless receivers (bed patients) always accept. giver may be "robot" (or g1)."""
+        giver = ROBOT_ID if giver == "robot" else giver
+        receiver = ROBOT_ID if receiver == "robot" else receiver
+        why = self._check_hand_over(giver, receiver, item_id, place)
+        if why != "ok":
+            return False, why
+        if not self._accepted(receiver, t):
+            return False, "refused"
+        item = self.objects.items[item_id]
+        item.holder, item.x, item.y, item.z = receiver, place[0], place[1], place[2]
+        self._responses.pop(receiver, None)
+        self._log_objects(t)
+        return True, "ok"
+
+    def _resolve_offers(self, t: float) -> None:
+        for receiver, o in list(self._offers.items()):
+            giver = self.people.get(o["giver"])
+            resp = self._responses.get(receiver)
+            answered = resp is not None and resp[1] >= o["t"]
+            if not answered and t - o["t"] <= self._window(receiver):
+                continue
+            del self._offers[receiver]
+            ok, why = self.hand_over(o["giver"], receiver, o["item"], o["place"], max(t, resp[1] if resp else t))
+            if giver is not None and giver.intent_id == o["intent"]:
+                giver.state, giver.reason = ("done", None) if ok else ("failed", why)
+                giver.progress = 1.0 if ok else giver.progress
+
+    def _nurse_base(self, x: float, y: float) -> tuple[float, float]:
+        bases = [r.centre for r in self.site.rooms.values() if r.use == "nurse_base"]
+        return min(bases, key=lambda c: math.hypot(c[0] - x, c[1] - y)) if bases else (x, y)
+
+    def _held(self, who: str) -> list:
+        return [i for i in self.objects.items.values() if i.holder == who]
+
+    def _role_action(self, p: _Person, intent: Intent) -> list[AudioEvent]:
+        pid, kind, t = intent.person, intent.kind, intent.t
+        if p.kind == "static":
+            self._fail(p, intent, "patient is in bed")
+            return []
+        out: list[AudioEvent] = []
+        in_bed = p.bed is not None and p.posture == "lying"
+        if kind in ("sit_up_in_bed", "lie_back", "call_bell") and not in_bed:
+            self._fail(p, intent, "not in bed")
+            return []
+        if kind == "use_extinguisher":
+            f = self.objects.nearest_fire(p.x, p.y)
+            if f is None:
+                self._fail(p, intent, "no fire in reach")
+                return []
+            self._begin(p, intent)
+            self._fighting[pid] = f.id
+            return []
+        if kind in ("give_item", "take_item"):
+            return self._item_transfer(p, intent)
+        if kind == "take_instrument_self":
+            near = [i for i in self.objects.items.values()
+                    if i.kind == "instrument" and i.holder is None
+                    and math.hypot(i.x - p.x, i.y - p.y) <= TAKE_RANGE_M
+                    and (not intent.text or i.label == intent.text or i.id == intent.text)]
+            if not near:
+                self._fail(p, intent, "no instrument in reach")
+                return []
+            self._begin(p, intent)
+            near[0].holder = pid
+            near[0].x, near[0].y = p.x, p.y
+            self._finish(p)
+            self._log_objects(t)
+            return []
+        self._begin(p, intent)
+        if kind == "sit_up_in_bed":
+            p.sitting_up = True
+        elif kind == "lie_back":
+            p.sitting_up = False
+        elif kind == "call_bell":
+            self.objects.ring(p.bed, t)
+            bx, by = self._nurse_base(p.x, p.y)
+            out.append(self._event(t, "person", f"bell_{p.bed}", bx, by, 2.0, BELL_DB))
+            self._log_objects(t)
+        elif kind in ("accept_item", "refuse_item"):
+            self._responses[pid] = (kind, t)
+        elif kind == "call_for_help":
+            out.append(self.say(pid, intent.text or "Help, I need a nurse here!", intent.addressee, t))
+        elif kind == "request_instrument":
+            out.append(self.say(pid, f"{intent.text or 'instrument'}, please", intent.addressee or ROBOT_ID, t))
+        elif kind == "reject_item":
+            self._responses[pid] = ("refuse_item", t)
+            out.append(self.say(pid, "No, not that", intent.addressee or ROBOT_ID, t))
+            self.experience.append({"t": t, "person": pid, "kind": "failure",
+                                    "hint": "the surgeon rejected the item that was passed"})
+            self._log.append(("world", {"t": t, "kind": "robot_experience", **self.experience[-1]}))
+        self._finish(p)
+        return out
+
+    def _item_transfer(self, p: _Person, intent: Intent) -> list[AudioEvent]:
+        pid, t = intent.person, intent.t
+        other = self.people.get(intent.target or "")
+        if other is None or other.posture == "gone":
+            self._fail(p, intent, "unknown target")
+            return []
+        if math.hypot(other.x - p.x, other.y - p.y) > (GIVE_RANGE_M if intent.kind == "give_item" else TAKE_RANGE_M):
+            self._fail(p, intent, "too far")
+            return []
+        src = pid if intent.kind == "give_item" else intent.target
+        held = {i.id: i for i in self._held(src)}
+        item = held.get(intent.text or "") or next(iter(held.values()), None)
+        if item is None:
+            self._fail(p, intent, "not holding")
+            return []
+        if intent.kind == "take_item":
+            self._begin(p, intent)
+            item.holder, item.x, item.y = pid, p.x, p.y
+            self._finish(p)
+            self._log_objects(t)
+            return []
+        if intent.point is not None:
+            place = (intent.point[0], intent.point[1], 0.85 if other.bed else 1.1)
+        else:  # half a metre from the receiver, towards the giver
+            d = max(math.hypot(p.x - other.x, p.y - other.y), 1e-6)
+            place = (other.x + (p.x - other.x) / d * 0.5, other.y + (p.y - other.y) / d * 0.5,
+                     0.85 if other.bed else 1.1)
+        why = self._check_hand_over(pid, intent.target, item.id, place)
+        if why != "ok":
+            self._fail(p, intent, why)
+            return []
+        self._begin(p, intent)
+        self._offers[intent.target] = {"giver": pid, "item": item.id, "place": place, "t": t,
+                                       "intent": intent.id}
         return []

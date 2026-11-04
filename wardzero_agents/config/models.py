@@ -36,7 +36,7 @@ class Mobility(_Model):
 class Persona(_Model):
     id: str
     label: str
-    role: Literal["patient", "companion", "visitor", "staff"]
+    role: Literal["patient", "companion", "visitor", "staff", "ward_nurse", "receptionist", "surgeon", "porter", "custom"]
     age: Range
     sex: list[str]
     condition: str
@@ -171,7 +171,7 @@ class PersonInstance(_Model):
     goals: list[str]
     backstory: str
     condition: str
-    role: Literal["patient", "companion", "visitor", "staff"]
+    role: Literal["patient", "companion", "visitor", "staff", "ward_nurse", "receptionist", "surgeon", "porter", "custom"]
     seat: Optional[str]
     companion_of: Optional[str]
     arrive_at_s: float

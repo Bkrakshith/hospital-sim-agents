@@ -3,13 +3,17 @@ from __future__ import annotations
 
 from typing import Optional, get_args
 
+import copy
 import math
 
 from ..config.models import PersonInstance, WaitingArea
+from ..config.presets import BASIC_INTENTS, ROLE_INTENTS
 from ..contracts import Heard, IntentKind, Nudge, Observation, Seen, Status
 
-INTENT_KINDS: list[str] = list(get_args(IntentKind))
-MOODS: list[str] = ["calm", "anxious", "frustrated", "distressed"]
+ALL_INTENT_KINDS: list[str] = list(get_args(IntentKind))
+INTENT_KINDS: list[str] = [k for k in ALL_INTENT_KINDS if k in BASIC_INTENTS]  # the basics every role has
+MOODS: list[str] = ["calm", "happy", "sad", "anxious", "stressed", "excited", "relieved", "frustrated",
+                    "distressed"]
 MAX_MEMORIES = 3
 SEAT_MATCH_M = 0.6  # a seated person this close to a seat is "at" that seat
 NEAR_LANDMARK_M = 1.5
@@ -34,6 +38,21 @@ _INTENT_HELP = {
     "gesture": "wave, point or nod",
     "cough": "cough",
     "leave": "leave the hospital (target defaults to the entrance)",
+    "attend": "go to a person to attend to them (target: a person id)",
+    "give_item": "hand an item you hold to a person (target: a person id; text: the item id)",
+    "take_item": "take an item from a person or the surface by you (target: a person id)",
+    "call_for_help": "call out for help or for a nurse (text: what you say)",
+    "escort": "walk with a person (target: a person id)",
+    "evacuate": "get a person out of danger (target: a person id)",
+    "call_bell": "press your call bell from your bed",
+    "accept_item": "accept the item being handed to you",
+    "refuse_item": "refuse the item being handed to you",
+    "request_instrument": "ask the robot for an instrument (text: its name)",
+    "reject_item": "push back: this is not the item you asked for",
+    "take_instrument_self": "take an instrument from the tray yourself (text: its name)",
+    "use_extinguisher": "put out a fire close to you with an extinguisher",
+    "sit_up_in_bed": "sit up in your bed",
+    "lie_back": "lie back down flat in your bed",
 }
 
 SYSTEM_FIXED = (
@@ -71,13 +90,42 @@ def _nullable() -> dict:
     return {"anyOf": [{"type": "string"}, {"type": "null"}]}
 
 
+def role_kinds(role: Optional[str]) -> list[str]:
+    """The intent kinds a role may choose, in IntentKind order. Unknown or no role: the basics."""
+    allowed = ROLE_INTENTS.get(role or "custom", BASIC_INTENTS)
+    return [k for k in ALL_INTENT_KINDS if k in allowed]
+
+
+def system_fixed(role: Optional[str] = None) -> str:
+    """SYSTEM_FIXED, plus one help line per intent this role has beyond the basics (and a note
+    when it lacks some of the basics). Identical to SYSTEM_FIXED when the role has the basics only."""
+    kinds = role_kinds(role)
+    extra = [k for k in kinds if k not in BASIC_INTENTS]
+    lost = [k for k in INTENT_KINDS if k not in kinds]
+    if not extra and not lost:
+        return SYSTEM_FIXED
+    out = SYSTEM_FIXED
+    if extra:
+        out += "\nYour role also lets you choose:\n" + "".join(f"  - {k}: {_INTENT_HELP[k]}\n" for k in extra)
+    if lost:
+        out += "\nYour role does not let you choose: " + ", ".join(lost) + ".\n"
+    return out
+
+
+def decision_schema(role: Optional[str] = None) -> dict:
+    """DECISION_SCHEMA with the intent.kind enum filtered to the role's intents."""
+    schema = copy.deepcopy(DECISION_SCHEMA)
+    schema["properties"]["intent"]["properties"]["kind"]["enum"] = role_kinds(role)
+    return schema
+
+
 DECISION_SCHEMA: dict = {
     "type": "object",
     "properties": {
         "intent": {
             "type": "object",
             "properties": {
-                "kind": {"type": "string", "enum": INTENT_KINDS},
+                "kind": {"type": "string", "enum": list(INTENT_KINDS)},
                 "target": _nullable(),
                 "text": _nullable(),
             },

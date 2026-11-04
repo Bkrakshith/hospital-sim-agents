@@ -12,8 +12,8 @@ from langgraph.graph import END, START, StateGraph
 from ..contracts import Intent, Nudge, Observation, Say, Status
 from ..llm.gateway import LLMRequest
 from .prompts import (
-    DECISION_SCHEMA, INTENT_KINDS, KB_HEADER, MAX_MEMORIES, MOODS, SUMMARY_FIXED, SUMMARY_SCHEMA,
-    SYSTEM_FIXED, persona_card, render_situation)
+    INTENT_KINDS, KB_HEADER, MAX_MEMORIES, MOODS, SUMMARY_FIXED, SUMMARY_SCHEMA,
+    SYSTEM_FIXED, decision_schema, persona_card, render_situation, role_kinds, system_fixed)
 
 if TYPE_CHECKING:
     from ..config.models import Sign, WaitingArea
@@ -28,7 +28,8 @@ SUMMARY_EVERY_S = 300.0
 SUMMARY_RETRY_S = 60.0  # back-off after a failed summary call
 KB_K = 4
 LTM_K = 5
-NEEDS_TARGET = {"walk_to", "approach", "sit_down", "read_sign", "look_at"}
+NEEDS_TARGET = {"walk_to", "approach", "sit_down", "read_sign", "look_at", "attend", "give_item",
+                "take_item", "escort", "evacuate"}
 
 
 class MindState(TypedDict, total=False):
@@ -63,8 +64,8 @@ def _str_or_none(v: Any) -> Optional[str]:
 
 
 def check_decision(data: Any, area: "WaitingArea", signs: Iterable["Sign"], roster: Iterable[str],
-                   robot_id: str = "g1") -> tuple[Optional[dict], Optional[str]]:
-    """Normalise a decision. Returns (decision, None) or (None, "invalid_target" | "invalid_decision")."""
+                   robot_id: str = "g1", role: Optional[str] = None) -> tuple[Optional[dict], Optional[str]]:
+    """Normalise a decision; role limits which intent kinds are valid (None: the basics). Returns (decision, None) or (None, "invalid_target" | "invalid_decision")."""
     try:
         intent = data["intent"]
         kind = intent["kind"]
@@ -77,7 +78,7 @@ def check_decision(data: Any, area: "WaitingArea", signs: Iterable["Sign"], rost
         reason = data.get("reason") or ""
     except (KeyError, TypeError, AttributeError):
         return None, "invalid_decision"
-    if kind not in INTENT_KINDS or mood not in MOODS or not isinstance(reason, str):
+    if kind not in role_kinds(role) or mood not in MOODS or not isinstance(reason, str):
         return None, "invalid_decision"
     if not _is_number(delta):
         return None, "invalid_decision"
@@ -94,6 +95,10 @@ def check_decision(data: Any, area: "WaitingArea", signs: Iterable["Sign"], rost
         if not text:
             return None, "invalid_decision"
         say = say or text
+    if kind == "request_instrument":
+        if not text:
+            return None, "invalid_decision"
+        addressee = addressee or robot_id
     if addressee is not None and addressee not in known:
         addressee = None  # a stray addressee should not cost the whole decision
     return {"intent": {"kind": kind, "target": target, "text": text}, "say": say,
@@ -102,9 +107,9 @@ def check_decision(data: Any, area: "WaitingArea", signs: Iterable["Sign"], rost
 
 
 def validate_decision(data: Any, area: "WaitingArea", signs: Iterable["Sign"], roster: Iterable[str],
-                      robot_id: str = "g1") -> Optional[dict]:
+                      robot_id: str = "g1", role: Optional[str] = None) -> Optional[dict]:
     """The normalised decision, or None if it names an unknown target or is malformed."""
-    return check_decision(data, area, signs, roster, robot_id)[0]
+    return check_decision(data, area, signs, roster, robot_id, role)[0]
 
 
 def _clamp01(x: float) -> float:
@@ -192,17 +197,20 @@ def build_graph(deps: "MindDeps", checkpointer: Any = None):
         out.append(state["situation"])
         return "\n".join(out)
 
+    sysfixed, schema = system_fixed(inst.role), decision_schema(inst.role)
+
     async def decide(state: MindState) -> dict:
         user = user_text(state)
         history = history_blocks(state)
-        req = LLMRequest(role="decide", person=person, system_fixed=SYSTEM_FIXED, persona_card=card,
-                         user=user, schema=DECISION_SCHEMA, history=history)
+        req = LLMRequest(role="decide", person=person, system_fixed=sysfixed, persona_card=card,
+                         user=user, schema=schema, history=history)
         res = await deps.gateway.complete(req)
         decision, error = None, res.error
         if res.ok:
             # the roster as it is now: people who arrived after this graph was built count too
             roster = [i.person_id for i in loaded.instances]
-            decision, error = check_decision(res.data, loaded.area, loaded.signs, roster, deps.robot_id)
+            decision, error = check_decision(res.data, loaded.area, loaded.signs, roster, deps.robot_id,
+                                             inst.role)
         data = res.data if isinstance(res.data, dict) else None
         deps.runlog.write("decisions", {
             "t": state["t"], "person": person, "triggers": list(state["triggers"]),
@@ -210,7 +218,7 @@ def build_graph(deps: "MindDeps", checkpointer: Any = None):
             "reason": data.get("reason") if data else None, "latency_s": res.latency_s,
             "model": res.model,
             "prompt_sha256": hashlib.sha256(
-                "\0".join([SYSTEM_FIXED, card, "\n".join([*history, user])]).encode("utf-8")).hexdigest()[:16],
+                "\0".join([sysfixed, card, "\n".join([*history, user])]).encode("utf-8")).hexdigest()[:16],
         })
         return {"decision": decision, "error": error}
 
