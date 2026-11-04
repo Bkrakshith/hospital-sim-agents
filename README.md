@@ -7,11 +7,15 @@ robot has to cope.
 
 You use it to test a robot's reception behaviour against people who are not scripted.
 
-This version runs the people on a lightweight stand-in simulator (the "stub sim"). Isaac Sim
-comes later. The Python package is `wardzero_agents` and the command is `hhumans`.
+The people run on a lightweight stand-in simulator (the "stub sim"), which is what the tests
+use. Running them in Isaac Sim is in progress (see "Isaac Sim mode" below). The Python
+package is `wardzero_agents` and the command is `hhumans`.
 
-What v1 covers: patients and visitors asking for directions in a waiting area. There are 12
-starter cards and an 8-beat storyboard (both in `config/`). There are no crisis scenarios yet.
+What it covers: a hospital with a ward, an A&E waiting room and a reception area. It
+comes with several ready-made scenarios (see "Studio") and the original waiting-area scenario
+with 12 starter cards and an 8-beat storyboard (both in `config/`). The scenarios include crises such as a
+ward fire, a fire evacuation, a patient who gets worse and a patient who wanders off. Each
+scenario can be scored against success criteria.
 
 ## Setup
 
@@ -90,17 +94,70 @@ Useful flags:
 - `--no-panel` skips the control panel. `--panel-port PORT` moves it.
 - `--ready-timeout SECONDS` is how long the sim waits for the other services. The first
   knowledge base build can be slow.
-- `--sim isaac` is accepted but not available yet.
+- `--sim isaac|stub` picks the simulator (see "Isaac Sim mode").
+
+## Studio
+
+The Studio is a browser tool for setting up a test without editing YAML. Start it with:
+
+```bash
+hhumans studio            # --port 8770 by default; --no-browser to skip opening a tab
+```
+
+It has four pages, in order:
+
+1. **Scene** pick a scenario, place and edit the people (role, mood, start position),
+   and see them on the hospital map.
+2. **Robot** bring your own robot: its URDF, sensors and ROS 2 connection (below).
+3. **Run** start the run, watch it live with the cost so far, and stop it.
+4. **Report** read the finished run: pass or fail against the scenario's criteria, what the
+   people said and rated, and suggestions.
+
+The scenarios you can start from:
+
+- Reception and guide: people ask the way at a hospital entrance.
+- A&E waiting room: long waits, and a patient who gets worse.
+- Meal round: bring the right tray to the right bed.
+- Specimen run: carry a sample from the ward to the lab.
+- Call bell at night: a patient presses the bell and nobody is near.
+- Visiting-hours rush: a crowded ward entrance.
+- Wandering patient: someone leaves the ward alone.
+- Ward fire: a small fire in the ward corridor.
+- Fire evacuation guide: lead people out safely.
+- and more to come.
+
+Each scenario has success criteria (for example "fire out within 2 minutes" or "no contact with
+people"). A run is scored against them and the report says which passed.
 
 ### Your own robot
+
+On the Studio's Robot page you give the Studio a folder with your robot's URDF, then:
+
+1. **Check the URDF.** The Studio reads the links and joints and finds the base and the head.
+2. **Sensors.** Add or edit the camera, lidar, microphone and speaker. Each sensor decides
+   which topics the robot gets: no microphone, no `audio/heard`.
+3. **Connect over ROS 2.** Choose the ROS domain your robot runs on (`--robot-domain`) and its
+   namespace. The page shows three lights (robot controller seen, sensors subscribed, commands seen) and
+   the list of topics your robot should publish and subscribe to.
+4. **Place it on the map.** Pick where the robot starts and which way it faces.
+
+The robot's side of the contract is in `docs/robot-topics.md`: what it hears, sees and
+drives, and what it publishes (`speech/say`, `goal_pose`, `cmd_vel` and task actions). The
+robot lives on its own ROS domain. The sim publishes only the robot topics and `/clock` there,
+so the robot cannot read the people's minds or the scenario. To see how a result comes back
+for each task action and each walk goal (`arrived`, `stuck`, `no_route`, `superseded`,
+`cancelled`), read that file. The built-in Claude robot (`--bot claude`) follows the same
+contract, so it is a worked example.
+
+#### Connecting by hand
 
 The robot fairness rule: the robot sees the world only through its own senses.
 
 - The robot hears people only on `/g1/audio/heard`.
 - It speaks by publishing plain text on `/g1/speech/say`.
 - Robot speech is 72 dB at 1 m. It is addressed to the person whose speech the robot last heard (within 20 s, once); otherwise to the nearest person within 2.5 m. The robot itself never sees who spoke.
-- In the stub the robot gets no lidar or camera. People's bodies in the sensors come in Plan 2
-  with Isaac.
+- In the stub the robot gets anonymous person boxes on `camera/bbox_3d` and the objects in view
+  on `perception/objects`, but no camera images or lidar. Those come with Isaac.
 
 To test a real G1 stack, point its speech output at `/g1/speech/say` and its speech input at
 `/g1/audio/heard`, then run with `--bot none`. `wardzero_agents/examples/reception_bot.py` is
@@ -114,7 +171,14 @@ not start with `wardzero_` that is subscribed to `/humans/`, `/scenario/`,
 `/sim/audio/events`, `/sim/world_event` or `/agents/pending`. Use `--wait SECONDS` to allow
 more discovery time.
 
-Topic names, types and rates are in `docs/interfaces.md` ("Persona agents").
+Topic names, types and rates are in `docs/interfaces.md` ("Persona agents"). The robot's
+own topics are in `docs/robot-topics.md`.
+
+### Isaac Sim mode (in progress)
+
+`hhumans run SCENARIO --sim isaac` runs the same people and robot contract in Isaac Sim, with
+`--headed` to watch in a window or `--headless` (the default) with `--record` to save a video.
+This mode is still being built; `--sim stub` is the dependable one today.
 
 ## Control panel
 
