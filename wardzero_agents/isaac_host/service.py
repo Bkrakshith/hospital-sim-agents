@@ -5,7 +5,8 @@ Each frame:
 2. hold or release the timeline: while the service is held (waiting for the agents and director,
    paused, a lockstep decision pending, the scenario over) the timeline is paused, never stopped
    (a stop/play would make the Behavior System track a robot's links again, S1b);
-3. ``app.update()``: Kit steps physics, the people and rendering by one fixed frame;
+3. ``advance()`` (``app.update()``, or the recorder's step when recording): Kit steps physics, the people and
+   rendering by one fixed frame;
 4. advance the service by exactly the sim time the timeline moved (the physics step, not wall time),
    which runs the StubWorld logic and reads the Isaac bodies back;
 5. publish the outputs (wz.v1 on the private domain, /clock on every domain);
@@ -74,8 +75,10 @@ class HostLoop:
     def __init__(self, svc, sim_ros, app, timeline, bridges: Iterable[Any] = (), time_scale: float = 1.0,
                  wall: Callable[[], float] = time.monotonic, sleep: Callable[[float], None] = time.sleep,
                  vram: Optional[Callable[[], Optional[int]]] = None,
-                 vram_peak: Optional[Callable[[], Optional[int]]] = None, report_every_s: float = REPORT_EVERY_S):
+                 vram_peak: Optional[Callable[[], Optional[int]]] = None, report_every_s: float = REPORT_EVERY_S,
+                 advance: Optional[Callable[[], None]] = None):
         self.svc, self.sim_ros, self.app, self.timeline = svc, sim_ros, app, timeline
+        self.advance = advance or app.update  # one frame: the recorder renders for its writers, else Kit just updates
         self.bridges = list(bridges)
         self.time_scale = max(0.0, float(time_scale))
         self.wall, self.sleep = wall, sleep
@@ -100,7 +103,7 @@ class HostLoop:
             self.timeline.pause()
         elif not held and not playing:
             self.timeline.play()
-        self.app.update()
+        self.advance()
         now = float(self.timeline.get_current_time())
         dt = max(0.0, now - self._last_time)
         self._last_time = now

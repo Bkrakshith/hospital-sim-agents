@@ -42,6 +42,10 @@ JOB_LOG_MAX = 40000
 CTX = web.AppKey("ctx", object)
 SOCKETS = web.AppKey("sockets", set)
 PROBE = web.AppKey("probe", object)
+CLOSING = web.AppKey("closing", asyncio.Event)
+PREVIEW_TOKEN = re.compile(r"^[A-Za-z0-9_-]{32,64}$")
+PREVIEW_POLL_S = 0.1
+PREVIEW_BOUNDARY = "wzframe"
 
 
 class ApiError(Exception):
@@ -259,6 +263,7 @@ def make_app(ctx: Ctx) -> web.Application:
     app = web.Application(middlewares=[_guard, _errors], client_max_size=MAX_BODY)
     app[CTX] = ctx
     app[SOCKETS] = set()
+    app[CLOSING] = asyncio.Event()
     r = web.RouteTableDef()
 
     # static page
@@ -572,6 +577,41 @@ def make_app(ctx: Ctx) -> web.Application:
         resp.headers["X-Content-Type-Options"] = "nosniff"
         return resp
 
+    @r.get("/preview/{token}.mjpg")
+    async def preview(request):
+        """The Isaac host's overhead frames as MJPEG. An <img> cannot send X-WardZero-Panel, so the way in is a random
+        per-run token in the URL (given only in /api/run/state, valid only while that run is running), on the panel's
+        loopback-only Host and Origin checks. The stream ends when the run does."""
+        token = request.match_info["token"]
+        if not PREVIEW_TOKEN.match(token) or ctx.runner.preview_file(token) is None:
+            raise ApiError(404, "no preview")
+        resp = web.StreamResponse(headers={"Content-Type": f"multipart/x-mixed-replace; boundary={PREVIEW_BOUNDARY}",
+                                           "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"})
+        await resp.prepare(request)
+        last = None
+        try:
+            while not request.app[CLOSING].is_set():
+                path = ctx.runner.preview_file(token)
+                if path is None:
+                    break  # the run stopped (or a new one began): end the stream
+                try:
+                    mtime = path.stat().st_mtime_ns
+                    frame = path.read_bytes() if mtime != last else None
+                except OSError:
+                    frame = None
+                if frame:
+                    last = mtime
+                    await resp.write(f"--{PREVIEW_BOUNDARY}\r\nContent-Type: image/jpeg\r\n"
+                                     f"Content-Length: {len(frame)}\r\n\r\n".encode() + frame + b"\r\n")
+                await asyncio.sleep(PREVIEW_POLL_S)
+        except (ConnectionResetError, asyncio.CancelledError):
+            pass
+        try:
+            await resp.write_eof()
+        except ConnectionResetError:
+            pass
+        return resp
+
     @r.get("/ws")
     async def ws(request):
         sock = web.WebSocketResponse(heartbeat=15)
@@ -601,6 +641,7 @@ def make_app(ctx: Ctx) -> web.Application:
         return sock
 
     async def on_shutdown(app):
+        app[CLOSING].set()  # the preview streams end first
         for s in list(app[SOCKETS]):
             await s.close()
         await asyncio.to_thread(ctx.runner.shutdown)

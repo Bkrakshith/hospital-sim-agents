@@ -5,6 +5,7 @@ import collections
 import json
 import os
 import re
+import secrets
 import signal
 import subprocess
 import sys
@@ -31,9 +32,21 @@ class RunnerBusy(Exception):
     pass
 
 
+PREVIEW_FILE = Path("preview") / "latest.jpg"  # the Isaac host's 5 fps overhead frame, in the run folder
+PREVIEW_TOKEN_BYTES = 24  # 192 bits
+
+
+def studio_sim() -> str:
+    """$WARDZERO_STUDIO_SIM: isaac (headless, with the live preview) or stub (the default)."""
+    return "isaac" if os.environ.get("WARDZERO_STUDIO_SIM", "").strip() == "isaac" else "stub"
+
+
 def default_command(project: Project, staged: Path, bot: str, robot_domain: Optional[int]) -> list[str]:
-    argv = [sys.executable, "-m", "wardzero_agents.cli", "run", str(staged), "--sim", "stub", "--bot", bot,
+    sim = studio_sim()
+    argv = [sys.executable, "-m", "wardzero_agents.cli", "run", str(staged), "--sim", sim, "--bot", bot,
             "--no-panel", "--project-id", project.id]
+    if sim == "isaac":
+        argv += ["--headless", "--preview"]
     if robot_domain is not None:
         argv += ["--robot-domain", str(robot_domain)]
     if project.repeat > 1 or project.baseline:
@@ -195,6 +208,7 @@ class Runner:
     def _reset_view(self) -> None:
         self._dir: Optional[Path] = None
         self._tail: Optional[RunTail] = None
+        self._preview_token: Optional[str] = None  # per run; it is the only way to the preview stream
         self._people: dict[str, dict] = {}
         self._says: collections.deque = collections.deque(maxlen=SAYS_TAIL)
         self._tokens = {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0}
@@ -240,6 +254,7 @@ class Runner:
             self._project = keep
             self._dir = Path(self._folder)
             self._tail = RunTail(self._dir, TAIL_STREAMS)
+            self._preview_token = secrets.token_urlsafe(PREVIEW_TOKEN_BYTES)
         if self._tail is None:
             return
         for stream, rec in self._tail.poll():
@@ -277,6 +292,22 @@ class Runner:
             return "report"
         return "debrief"
 
+    def _preview_path(self) -> Optional[Path]:
+        """The preview frame of the live run, or None: no run folder yet, the run is over (or debriefing), or the host
+        writes no preview."""
+        if self._dir is None or self._preview_token is None or self._phase() != "running":
+            return None
+        f = self._dir / PREVIEW_FILE
+        return f if f.is_file() else None
+
+    def preview_file(self, token: str) -> Optional[Path]:
+        """The frame file for this token, only while the run it belongs to is running. Constant-time comparison."""
+        with self._lock:
+            self._read_log()
+            ok = self._preview_token is not None and secrets.compare_digest(
+                token.encode("utf-8", "replace"), self._preview_token.encode())
+            return self._preview_path() if ok else None
+
     def state(self) -> dict:
         with self._lock:
             self._read_log()
@@ -294,6 +325,8 @@ class Runner:
                 "phase": phase,
                 "has_report": bool(rd is not None and (rd / "report.html").is_file()),
             }
+            if self._preview_path() is not None:
+                out["preview_url"] = f"/preview/{self._preview_token}.mjpg"
             if phase == "done" and self._proc is not None:
                 out["exit_code"] = self._proc.returncode
                 if self._proc.returncode not in (0, None) and rd is None:

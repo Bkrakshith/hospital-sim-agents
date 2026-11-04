@@ -115,3 +115,26 @@ def test_isaac_missing_is_a_clear_error(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(cli, "ISAAC_ROOT", tmp_path / "nowhere")
     assert main(["run", V1, "--sim", "isaac"]) == 2
     assert "Isaac Sim" in capsys.readouterr().err
+
+
+def test_record_res_and_preview_reach_the_host(launched):
+    assert main(["run", V1, "--sim", "isaac", "--record", "--record-res", "1920x1080", "--preview",
+                 "--no-report"]) == 0
+    host, _, _ = child(launched, "isaac_host")
+    a = host.argv
+    assert opt(a, "--record-res") == "1920x1080" and "--record" in a and "--preview" in a
+    meta = json.loads((Path(opt(a, "--run-dir")) / "meta.json").read_text())
+    assert meta["record_res"] == "1920x1080" and meta["lockstep"] is True  # a recorded run is in lockstep
+
+
+def test_record_res_defaults_and_is_checked(launched, capsys):
+    assert main(["run", V1, "--sim", "isaac", "--record", "--no-report"]) == 0
+    host, _, _ = child(launched, "isaac_host")
+    assert opt(host.argv, "--record-res") == "1280x720" and "--preview" not in host.argv
+    assert main(["run", V1, "--sim", "isaac", "--record-res", "huge"]) == 2
+    assert "--record-res" in capsys.readouterr().err
+
+
+def test_preview_needs_the_isaac_host(launched, capsys):
+    assert main(["run", V1, "--sim", "stub", "--preview"]) == 2
+    assert "--preview" in capsys.readouterr().err

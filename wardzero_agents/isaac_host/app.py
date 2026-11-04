@@ -2,6 +2,7 @@
 
     scripts/isaac_host.sh --run-dir DIR --scenario FILE [--headed|--headless] [--record] [--full-site]
         [--rooms A,B] [--private-domain N] [--robot-domain M] [--time-scale F] [--lockstep]
+        [--record-res WxH] [--preview]
         [--wait-for agents,director|none] [--ready-timeout 600] [--fps 30]
 
 Start-up order (binding, from spike S1b; the order is what keeps a moving robot cheap next to the
@@ -17,7 +18,8 @@ Behavior System's people):
 8. ``timeline.play()``, then the characters' Behavior agents are bound to their controllers (I2);
 9. the robots, in one authoring pass (I4): their ready USDs (made before Kit starts, ``prepare_robot``) are referenced
    with their pose, and their OmniGraph is built on the robot domain.
-Then the timeline is never stopped (only paused while the run is held) and the NavMesh is never
+Recording (``recording``, ``bag``) starts after step 9 and replaces ``app.update`` in the frame loop, so it is not a
+start-up step. Then the timeline is never stopped (only paused while the run is held) and the NavMesh is never
 re-baked while robots are present.
 
 ROS: Isaac's bundled rclpy, one explicit Context per domain. The private domain carries wz.v1 (the
@@ -37,7 +39,9 @@ from pathlib import Path
 from typing import Optional
 
 from ..ros.sim_service import READY_TIMEOUT_S, WAIT_TOKENS
+from . import recording
 from . import stage as stage_mod
+from .bag import BagRecorder
 
 log = logging.getLogger("wardzero.isaac.app")
 
@@ -82,7 +86,13 @@ def parse_args(argv=None) -> argparse.Namespace:
     mode = p.add_mutually_exclusive_group()
     mode.add_argument("--headed", dest="headed", action="store_true", default=False, help="show the Kit window")
     mode.add_argument("--headless", dest="headed", action="store_false")
-    p.add_argument("--record", action="store_true", help="record the run to <run>/video (I5)")
+    p.add_argument("--record", action="store_true",
+                   help="record the run to <run>/video (overhead.mp4, follow.mp4) and the robot domain to "
+                        "<run>/robot_bag; recorded runs are in lockstep (sim time per frame is fixed at 1/fps)")
+    p.add_argument("--record-res", type=recording.parse_res, default=recording.DEFAULT_RES, metavar="WxH",
+                   help="resolution of the recorded videos (default 1280x720; 1920x1080 for the overhead film)")
+    p.add_argument("--preview", action="store_true",
+                   help="headless: write <run>/preview/latest.jpg five times a second for the Studio's Run page")
     p.add_argument("--full-site", action="store_true", help="load the whole hospital (no area culling)")
     p.add_argument("--rooms", default=None, help="comma list of rooms to keep, instead of the scenario's")
     p.add_argument("--private-domain", type=int,
@@ -140,6 +150,8 @@ class IsaacHost:
         self.objects = None  # IsaacObjects: props, fire and call lights
         self.robot = None  # IsaacRobot (None without a robot)
         self.robot_usd: Optional[Path] = None
+        self.recorder: Optional[recording.Recorder] = None
+        self.bag: Optional[BagRecorder] = None
         self.startup: dict = {}
         self._stop = False
         self._t0 = time.monotonic()
@@ -178,7 +190,7 @@ class IsaacHost:
         import omni.kit.app
 
         em = omni.kit.app.get_app().get_extension_manager()
-        for ext in EXTENSIONS:
+        for ext in EXTENSIONS + (("omni.videoencoding",) if self.args.record else ()):
             em.set_extension_enabled_immediate(ext, True)
             self._updates(3)
         self._mark("extensions")
@@ -210,8 +222,9 @@ class IsaacHost:
         a = self.args
         self.runlog = RunLog(self.run_dir)
         self.bodies = IsaacBodies()
-        self.svc = SimService(self.loaded, self.runlog, 1.0, a.lockstep or self.loaded.scenario.lockstep, a.wait_for,
-                              bodies=self.bodies)
+        # a recorded run is in lockstep: the clock never outruns the minds, however slow the encoder is
+        self.svc = SimService(self.loaded, self.runlog, 1.0, a.lockstep or a.record or self.loaded.scenario.lockstep,
+                              a.wait_for, bodies=self.bodies)
 
     def spawn_people(self) -> None:  # 5: the IRA characters, before the NavMesh bake and before play
         from .people_isaac import IsaacPeople
@@ -319,14 +332,40 @@ class IsaacHost:
             print(f"Robot error: {exc}", file=sys.stderr)
             return 2
         try:
+            if self.args.record and self.loaded.scenario.robot.enabled:  # before Kit: it is up when the robot speaks
+                self.bag = BagRecorder(self.run_dir, self.robot_domain)
+                self.bag.start()
             self.boot_sequence()
             self.frame_view()
-            if self.args.record:
-                log.warning("--record: recording arrives with the recording task (I5); this run is not recorded")
+            self.start_recording()
             return self.loop()
         except Exception:
             log.exception("the Isaac host failed")
             return 1
+
+    def start_recording(self) -> None:
+        """The cameras, writers and preview (after the start-up: they never touch physics or the NavMesh)."""
+        cfg = recording.RecordConfig.from_args(self.args, self.run_dir)
+        if cfg is None:
+            return
+        self.recorder = recording.Recorder(cfg, self.app, self.timeline, self.stage, list(self.plan.rects.values()) or
+                                           [tuple(self.loaded.site.bounds[i] for i in (0, 2, 1, 3))],
+                                           robot_pose=self.robot.pose if self.robot is not None else None)
+        self.recorder.start()
+        self._updates(2)
+        self._mark("recording")
+
+    def finish_recording(self) -> None:
+        if self.recorder is not None:
+            try:
+                stats = self.recorder.finish()
+                self.runlog.write("host", {"kind": "recording", **stats})
+            except Exception:
+                log.exception("could not finish the recording")
+            self.recorder = None
+        if self.bag is not None:
+            result = self.bag.stop()
+            log.info("rosbag %s (%s)", result, "finalised" if self.bag.finalised else "no metadata.yaml")
 
     def loop(self) -> int:
         from ..ros.rosutil import RosBridge
@@ -358,13 +397,16 @@ class IsaacHost:
         log.info("isaac host up: %s on domain %d%s, waiting for %s", self.loaded.scenario.id, a.private_domain,
                  f" (+ the robot on {a.robot_domain})" if robot_bridge is not None else "", ", ".join(sorted(svc.waiting)) or "nothing")
         loop = HostLoop(svc, sim_ros, self.app, self.timeline, bridges=self.bridges, time_scale=a.time_scale,
-                        vram=lambda: vram.last, vram_peak=lambda: vram.peak)
+                        vram=lambda: vram.last, vram_peak=lambda: vram.peak,
+                        advance=self.recorder.step if self.recorder is not None else None)
         try:
             return loop.run(stop_requested=lambda: self._stop, ready_timeout=a.ready_timeout)
         finally:
             vram.close()
+            self.finish_recording()
 
     def close(self, code: int) -> None:
+        self.finish_recording()  # the loop's own finally did it; this covers a failed start-up
         for b in self.bridges:
             try:
                 b.close()

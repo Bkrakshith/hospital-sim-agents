@@ -1,0 +1,175 @@
+"""Recording config and geometry (pure): resolution parsing, the writer config, the overhead and follow cameras,
+the preview JPEG sink. The Kit side is covered by tests/isaac/test_isaac_record_smoke.py."""
+import math
+from pathlib import Path
+
+import pytest
+
+from wardzero_agents.isaac_host import recording as R
+from wardzero_agents.isaac_host.app import parse_args
+
+
+def test_parse_res():
+    assert R.parse_res("1280x720") == (1280, 720)
+    assert R.parse_res("1920X1080") == (1920, 1080)
+    for bad in ("1280", "axb", "1281x720", "1280x721", "100x100", "9000x5000", "-1280x720", "1280x720x3", ""):
+        with pytest.raises(ValueError):
+            R.parse_res(bad)
+
+
+def host_args(*extra):
+    return parse_args(["--run-dir", "/tmp/r", "--scenario", "s.yaml", *extra])
+
+
+def test_cli_defaults_to_720p_and_accepts_1080p():
+    assert host_args().record_res == (1280, 720)
+    assert host_args("--record-res", "1920x1080").record_res == (1920, 1080)
+    with pytest.raises(SystemExit):
+        host_args("--record-res", "big")
+
+
+def test_record_config_from_args(tmp_path):
+    cfg = R.RecordConfig.from_args(host_args("--record", "--record-res", "1920x1080", "--fps", "24"), tmp_path)
+    assert cfg.record and not cfg.preview and cfg.res == (1920, 1080) and cfg.fps == 24
+    assert cfg.video_dir == tmp_path / "video"
+    assert cfg.overhead_mp4 == tmp_path / "video" / "overhead.mp4" and cfg.follow_mp4 == tmp_path / "video" / "follow.mp4"
+    assert R.RecordConfig.from_args(host_args(), tmp_path) is None  # neither recording nor previewing
+
+
+def test_preview_only_on_a_headless_run(tmp_path):
+    cfg = R.RecordConfig.from_args(host_args("--preview"), tmp_path)
+    assert cfg.preview and not cfg.record and cfg.preview_path == tmp_path / "preview" / "latest.jpg"
+    assert cfg.preview_hz == 5
+    assert R.RecordConfig.from_args(host_args("--preview", "--headed"), tmp_path) is None  # a window shows it live
+
+
+def test_preview_stride_and_scale():
+    assert R.preview_stride(30, 5) == 6 and R.preview_stride(24, 5) == 5 and R.preview_stride(4, 5) == 1
+    assert R.preview_scale((1280, 720)) == 2 and R.preview_scale((1920, 1080)) == 3 and R.preview_scale((640, 360)) == 1
+    assert R.preview_size((1920, 1080)) == (640, 360) and R.preview_size((1280, 720)) == (640, 360)
+
+
+def test_overhead_view_frames_every_focus_rect_at_both_resolutions():
+    rects = {"Lobby": (-12.0, -3.5, 11.2, 9.0), "C3": (11.2, -4.5, 27.5, 29.0)}
+    for res in ((1280, 720), (1920, 1080)):
+        v = R.overhead_view(list(rects.values()), res[0] / res[1])
+        cx, cy = (-12 + 27.5) / 2, (-4.5 + 29) / 2
+        assert (v.eye[0], v.eye[1]) == pytest.approx((cx, cy)) and v.target[2] == 0.0
+        half_w = v.eye[2] * v.aperture / v.focal / 2  # what the camera sees on the floor
+        half_h = half_w * res[1] / res[0]
+        assert half_w >= (27.5 + 12) / 2 and half_h >= (29 + 4.5) / 2  # nothing of the rooms is cut off
+        assert v.near == pytest.approx(v.eye[2] - R.CEILING_CUT_M) and v.near > 0  # the ceiling is clipped away
+        assert v.far > v.eye[2]
+
+
+def test_overhead_view_of_a_small_room_stays_close():
+    v = R.overhead_view([(0.0, 0.0, 6.0, 4.0)], 16 / 9)
+    assert v.eye[2] < 8.0 and v.eye[2] > R.CEILING_CUT_M + 0.5
+
+
+def test_overhead_view_needs_a_rect():
+    with pytest.raises(ValueError):
+        R.overhead_view([], 16 / 9)
+
+
+def test_follow_view_sits_in_front_and_above_the_robot_looking_at_it():
+    eye, target = R.follow_view((2.0, 3.0, 0.0))  # facing +x
+    assert target == pytest.approx((2.0, 3.0, R.FOLLOW_TARGET_Z))
+    assert eye[0] > 2.0 and eye[2] > R.FOLLOW_TARGET_Z  # ahead of the robot (it looks +x) and above its chest
+    assert math.hypot(eye[0] - 2.0, eye[1] - 3.0) == pytest.approx(math.hypot(R.FOLLOW_AHEAD_M, R.FOLLOW_SIDE_M))
+    eye2, _ = R.follow_view((2.0, 3.0, math.pi / 2))  # facing +y: ahead is +y
+    assert eye2[1] > 3.0
+    eye3, _ = R.follow_view((2.0, 3.0, -math.pi / 2))  # the reception G1 faces -y
+    assert eye3[1] < 3.0
+
+
+def test_jpeg_sink_writes_atomically_and_replaces(tmp_path):
+    np = pytest.importorskip("numpy")
+    PIL = pytest.importorskip("PIL.Image")
+    sink = R.JpegSink(tmp_path / "preview" / "latest.jpg")
+    frame = np.zeros((360, 640, 4), dtype=np.uint8)
+    frame[..., 0] = 200
+    sink.write(frame)
+    p = tmp_path / "preview" / "latest.jpg"
+    img = PIL.open(p)
+    assert img.size == (640, 360) and img.format == "JPEG"
+    sink.write(frame[:180])  # a replacement, never a partial file; no temp file is left behind
+    assert PIL.open(p).size == (640, 180)
+    assert [f.name for f in p.parent.iterdir()] == ["latest.jpg"]
+    sink.clear()
+    assert not p.exists()
+
+
+def test_writer_settings():
+    cfg = R.RecordConfig(res=(1920, 1080), fps=30, record=True)
+    assert cfg.frames_to_seconds(300) == pytest.approx(10.0)
+    assert R.encoder_args(cfg) == {"framerate": 30.0, "nframes": 0, "overwrite_video": True}
+
+
+# ---- the per-frame step, with a fake Kit -------------------------------------------------------
+class FakeKit:
+    def __init__(self, playing=True):
+        self.playing, self.log = playing, []
+        self.orchestrator = self  # stands in for rep and rep.orchestrator
+
+    def is_playing(self):
+        return self.playing
+
+    def update(self):
+        self.log.append("update")
+
+    def step(self, **kw):
+        assert kw == {"rt_subframes": 1, "pause_timeline": False}
+        self.log.append("render")
+
+    def get_data(self):
+        np = pytest.importorskip("numpy")
+        return np.full((720, 1280, 4), 9, dtype=np.uint8)
+
+    def encode_next_frame_from_buffer(self, buf, w, h):
+        assert buf.flags["C_CONTIGUOUS"] and (w, h) == (1280, 720) and buf.shape == (720, 1280, 4)
+        self.log.append("encode")
+
+
+def recorder(kit, tmp_path, **kw):
+    cfg = R.RecordConfig(video_dir=tmp_path / "video", preview_path=tmp_path / "preview" / "latest.jpg", **kw)
+    rec = R.Recorder(cfg, kit, kit, None, [(0, 0, 10, 6)])
+    rec._rep, rec._an_top, rec._enc = kit, kit, kit
+    if cfg.preview:
+        rec._sink = R.JpegSink(cfg.preview_path)
+    return rec
+
+
+def test_recorded_frames_render_and_encode_only_while_the_timeline_runs(tmp_path):
+    pytest.importorskip("numpy")
+    kit = FakeKit()
+    rec = recorder(kit, tmp_path, record=True)
+    rec.step()
+    rec.step()
+    kit.playing = False  # held (waiting for the agents, a decision pending): nothing moves, nothing is recorded
+    rec.step()
+    assert kit.log == ["render", "encode", "render", "encode", "update"]
+    assert (rec.frames, rec.encoded, rec.sim_frames) == (2, 2, 2)
+
+
+def test_preview_alone_renders_one_frame_in_six(tmp_path):
+    pytest.importorskip("numpy")
+    pytest.importorskip("PIL")
+    kit = FakeKit()
+    rec = recorder(kit, tmp_path, preview=True)
+    rec._an_top = type("A", (), {"get_data": staticmethod(lambda: __import__("numpy").full((360, 640, 4), 9, "uint8"))})()
+    for _ in range(12):
+        rec.step()
+    assert kit.log.count("render") == 2 and kit.log.count("update") == 10 and "encode" not in kit.log
+    assert (tmp_path / "preview" / "latest.jpg").stat().st_size > 0
+
+
+def test_recording_and_preview_together_downscale_the_record_frame(tmp_path):
+    np = pytest.importorskip("numpy")
+    PIL = pytest.importorskip("PIL.Image")
+    kit = FakeKit()
+    rec = recorder(kit, tmp_path, record=True, preview=True)
+    for _ in range(6):
+        rec.step()
+    assert kit.log.count("encode") == 6  # every frame to the video
+    assert PIL.open(tmp_path / "preview" / "latest.jpg").size == (640, 360)  # a stride of the 1280x720 render

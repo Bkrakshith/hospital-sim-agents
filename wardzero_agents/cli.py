@@ -108,6 +108,7 @@ def _resolve_sim(args) -> None:
             raise CliError(f"Isaac Sim was not found at {ISAAC_ROOT} (set ISAAC_SIM_ROOT), or use --sim stub.")
         return
     only = [f for f, on in (("--headed", getattr(args, "headed", None)), ("--record", getattr(args, "record", False)),
+                            ("--preview", getattr(args, "preview", False)),
                             ("--full-site", getattr(args, "full_site", False))) if on]
     if only:
         raise CliError(f"{', '.join(only)} need{'s' if len(only) == 1 else ''} the Isaac host (--sim isaac).")
@@ -367,10 +368,12 @@ def _start_live(args, loaded, overrides: dict, meta: dict, out: Optional[dict] =
     _refuse_if_active()
     overrides = {**overrides, **_robot_override(loaded, args)}
     sim = getattr(args, "sim", None) or "stub"
-    meta = {**meta, "sim": sim, "time_scale": ts, "lockstep": bool(args.lockstep or loaded.scenario.lockstep),
+    meta = {**meta, "sim": sim, "time_scale": ts, "lockstep": bool(args.lockstep or loaded.scenario.lockstep or (sim == "isaac" and args.record)),
             "panel": not args.no_panel}
     if sim == "isaac":
         meta.update(headed=bool(args.headed), record=bool(args.record), full_site=bool(args.full_site))
+        if args.record:
+            meta["record_res"] = args.record_res
     for key, val in (("robot_domain", getattr(args, "robot_domain", None)),
                      ("project_id", getattr(args, "project_id", None))):
         if val is not None:  # the Isaac host also gets robot_domain; the Studio lists runs by project_id
@@ -406,7 +409,8 @@ def _sim_child(args, rd: str, sp: str, ts: float, ready: float) -> Child:
                 "--ready-timeout", str(ready), "--wait-for", "agents,director",
                 "--private-domain", os.environ.get("ROS_DOMAIN_ID", "").strip() or "0",
                 *lock, "--headed" if args.headed else "--headless"]
-        argv += ["--record"] if args.record else []
+        argv += ["--record", "--record-res", args.record_res] if args.record else []
+        argv += ["--preview"] if getattr(args, "preview", False) else []
         argv += ["--full-site"] if args.full_site else []
         if getattr(args, "robot_domain", None) is not None:
             argv += ["--robot-domain", str(args.robot_domain)]
@@ -871,6 +875,15 @@ def cmd_audit(args) -> int:
 
 
 # ---- parser --------------------------------------------------------------------------------
+def _record_res(text: str) -> str:
+    from .isaac_host.recording import parse_res
+    try:
+        w, h = parse_res(text)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from None
+    return f"{w}x{h}"
+
+
 def _live_flags() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(add_help=False)
     p.add_argument("--sim", choices=SIMS, default=None,
@@ -880,7 +893,12 @@ def _live_flags() -> argparse.ArgumentParser:
     mode.add_argument("--headed", dest="headed", action="store_true", default=None,
                       help="Isaac: show the Kit window to watch the run")
     mode.add_argument("--headless", dest="headed", action="store_false", help="Isaac: no window (the default)")
-    p.add_argument("--record", action="store_true", help="Isaac: record the run to <run>/video")
+    p.add_argument("--record", action="store_true",
+                   help="Isaac: record the run to <run>/video and the robot domain to <run>/robot_bag (lockstep)")
+    p.add_argument("--record-res", default="1280x720", metavar="WxH", type=_record_res,
+                   help="Isaac: resolution of the recorded videos (1920x1080 for a film)")
+    p.add_argument("--preview", action="store_true",
+                   help="Isaac, headless: a live overhead preview for the Studio (<run>/preview/latest.jpg)")
     p.add_argument("--full-site", action="store_true",
                    help="Isaac: load the whole hospital instead of the scenario's areas (needs a large GPU)")
     p.add_argument("--time-scale", type=float, default=1.0, help="sim seconds per wall second")

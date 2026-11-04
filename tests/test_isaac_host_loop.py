@@ -175,3 +175,21 @@ def test_host_flags():
         parse_args(["--run-dir", "r", "--scenario", "s.yaml", "--headed", "--headless"])
     with pytest.raises(SystemExit):
         parse_args(["--run-dir", "r", "--scenario", "s.yaml", "--wait-for", "agents,bogus"])
+
+
+def test_the_loop_advances_through_the_recorders_step_when_there_is_one(tmp_path):
+    tl, calls = FakeTimeline(), []
+
+    def advance():
+        calls.append("advance")
+        tl.time += DT
+
+    class NoUpdate:
+        def update(self):
+            raise AssertionError("app.update must not run when a recorder advances the frame")
+
+    loaded = load_scenario(V1)
+    svc = SimService(loaded, RunLog(tmp_path), 1.0, True, [], bodies=IsaacBodies())
+    ros = type("R", (), {"publish": lambda self, out: None})()
+    HostLoop(svc, ros, NoUpdate(), tl, time_scale=0.0, advance=advance).frame()
+    assert calls == ["advance"] and svc.t == pytest.approx(DT)
