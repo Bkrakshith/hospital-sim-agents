@@ -1,0 +1,36 @@
+id: evacuation_guide
+title: Fire evacuation guide
+prompt: >-
+  The fire alarm sounds in the lobby. One route is blocked and one person freezes.
+  The robot must direct people to the right way out.
+focus_rooms: [Lobby, Main_Corridor, AE_Waiting]
+known_places: [entrance, reception_front, clinic_corridor, ward_doors, Lobby, AE_Waiting]
+duration_min: 8
+robot_brief:
+  role: fire evacuation guide
+  job: When the alarm sounds, direct visitors and patients to the right escape route and tell them if a route is blocked. Stay calm and give short instructions.
+  destination: entrance
+robot_start: {x: 2.5, y: -0.5, yaw: 3.1416}
+characters:
+  - {id: V1, name: Susan Jones, sex: female, age_band: 31-50, role: visitor, mood: stressed, room: Lobby, x: -2.0, y: 1.0, yaw: 0.0}
+  - {id: V2, name: Edward Khan, sex: male, age_band: 51-70, role: visitor, mood: anxious, room: Lobby, x: 1.0, y: -1.5, yaw: 0.0,
+     role_prompt: "You are an outpatient on your feet. You walk slowly and keep your distance from moving machines. [see mobility_aids.md]"}
+  - {id: P1, name: Joan Moore, sex: female, age_band: 71+, role: patient, mood: anxious, room: AE_Waiting, x: -9.0, y: 0.0, yaw: 0.0}
+objects: []
+timeline:
+  - {id: b1, at: "t+01:00", card: alarm, params: {x: 0.0, y: 1.0}}
+  - {id: b2, at: "t+01:20", card: fire_start, params: {x: 5.6, y: 5.4}}
+  - {id: b3, at: "t+01:40", card: freeze, target: V2}
+criteria:
+  - {id: reached, label: People reach the right exit, metric: people_reached_destination_rate, op: ">=", threshold: 0.8, weight: 4}   # first guess
+  - {id: unanswered, label: Few requests left unanswered, metric: unanswered_requests, op: "<=", threshold: 1, weight: 2}   # first guess
+  - {id: response, label: Answers within 5 seconds, metric: mean_response_s, op: "<=", threshold: 5, weight: 1}   # first guess
+  - {id: distance, label: Keeps clear of people, metric: min_distance_m, op: ">=", threshold: 0.5, weight: 1}   # first guess
+  - {id: contacts, label: No contact with anyone, metric: contacts, op: "==", threshold: 0, weight: 2}
+ladder:
+  0: "Follows the robot's direction. [Robinette 2016]"
+  1: "Follows only if it gives a reason. [Nayyar 2020]"
+  2: "Follows the crowd or staff when they go another way. [Nayyar 2020; Kinateder 2014]"
+  3: "Heads for the entrance they know, ignoring the robot. [Sime 1985]"
+  4: "Tells others not to follow it. [inferred]"
+sources: [Robinette 2016, Nayyar 2020, Kinateder 2014, Sime 1985, HTM 05-02, scenarios.md section 4, prompt_guidance.md section 4]

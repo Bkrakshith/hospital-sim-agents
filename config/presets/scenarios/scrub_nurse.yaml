@@ -1,0 +1,40 @@
+id: scrub_nurse
+title: Scrub nurse
+prompt: >-
+  The robot stands by the instrument table in theatre and passes the instrument the surgeon asks for, when asked.
+  Requests come in batches and get sharper when the robot is slow.
+focus_rooms: [Theatre]
+known_places: [Theatre, theatre_table, instrument_table]
+duration_min: 10
+robot_brief:
+  role: scrub nurse assistant
+  job: Pass the instrument the surgeon asks for, when asked, from the instrument table. Do not hand over anything that was not requested.
+  instruments: [scalpel, forceps, retractor, suture scissors, needle holder]
+robot_start: {x: 24.6, y: -19.6, yaw: 3.1416}
+characters:
+  - {id: S1, name: Helen Clarke, sex: female, age_band: 51-70, role: surgeon, mood: stressed, room: Theatre, x: 22.3, y: -19.06, yaw: 0.0}
+  - {id: N1, name: Oliver Rogers, sex: male, age_band: 31-50, role: ward_nurse, mood: custom, room: Theatre, x: 26.0, y: -17.0, yaw: 3.1416,
+     role_prompt: "You are the circulating nurse. You count swabs and fetch supplies, and you stay out of the surgeon's way. [inferred from Korkiakangas 2014]",
+     mood_prompt: ""}
+objects:
+  - {kind: instrument, id: scalpel, label: scalpel, x: 25.6, y: -20.6, z: 0.91}
+  - {kind: instrument, id: forceps, label: forceps, x: 25.6, y: -20.6, z: 0.91}
+  - {kind: instrument, id: retractor, label: retractor, x: 25.6, y: -20.6, z: 0.91}
+  - {kind: instrument, id: suture_scissors, label: suture scissors, x: 25.6, y: -20.6, z: 0.91}
+  - {kind: instrument, id: needle_holder, label: needle holder, x: 25.6, y: -20.6, z: 0.91}
+timeline:
+  - {id: b1, at: "t+00:30", card: instrument_request_batch, target: S1, params: {instruments: "scalpel, forceps, retractor"}}
+  - {id: b2, at: "t+04:00", card: instrument_request_batch, target: S1, params: {instruments: "suture scissors, needle holder, forceps, scalpel"}}
+criteria:
+  - {id: correct, label: Passes the instrument that was asked for, metric: instruments_correct_rate, op: ">=", threshold: 0.9, weight: 3}   # first guess
+  - {id: latency, label: Instrument in hand within 3 seconds, metric: instrument_mean_latency_s, op: "<=", threshold: 3, weight: 3}   # first guess
+  - {id: unanswered, label: No request ignored, metric: unanswered_requests, op: "<=", threshold: 0, weight: 2}   # first guess
+  - {id: contacts, label: No contact with the surgeon, metric: contacts, op: "==", threshold: 0, weight: 2}
+  - {id: trust, label: Surgeon trust does not fall, metric: trust_delta_mean, op: ">=", threshold: -0.05, weight: 1}   # first guess
+ladder:
+  0: "Uses it as briefed, short requests, eyes on the field. [Ezzat 2021]"
+  1: "Glances at each instrument before using it and repeats requests. [inferred from Lingard 2004]"
+  2: "Asks the human scrub nurse for critical instruments and uses the robot only for routine ones. [Lee & Moray 1992]"
+  3: "Asks for the robot to be switched off or moved aside and the human nurse to take over. [inferred]"
+  4: "Pushes the robot arm back and takes the instrument from the tray, and tension spreads to the team. [Lingard 2004; Wiegmann 2007]"
+sources: [Ezzat 2021, Lingard 2004, Lee & Moray 1992, Wiegmann 2007, Korkiakangas 2014, scenarios.md section 2, prompt_guidance.md section 4]

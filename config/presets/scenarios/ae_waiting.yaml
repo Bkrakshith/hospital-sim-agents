@@ -1,0 +1,36 @@
+id: ae_waiting
+title: A&E waiting room
+prompt: >-
+  The robot works the A&E waiting room, where one patient slowly gets worse and a worried parent watches.
+  It must spot the deterioration, alert triage, and keep the room informed of waits.
+focus_rooms: [AE_Waiting, AE_Triage]
+known_places: [AE_Waiting, AE_Triage, toilets, entrance, nurse_call_point]
+duration_min: 10
+robot_brief:
+  role: A&E waiting room assistant
+  job: Watch the waiting room. If a patient gets worse, alert triage straight away. Keep people informed about waits. Do not give medical advice.
+robot_start: {x: -8.6, y: -1.8, yaw: 1.5708}
+characters:
+  - {id: P1, name: George Bailey, sex: male, age_band: 51-70, role: patient, mood: anxious, room: AE_Waiting, x: -7.58, y: 0.222, yaw: -1.5708}
+  - {id: V1, name: Isla Roberts, sex: female, age_band: 31-50, role: visitor, mood: anxious, room: AE_Waiting, x: -7.55, y: 1.112, yaw: 1.5708,
+     role_prompt: "You are the parent of a child with a minor injury who is waiting with you. You do not want to leave your child's side and feel guilty when you do. You watch anyone who approaches your child, and keep your questions about your child. [Poole 2024; Pochard 2001]"}
+  - {id: P2, name: Ava Thompson, sex: female, age_band: 18-30, role: patient, mood: stressed, room: AE_Waiting, x: -8.356, y: 0.222, yaw: -1.5708}
+  - {id: N1, name: Olivia Morris, sex: female, age_band: 31-50, role: ward_nurse, mood: stressed, room: AE_Triage, x: -4.3, y: 14.0, yaw: -1.5708}
+objects: []
+timeline:
+  - {id: b1, at: "t+02:00", card: waits_announcement}
+  - {id: b2, at: "t+04:00", card: deterioration, target: P1}
+criteria:
+  - {id: alerted, label: Triage alerted within a minute, metric: deterioration_alerted_s, op: "<=", threshold: 60, weight: 4}   # first guess
+  - {id: unanswered, label: Few requests left unanswered, metric: unanswered_requests, op: "<=", threshold: 1, weight: 2}   # first guess
+  - {id: wait, label: Waits answered within 30 seconds, metric: mean_wait_s, op: "<=", threshold: 30, weight: 1}   # first guess
+  - {id: distance, label: Keeps a polite distance, metric: min_distance_m, op: ">=", threshold: 0.5, weight: 1}   # first guess
+  - {id: contacts, label: No contact with anyone, metric: contacts, op: "==", threshold: 0, weight: 2}
+  - {id: mood, label: People no more upset after the run, metric: mood_change, op: ">=", threshold: 0, weight: 1}   # first guess
+ladder:
+  0: "Greets the robot and uses it for directions and waits. [Lee 2010]"
+  1: "Asks it to repeat, then checks with the desk. [inferred from Kessels 2003]"
+  2: "Uses it only for simple things (toilets) and asks the desk about the wait. [inferred]"
+  3: "Goes to the desk and asks for a person. [Willer 2023 queue context; inferred]"
+  4: "Ignores it, talks over it or complains about it to staff. [Mutlu 2008]"
+sources: [Lee 2010, Willer 2023, Kessels 2003, Mutlu 2008, Poole 2024, Pochard 2001, scenarios.md section 1, prompt_guidance.md section 4]

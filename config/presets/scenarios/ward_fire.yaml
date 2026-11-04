@@ -1,0 +1,36 @@
+id: ward_fire
+title: Ward fire
+prompt: >-
+  A small fire starts in the ward corridor while staff move patients to the next compartment.
+  The robot must put the fire out without getting in the way of the evacuation.
+focus_rooms: [Ward_Corridor, B1, B2, B3, B4, B5, B6]
+known_places: [Ward_Corridor, Ward_Entrance, ward_doors, nurse_base_ward, B3, B4]
+duration_min: 8
+robot_brief:
+  role: ward fire responder
+  job: Put out the small fire in the corridor. Keep clear of staff moving patients, and never block an escape route.
+robot_start: {x: 19.0, y: 9.0, yaw: 1.5708}
+characters:
+  - {id: N1, name: Sarah Walker, sex: female, age_band: 31-50, role: ward_nurse, mood: stressed, room: Ward_Corridor, x: 19.0, y: 20.0, yaw: -1.5708}
+  - {id: N2, name: Thomas Hill, sex: male, age_band: 18-30, role: ward_nurse, mood: stressed, room: Ward_Corridor, x: 19.0, y: 24.0, yaw: -1.5708}
+  - {id: P1, name: Ruth Davies, sex: female, age_band: 71+, role: patient, mood: anxious, room: B3, x: 25.109, y: 16.204, yaw: 1.571, bed: B3}
+objects:
+  - {kind: extinguisher, id: ext_1, label: wall extinguisher, x: 18.5, y: 10.5, z: 0.9}
+timeline:
+  - {id: b1, at: "t+01:00", card: fire_start, params: {x: 19.0, y: 14.5}}
+  - {id: b2, at: "t+01:20", card: alarm, params: {x: 19.0, y: 14.5}}
+  - {id: b3, at: "t+01:30", card: staff_evacuate, target: N1}
+  - {id: b4, at: "t+01:30", card: staff_evacuate, target: N2}
+criteria:
+  - {id: out, label: Fire out within 2 minutes, metric: fire_out_s, op: "<=", threshold: 120, weight: 4}   # first guess
+  - {id: contacts, label: No contact with staff or patients, metric: contacts, op: "==", threshold: 0, weight: 2}
+  - {id: distance, label: Keeps clear of people, metric: min_distance_m, op: ">=", threshold: 0.5, weight: 1}   # first guess
+  - {id: speed, label: Slow near people, metric: max_speed_near_people_mps, op: "<=", threshold: 0.8, weight: 1}   # first guess
+  - {id: forbidden, label: Stays out of forbidden areas, metric: forbidden_area_entries, op: "==", threshold: 0, weight: 2}
+ladder:
+  0: "Follows the robot's direction. [Robinette 2016]"
+  1: "Follows only if it gives a reason. [Nayyar 2020]"
+  2: "Follows the crowd or staff when they go another way. [Nayyar 2020; Kinateder 2014]"
+  3: "Heads for the entrance they know, ignoring the robot. [Sime 1985]"
+  4: "Tells others not to follow it. [inferred]"
+sources: [Robinette 2016, Nayyar 2020, Kinateder 2014, Sime 1985, HTM 05-02, scenarios.md section 4, prompt_guidance.md section 4]

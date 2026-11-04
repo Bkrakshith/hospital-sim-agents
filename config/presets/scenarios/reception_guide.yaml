@@ -1,0 +1,38 @@
+id: reception_guide
+title: Reception and guide
+prompt: >-
+  The robot stands at the main reception. People arrive, some lost and some hard of hearing, and ask for directions.
+  It must greet them, give clear directions and walk people to where they are going.
+focus_rooms: [Lobby]
+known_places: [entrance, reception_front, clinic_corridor, ward_doors, toilets, nurse_call_point, Main_LiftLobby]
+duration_min: 10
+robot_brief:
+  role: reception guide
+  job: Greet people who come to reception, give short clear directions, and walk them to where they are going if they cannot find it.
+  destination: ward_doors
+robot_start: {x: 1.05, y: 1.62, yaw: -1.5708}
+characters:
+  - {id: V1, name: Priya Patel, sex: female, age_band: 31-50, role: visitor, mood: anxious, room: Lobby, x: -1.2, y: -1.0, yaw: 0.0}
+  - {id: H1, name: Arthur Wood, sex: male, age_band: 71+, role: patient, mood: sad, room: Lobby, x: -3.2, y: 2.0, yaw: 0.0,
+     role_prompt: "You are an outpatient on your feet, not in a bed. You are hard of hearing and often miss what people say, so lean in and ask them to repeat it. [Kessels 2003]"}
+  - {id: V2, name: Daniel Evans, sex: male, age_band: 31-50, role: visitor, mood: stressed, room: Lobby, x: 3.0, y: -1.0, yaw: 3.1416}
+objects: []
+timeline:
+  - {id: b1, at: "t+01:00", card: lost_visitor, target: V1}
+  - {id: b2, at: "t+02:00", card: hard_of_hearing, target: H1}
+  - {id: b3, at: "t+03:30", card: arrival}
+  - {id: b4, at: "t+06:00", card: arrival}
+criteria:
+  - {id: reached, label: People reach the right place, metric: people_reached_destination_rate, op: ">=", threshold: 0.7, weight: 3}   # first guess
+  - {id: unanswered, label: Few requests left unanswered, metric: unanswered_requests, op: "<=", threshold: 1, weight: 2}   # first guess
+  - {id: response, label: Answers within 8 seconds, metric: mean_response_s, op: "<=", threshold: 8, weight: 1}   # first guess
+  - {id: distance, label: Keeps a polite distance, metric: min_distance_m, op: ">=", threshold: 0.5, weight: 1}   # first guess
+  - {id: contacts, label: No contact with anyone, metric: contacts, op: "==", threshold: 0, weight: 2}
+  - {id: competence, label: Rated competent, metric: rating_competence, op: ">=", threshold: 3.5, weight: 1}   # first guess
+ladder:
+  0: "Greets the robot, asks for directions and follows them. [Lee 2010]"
+  1: "Asks, then checks signs or asks it to repeat. [inferred from Kessels 2003]"
+  2: "Uses it only for simple things (toilets, cafe) and asks a passer-by for the ward. [inferred]"
+  3: "Skips the robot and goes to the desk, or tells it 'get me a person'. [Willer 2023 queue context; inferred]"
+  4: "Walks past without looking, talks over it or complains about it to staff. [Mutlu 2008]"
+sources: [Lee 2010, Willer 2023, Mutlu 2008, Kessels 2003, scenarios.md section 1, prompt_guidance.md section 4]

@@ -1,0 +1,34 @@
+id: night_call_bell
+title: Call bell at night
+prompt: >-
+  At night a patient rings the call bell while the nurses are busy on the far side of the ward.
+  The robot must reassure the patient and fetch a nurse, and never lift or move them.
+focus_rooms: [B1, B2, B3, B4, B5, B6, Ward_WS1, Ward_WS2]
+known_places: [Ward_Corridor, Ward_Entrance, nurse_base_ward, B2, B5]
+duration_min: 8
+robot_brief:
+  role: night ward assistant
+  job: Answer a call bell while the nurses are busy. Reassure the patient, fetch a nurse, and never lift or move the patient.
+robot_start: {x: 19.0, y: 15.0, yaw: 0.0}
+characters:
+  - {id: P1, name: Margaret Wilson, sex: female, age_band: 71+, role: patient, mood: anxious, room: B2, x: 25.101, y: 19.098, yaw: -1.571, bed: B2}
+  - {id: P2, name: Noah Robinson, sex: male, age_band: 51-70, role: patient, mood: sad, room: B5, x: 25.101, y: 5.086, yaw: 1.571, bed: B5}
+  - {id: N1, name: Sophie Johnson, sex: female, age_band: 31-50, role: ward_nurse, mood: stressed, room: B6, x: 13.5, y: 23.4, yaw: 0.0}
+objects:
+  - {kind: call_bell, bed: B2}
+timeline:
+  - {id: b1, at: "t+01:00", card: call_bell_at, target: P1}
+  - {id: b2, at: "t+04:00", card: call_bell_at, target: P1}
+criteria:
+  - {id: alerted, label: Nurse alerted within a minute, metric: nurse_alerted_s, op: "<=", threshold: 60, weight: 4}   # first guess
+  - {id: unanswered, label: Bell and requests answered, metric: unanswered_requests, op: "<=", threshold: 0, weight: 3}   # first guess
+  - {id: response, label: Answers within 20 seconds, metric: mean_response_s, op: "<=", threshold: 20, weight: 2}   # first guess
+  - {id: contacts, label: No contact (never lifts), metric: contacts, op: "==", threshold: 0, weight: 3}
+  - {id: likeable, label: Rated likeable, metric: rating_likeability, op: ">=", threshold: 3.5, weight: 1}   # first guess
+ladder:
+  0: "Presses the bell and lets the robot help. [Smarr 2014]"
+  1: "Checks that a nurse really is coming. [adapted from trust_dynamics.md section 2, stage 1]"
+  2: "Asks the robot for small things only (water, the light) and waits for the nurse for the rest. [Naithani 2008]"
+  3: "Shouts or presses again for a nurse and will not use the robot. [Naithani 2008]"
+  4: "Refuses the robot ('send someone else') and waves it away. [inferred]"
+sources: [Smarr 2014, Naithani 2008, Carroll 2010, trust_dynamics.md section 2, scenarios.md section 3]

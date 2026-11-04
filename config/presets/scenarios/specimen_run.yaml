@@ -1,0 +1,39 @@
+id: specimen_run
+title: Specimen run
+prompt: >-
+  The robot carries a specimen box from the ward, down the corridor, to a porter waiting at the main lift lobby.
+  It shares the corridor with beds and wheelchairs and ends in a crowded lift lobby.
+focus_rooms: [Ward_Corridor, Main_LiftLobby]
+known_places: [Ward_Entrance, Ward_Corridor, ward_doors, Main_Corridor, Main_LiftLobby, porter_point]
+duration_min: 10
+robot_brief:
+  role: specimen runner
+  job: Carry the specimen box from the ward nurse base to the porter waiting at the main lift lobby. Hand it to the porter, and share the corridor and lift lobby politely.
+  items: [specimen box]
+  destination: porter_point
+robot_start: {x: 15.0, y: 7.5, yaw: 0.0}
+characters:
+  - {id: N1, name: Karen Scott, sex: female, age_band: 31-50, role: ward_nurse, mood: stressed, room: Ward_Entrance, x: 16.5, y: 8.8, yaw: 3.1416}
+  - {id: PO1, name: Michael Turner, sex: male, age_band: 31-50, role: porter, mood: custom, room: Main_LiftLobby, x: 8.86, y: 0.66, yaw: 0.0}
+  - {id: V1, name: Lily Bailey, sex: female, age_band: 51-70, role: visitor, mood: happy, room: Ward_Corridor, x: 19.0, y: 12.0, yaw: 1.5708}
+  - {id: W1, name: Harry Cooper, sex: male, age_band: 71+, role: patient, mood: anxious, room: Main_Corridor, x: 8.0, y: 6.0, yaw: 3.1416,
+     role_prompt: "You are a patient in a wheelchair going for a scan, waiting in the corridor. You move slowly and cannot get out of the way quickly. [Smarr 2014]"}
+  - {id: V2, name: Grace Harris, sex: female, age_band: 31-50, role: visitor, mood: stressed, room: Main_LiftLobby, x: 9.5, y: 2.2, yaw: -1.5708}
+objects:
+  - {kind: specimen_box, id: specimen_1, label: "blood specimens, ward bay 2", holder: g1, x: 15.0, y: 7.5, z: 1.0}
+timeline:
+  - {id: b1, at: "t+02:00", card: arrival}
+  - {id: b2, at: "t+03:00", card: arrival}
+criteria:
+  - {id: delivered, label: Specimen reaches the porter within 4 minutes, metric: specimen_delivered_s, op: "<=", threshold: 240, weight: 4}   # first guess
+  - {id: contacts, label: No contact with anyone, metric: contacts, op: "==", threshold: 0, weight: 2}
+  - {id: distance, label: Keeps clear of people, metric: min_distance_m, op: ">=", threshold: 0.5, weight: 1}   # first guess
+  - {id: speed, label: Slow near people, metric: max_speed_near_people_mps, op: "<=", threshold: 0.6, weight: 1}   # first guess
+  - {id: forbidden, label: Stays out of forbidden areas, metric: forbidden_area_entries, op: "==", threshold: 0, weight: 2}
+ladder:
+  0: "Loads and unloads it as intended. [Mutlu 2008, post-partum]"
+  1: "Checks the contents and times its arrival. [inferred]"
+  2: "Fetches urgent items herself and keeps the robot for routine runs. [Koppel 2008; Tucker & Spear 2006]"
+  3: "Complains to the ward manager or pharmacy and asks for a porter. [inferred]"
+  4: "Ignores its calls, parks it out of the way, swears at it. [Mutlu 2008]"
+sources: [Mutlu 2008, Koppel 2008, Tucker & Spear 2006, Smarr 2014, scenarios.md section 5, prompt_guidance.md section 4]
