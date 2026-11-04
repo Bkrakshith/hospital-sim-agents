@@ -86,6 +86,35 @@ def test_long_route_is_fast(site, router):
     assert router.route(a, b) is not None
 
 
-def test_route_cache_returns_same(router, site):
-    a, b = site.resolve("entrance"), site.resolve("room:B1")
-    assert router.route(a, b) == router.route(a, b)
+def test_route_cache_hits_for_points_in_same_cells(site):
+    r = Router(site.grid)
+    g = site.grid
+    ca = g.to_cell(*site.resolve("entrance"))
+    cb = g.to_cell(*site.resolve("room:B1"))
+    (ax, ay), (bx, by) = g.to_world(*ca), g.to_world(*cb)
+    first = r.route((ax, ay), (bx, by))
+    assert len(r._cache) == 1
+    p, q = (ax + 0.05, ay - 0.04), (bx - 0.04, by + 0.05)  # different floats, same cells
+    second = r.route(p, q)
+    assert len(r._cache) == 1  # a hit, not a new entry
+    assert second[1:-1] == first[1:-1] and second[0] == p and second[-1] == q
+
+
+def test_endpoint_in_wall_is_moved_to_free_cell(site, router):
+    g = site.grid
+    ent = site.resolve("entrance")
+    # a blocked cell with a raw-free neighbour that the entrance can reach
+    for iy, ix in np.argwhere(g.occ == 1):
+        iy, ix = int(iy), int(ix)
+        if iy + 1 < g.occ.shape[0] and g.occ[iy + 1, ix] == 0 and site.main[iy + 1, ix]:
+            wall = g.to_world(iy, ix)
+            break
+    r = router.route(ent, wall)
+    assert r is not None and not g.blocked(*r[-1])
+    for (x0, y0), (x1, y1) in zip(r, r[1:]):
+        n = max(1, int(math.hypot(x1 - x0, y1 - y0) / 0.05))
+        for i in range(n + 1):
+            t = i / n
+            assert not g.blocked(x0 + (x1 - x0) * t, y0 + (y1 - y0) * t)
+    # nothing free within 1 m of a point deep in a big solid block -> None
+    assert router.route(ent, (-500.0, 0.0)) is None

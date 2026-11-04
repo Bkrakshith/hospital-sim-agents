@@ -141,27 +141,37 @@ class Router:
         return None
 
     def route(self, a: tuple, b: tuple) -> Optional[list[tuple[float, float]]]:
-        key = (tuple(a), tuple(b))
+        """Waypoints from a to b. An endpoint in a wall is moved to the nearest free cell centre (within 1 m);
+        None if there is none or no route. Cached on the (cell_a, cell_b) pair."""
+        ca, cb = self._snap(self.grid.to_cell(*a)), self._snap(self.grid.to_cell(*b))
+        if ca is None or cb is None:
+            return None
+
+        def endpoint(p, c):
+            return tuple(p) if self.grid.to_cell(*p) == c else self.grid.to_world(*c)
+
+        ea, eb = endpoint(a, ca), endpoint(b, cb)
+        key = (ca, cb)
         if key in self._cache:
             self._cache.move_to_end(key)
-            r = self._cache[key]
-            return list(r) if r else r
-        ca, cb = self._snap(self.grid.to_cell(*a)), self._snap(self.grid.to_cell(*b))
-        res = None
-        cells = self._astar(ca, cb) if ca is not None and cb is not None else None
-        if cells is not None:
-            allow = {(y + dy, x + dx) for y, x in cells for dy in (-1, 0, 1) for dx in (-1, 0, 1)}
-            pts = [self.grid.to_world(*c) for c in cells]
-            out = [pts[0]]
-            i = 0
-            while i < len(pts) - 1:
-                j = len(pts) - 1
-                while j > i + 1 and not self._los(pts[i], pts[j], allow):
-                    j -= 1
-                out.append(pts[j])
-                i = j
-            res = [tuple(a)] + out[1:-1] + [tuple(b)]
-        self._cache[key] = res
-        if len(self._cache) > self._size:
-            self._cache.popitem(last=False)
-        return list(res) if res else res
+            mid = self._cache[key]
+        else:
+            cells = self._astar(ca, cb)
+            if cells is None:
+                mid = None
+            else:
+                allow = {(y + dy, x + dx) for y, x in cells for dy in (-1, 0, 1) for dx in (-1, 0, 1)}
+                pts = [self.grid.to_world(*c) for c in cells]
+                out = [pts[0]]
+                i = 0
+                while i < len(pts) - 1:
+                    j = len(pts) - 1
+                    while j > i + 1 and not self._los(pts[i], pts[j], allow):
+                        j -= 1
+                    out.append(pts[j])
+                    i = j
+                mid = out[1:-1]
+            self._cache[key] = mid
+            if len(self._cache) > self._size:
+                self._cache.popitem(last=False)
+        return None if mid is None else [ea] + list(mid) + [eb]

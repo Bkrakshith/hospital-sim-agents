@@ -191,3 +191,11 @@ def test_place_rejects_wall(model):
 def test_summary_for_prompt(model):
     s = model.summary_for_prompt(["B1", "Lobby"])
     assert "B1" in s and "Lobby" in s
+
+
+def test_check_place_rejects_sealed_pocket(model):
+    g = model.grid
+    pocket = [(int(a), int(b)) for a, b in np.argwhere((g.occ == 0) & ~model.main)]
+    assert pocket, "map has no sealed pocket"
+    x, y = g.to_world(*pocket[0])
+    assert model.check_place(x, y) == "not reachable from the entrance"

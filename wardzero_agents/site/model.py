@@ -126,6 +126,28 @@ class Site:
     compartments: list = field(default_factory=list)
     lifts: list = field(default_factory=list)
     stairs: list = field(default_factory=list)
+    main: Optional[np.ndarray] = None  # bool grid: cells connected to the entrance landmark
+
+    def _connected_to_entrance(self) -> None:
+        e = self.landmarks.get("entrance")
+        if e is None:
+            return
+        g = self.grid
+        occ = g.occ.tolist()
+        h, w = g.occ.shape
+        start = g.to_cell(e.x, e.y)
+        seen = np.zeros((h, w), dtype=bool)
+        if not g.in_grid(*start) or occ[start[0]][start[1]]:
+            return
+        seen[start] = True
+        todo = [start]
+        while todo:
+            y, x = todo.pop()
+            for ny, nx in ((y + 1, x), (y - 1, x), (y, x + 1), (y, x - 1)):
+                if 0 <= ny < h and 0 <= nx < w and not occ[ny][nx] and not seen[ny, nx]:
+                    seen[ny, nx] = True
+                    todo.append((ny, nx))
+        self.main = seen
 
     def room_at(self, x: float, y: float) -> Optional[str]:
         hits = [r for r in self.rooms.values() if r.contains(x, y)]
@@ -169,6 +191,8 @@ class Site:
                 return f"bed {bid} already has a patient"
         if self.grid.occ[iy, ix]:
             return "inside a wall"
+        if self.main is not None and not self.main[iy, ix]:
+            return "not reachable from the entrance"
         return None
 
     def summary_for_prompt(self, known_rooms: list[str]) -> str:
@@ -186,7 +210,7 @@ def load_site(root: "str | Path") -> Site:
     j = json.loads((d / "hospital.json").read_text())
     z = np.load(d / "hospital_occ.npz")
     grid = OccGrid(np.asarray(z["occ"], dtype=np.uint8), float(z["res"]), (float(z["origin"][0]), float(z["origin"][1])))
-    return Site(
+    site = Site(
         rooms={r["id"]: Room(r["id"], r.get("label", r["id"]), r.get("use", ""), r.get("compartment"),
                              [tuple(p) for p in r["poly"]]) for r in j["rooms"]},
         beds={b["id"]: Bed(b["id"], b["room"], b["x"], b["y"], b["yaw"]) for b in j["beds"]},
@@ -197,3 +221,5 @@ def load_site(root: "str | Path") -> Site:
         bounds=tuple(j["bounds"]), grid=grid, walls=j.get("walls", []), doors=j.get("doors", []),
         compartments=j.get("compartments", []), lifts=j.get("lifts", []), stairs=j.get("stairs", []),
     )
+    site._connected_to_entrance()
+    return site
