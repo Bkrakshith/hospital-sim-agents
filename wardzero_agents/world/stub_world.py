@@ -549,6 +549,20 @@ class StubWorld:
         z = 1.5 if ident in self.people or ident == ROBOT_ID else 1.2
         return pos[0], pos[1], z
 
+    def carry_of(self, pid: str) -> Optional[str]:
+        """The person this person is leading (escort, evacuate, wheeling a bed) in the head walk phase, or None."""
+        p = self.people.get(pid)
+        if p is None or not p.plan or p.plan[0].kind != "walk":
+            return None
+        c = p.plan[0].carry
+        return c if c in self.people else None
+
+    def lead(self, pid: str) -> None:
+        """Move the led person to their trail point behind pid (what step() does for a world-walked leader)."""
+        p = self._get(pid)
+        if p.plan and p.plan[0].kind == "walk":
+            self._lead(p, p.plan[0])
+
     def end_phase(self, pid: str) -> None:
         """The body finished the head phase of the plan."""
         p = self._get(pid)
@@ -795,6 +809,8 @@ class StubWorld:
         if persona_id not in self.loaded.personas:
             raise ValueError(f"unknown persona '{persona_id}'")
         self._spawned += 1
+        while f"N{self._spawned}" in self.people:  # never overwrite a cast person who has an N id
+            self._spawned += 1
         pid = f"N{self._spawned}"
         self.people[pid] = self._at_entrance(spawned_instance(self.loaded, pid, persona_id, t))
         return pid

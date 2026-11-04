@@ -443,3 +443,15 @@ def test_prompt_says_hospital_and_room():
     assert "a UK hospital" in SYSTEM_FIXED and "main-entrance waiting area" not in SYSTEM_FIXED
     card = persona_card(inst5, ls.area, site=ls.site)
     assert "Seat ids" in card and "AE_Triage" not in card
+
+
+def test_spawn_never_overwrites_an_existing_n_id():
+    from wardzero_agents.config.loader import load_scenario
+    from wardzero_agents.world.stub_world import StubWorld
+    from pathlib import Path
+    loaded = load_scenario(Path(__file__).resolve().parents[1] / "config" / "scenarios" / "waiting_area_v1.yaml")
+    w = StubWorld(loaded, 1)
+    w.people["N1"] = w.people["P1"]
+    w.people["N2"] = w.people["P2"]
+    pid = w.spawn("coughing_adult", 1.0)
+    assert pid == "N3" and w.people["N1"] is w.people["P1"] and w.people["N2"] is w.people["P2"]

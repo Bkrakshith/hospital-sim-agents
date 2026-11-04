@@ -36,6 +36,7 @@ class IsaacBodies(Bodies):
         self.people: dict[str, PoseSource] = dict(people or {})
         self.robot: Optional[PoseSource] = robot
         self.controllers: dict[str, "PersonController"] = {}
+        self.props: dict[str, object] = {}  # person id -> the lying prop (people.BedProp) of a patient in a bed
         self.spawner = spawner  # makes a controller for a person who joined after the start (None: stays kinematic)
         self._unserved: set[str] = set()
         self._last_t: Optional[float] = None
@@ -63,9 +64,27 @@ class IsaacBodies(Bodies):
         self._last_t = t
         self._join(world)
         world.step(t)  # the logic (objects, tasks, contacts); body-driven people are not walked here
+        trails = []
+        for pid in list(world.body_driven):  # world.step skips body-driven leaders, so the led person trails here
+            q = world.carry_of(pid)
+            if q is not None:
+                world.lead(pid)
+                trails.append((q, (world.people[q].x, world.people[q].y)))
         for pid, ctrl in list(self.controllers.items()):
             ctrl.update(world, dt)
+        for q, point in trails:
+            self._carry(world, q, point, dt)
         self.read_back(world)
+
+    def _carry(self, world: "StubWorld", pid: str, point: tuple[float, float], dt: float) -> None:
+        """A led person: a patient in a bed is wheeled (the lying prop moves), anyone else's character walks after the leader."""
+        p = world.people[pid]
+        ctrl = self.controllers.get(pid)
+        prop = self.props.get(pid)
+        if p.posture == "lying" and prop is not None and (ctrl is None or ctrl.in_bed):
+            prop.place(p.x, p.y, p.yaw)
+        elif ctrl is not None and not ctrl.in_bed:
+            ctrl.trail(world, point, dt)
 
     def _join(self, world: "StubWorld") -> None:
         """People who joined after the start (a spawn) get a character if there is a spawner."""
@@ -83,6 +102,9 @@ class IsaacBodies(Bodies):
     def read_back(self, world: "StubWorld") -> None:
         for pid, source in self.people.items():
             p = world.people.get(pid)
+            ctrl = self.controllers.get(pid)
+            if ctrl is not None and ctrl.in_bed:
+                continue  # in a bed the world keeps the bed's pose: the walking character is hidden
             pose = source()
             if p is None or not _finite(pose):
                 continue

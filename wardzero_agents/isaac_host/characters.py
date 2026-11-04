@@ -9,9 +9,10 @@ its rerun see the same people.
 from __future__ import annotations
 
 import hashlib
+import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, Optional
 
 import yaml
 
@@ -74,7 +75,8 @@ class AllowList:
         return out
 
 
-def load_allowlist(path: Path = DEFAULT_PATH) -> AllowList:
+def load_allowlist(path: Optional[Path] = None) -> AllowList:
+    path = Path(path or os.environ.get("WARDZERO_CHARACTERS") or DEFAULT_PATH)
     data = yaml.safe_load(Path(path).read_text()) or {}
     chars: list[Character] = []
     for raw in data.get("characters", []):

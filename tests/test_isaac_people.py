@@ -81,6 +81,10 @@ class FakeApi:
         self.hidden = True
         self.calls.append(("hide",))
 
+    def show(self):
+        self.hidden = False
+        self.calls.append(("show",))
+
     def tick(self, dt):
         self.t += dt
         if self.cur is None:
@@ -448,3 +452,147 @@ def test_people_who_start_on_the_same_spot_are_spread_apart():
 
 def test_the_isaac_modules_import_without_kit():
     import wardzero_agents.isaac_host.people_isaac  # noqa: F401
+
+
+class FakeProp:
+    def __init__(self):
+        self.shown = True
+        self.placed = []
+
+    def show(self):
+        self.shown = True
+
+    def hide(self):
+        self.shown = False
+
+    def place(self, x, y, yaw):
+        self.placed.append((round(x, 2), round(y, 2)))
+
+
+def test_an_escorted_person_trails_the_leader(tmp_path):
+    svc, bodies, apis = make(tmp_path, ("P5", "P1"))
+    svc.step(DT)
+    for pid in ("P5", "P1"):
+        svc.on_intent(intent(pid, "stand_up"))
+    run(svc, apis, 6.0)
+    dest = (1.0, 0.57)
+    svc.on_intent(intent("P5", "escort", target="P1", point=dest))
+    gap = []
+    for _ in range(int(40 / DT)):
+        for a in apis.values():
+            a.tick(DT)
+        svc.step(DT)
+        w = svc.world.people
+        if svc.world.carry_of("P5"):
+            gap.append(math.hypot(w["P5"].x - w["P1"].x, w["P5"].y - w["P1"].y))
+        if status(svc, "P5").state == "done":
+            break
+    assert status(svc, "P5").state == "done"
+    assert gap and max(gap[len(gap) // 2:]) < 2.5  # P1 kept up with the leader, not left at the seat
+    moves = [c for c in apis["P1"].calls if c[0] == "move_to"]
+    assert len(moves) >= 3  # re-issued as the trail point moved
+    run(svc, apis, 5.0)
+    p1 = svc.world.people["P1"]
+    assert math.hypot(p1.x - dest[0], p1.y - dest[1]) < 2.0
+
+
+def test_a_bed_patient_who_is_wheeled_moves_with_the_leader(tmp_path):
+    svc, bodies, apis = make(tmp_path, ("P5",))
+    svc.step(DT)
+    p1 = svc.world.people["P1"]
+    bed = svc.world.site.beds["B1"]
+    p1.posture, p1.bed, p1.seat, p1.x, p1.y, p1.yaw = "lying", "B1", None, bed.x, bed.y, bed.yaw
+    prop = FakeProp()
+    bodies.props["P1"] = prop
+    svc.on_intent(intent("P5", "stand_up"))
+    run(svc, apis, 6.0)
+    svc.world.people["P5"].x, svc.world.people["P5"].y = bed.x - 1.5, bed.y
+    apis["P5"].x, apis["P5"].y = bed.x - 1.5, bed.y
+    svc.on_intent(intent("P5", "escort", target="P1", point=(bed.x - 6.0, bed.y)))
+    run(svc, apis, 10.0)
+    assert len(prop.placed) > 10 and prop.placed[-1] != prop.placed[0]
+    assert svc.world.people["P1"].posture == "lying"
+    assert (svc.world.people["P1"].x, svc.world.people["P1"].y) == pytest.approx(prop.placed[-1], abs=0.02)
+
+
+def test_a_minded_bed_patient_gets_up_as_a_walking_character_and_lies_back(tmp_path):
+    svc, bodies, apis = make(tmp_path, ("P5",))
+    p1 = svc.world.people["P1"]
+    bed = svc.world.site.beds["B1"]
+    p1.posture, p1.bed, p1.seat, p1.x, p1.y, p1.yaw = "lying", "B1", None, bed.x, bed.y, bed.yaw
+    api = FakeApi(bed.x + 1.0, bed.y, 0.0, seats={})
+    prop = FakeProp()
+    ctrl = pe.PersonController("P1", api, bed_prop=prop)
+    bodies.add_controller(svc.world, ctrl)
+    apis["P1"] = api
+    ctrl.api.hide()
+    svc.step(DT)
+    run(svc, apis, 1.0)
+    assert prop.shown and api.hidden and (p1.x, p1.y) == (bed.x, bed.y)  # in bed: the world keeps the bed's pose
+    svc.on_intent(intent("P1", "walk_to", target="entrance"))
+    run(svc, apis, 0.3)
+    assert not prop.shown and not api.hidden and ("show",) in api.calls
+    run(svc, apis, 60.0)
+    assert status(svc, "P1").state == "done" and status(svc, "P1").posture == "standing" and p1.bed is None
+    assert math.hypot(p1.x - api.x, p1.y - api.y) < 0.01  # the character's pose now
+    # lie back down (the world marks them lying again): the prop returns, the character goes
+    p1.posture, p1.bed, p1.x, p1.y = "lying", "B1", bed.x, bed.y
+    run(svc, apis, 0.3)
+    assert prop.shown and api.hidden
+    assert (p1.x, p1.y) == (bed.x, bed.y)
+
+
+def test_flatten_lays_only_the_head_half_flat_and_keeps_the_foot():
+    import numpy as np
+
+    from wardzero_agents.isaac_host import people_isaac as pi
+
+    head = (0.0, -1.0)  # B4: the head is towards -y
+    pts = [(25.1, 8.0 + 1.0), (25.1, 8.0), (25.1, 8.0 - 0.3), (25.1, 8.0 - 0.65), (25.1, 8.0 - 1.0), (25.1, 8.0 - 1.1)]
+    dz = pi.flatten_dz(pts, (25.1, 8.0), head)
+    assert dz[0] == 0 and dz[1] == 0 and dz[2] == 0  # foot half and the middle stay
+    assert dz[3] == pytest.approx(-pi.HEAD_RISE_M / 2) and dz[4] == pytest.approx(-pi.HEAD_RISE_M)
+    assert dz[5] == pytest.approx(-pi.HEAD_RISE_M)  # the head board goes down with it
+    assert np.all(np.diff(dz[:5]) <= 0)
+
+
+def test_bedside_picks_the_free_side_then_the_foot():
+    from types import SimpleNamespace
+
+    from wardzero_agents.isaac_host import people_isaac as pi
+
+    bed = SimpleNamespace(x=10.0, y=5.0, yaw=math.pi / 2)  # head towards +y: the sides are x +- 0.95
+    a = pi.bedside(bed, lambda x, y: False)
+    b = pi.bedside(bed, lambda x, y: x < 10.0)
+    assert abs(a[0] - 10.0) == pytest.approx(pi.BEDSIDE_M) and a[1] == pytest.approx(5.0)
+    assert b[0] > 10.0
+    foot = pi.bedside(bed, lambda x, y: True)
+    assert foot[1] < 5.0 and foot[0] == pytest.approx(10.0)
+
+
+def test_texture_cap_maps_pixels_to_the_rtx_mip_count():
+    from wardzero_agents.isaac_host import app
+
+    assert [app.max_mip_count(p) for p in (64, 512, 1024, 4096)] == [7, 10, 11, 13]
+    with pytest.raises(ValueError):
+        app.max_mip_count(1000)
+    base = ["--run-dir", "r", "--scenario", "s"]
+    assert app.parse_args(base + ["--texture-max", "512"]).texture_max == 512
+    assert app.parse_args(base).texture_max == 1024  # headless default
+    assert app.parse_args(base + ["--headed"]).texture_max == 0
+    assert app.parse_args(base + ["--texture-max", "0"]).texture_max == 0
+
+
+def test_pick_bedside_prefers_a_side_the_navmesh_can_reach():
+    from types import SimpleNamespace
+
+    from wardzero_agents.isaac_host import people_isaac as pi
+
+    bed = SimpleNamespace(x=10.0, y=5.0, yaw=math.pi / 2)
+    east = lambda x, y: x > 10.0
+    west = lambda x, y: x < 10.0
+    assert pi.pick_bedside(bed, lambda x, y: False, west)[0] < 10.0
+    assert pi.pick_bedside(bed, lambda x, y: False, east)[0] > 10.0
+    assert pi.pick_bedside(bed, lambda x, y: x > 10.0, lambda x, y: True)[0] < 10.0  # a blocked side is never chosen
+    nothing = pi.pick_bedside(bed, lambda x, y: False, lambda x, y: False)
+    assert abs(nothing[0] - 10.0) == pytest.approx(pi.BEDSIDE_M)  # none reachable: the first free one

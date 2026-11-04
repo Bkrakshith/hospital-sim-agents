@@ -43,6 +43,9 @@ LOOK_S = 2.5
 SWEEP_DEG = (60.0, -60.0, 0.0)  # "look around": left, right, back to the front
 SWEEP_STEP_S = 1.3
 SIT_RETRIES = 2
+TRAIL_NEAR_M = 0.3  # a led person within this of their trail point stands
+TRAIL_REISSUE_S = 0.4  # at most one new move_to this often
+TRAIL_SPEED = 1.5
 WALKING = ("MoveTo", "GoTo", "Dodge", "MoveAlong", "Follow")
 
 
@@ -59,6 +62,15 @@ class BehaviorApi(Protocol):
     def current_action(self) -> str: ...  # the running task's name: MoveTo, Dodge, Sit, Idle, LookAt, ...
     def set_speed(self, speed: float) -> None: ...
     def hide(self) -> None: ...
+    def show(self) -> None: ...
+
+
+class BedProp(Protocol):
+    """The posed character lying in a bed, for a person who has a mind (the walking character is hidden meanwhile)."""
+
+    def show(self) -> None: ...
+    def hide(self) -> None: ...
+    def place(self, x: float, y: float, yaw: float) -> None: ...  # a bed being wheeled
 
 
 PENDING = object()  # a spawner's answer: the character is being made, ask again next frame
@@ -80,8 +92,13 @@ def seat_approach(seat) -> tuple[float, float]:
 class PersonController:
     """Drives one Isaac character from its person's plan in the StubWorld. ``update`` runs once per frame."""
 
-    def __init__(self, pid: str, api: BehaviorApi, seat_prim: Callable[[str], str] = seat_prim_path):
+    def __init__(self, pid: str, api: BehaviorApi, seat_prim: Callable[[str], str] = seat_prim_path,
+                 bed_prop: Optional[BedProp] = None):
         self.pid, self.api, self.seat_prim = pid, api, seat_prim
+        self.bed_prop = bed_prop  # a minded patient who starts in a bed: lying prop shown, walking character hidden
+        self.in_bed = bed_prop is not None
+        self._trail_goal: Optional[tuple[float, float]] = None
+        self._trail_age = 0.0
         self._phase = None  # the plan phase being carried out (compared by identity)
         self._task: Optional[int] = None
         self._goal: Optional[tuple[float, float]] = None
@@ -138,7 +155,11 @@ class PersonController:
         if p.posture == "gone":
             if not self.hidden:
                 self.api.hide()
+                if self.bed_prop is not None:
+                    self.bed_prop.hide()
                 self.hidden = True
+            return
+        if self.bed_prop is not None and self._swap_bed(p):
             return
         self._tick_sweep(p, dt)
         for _ in range(4):  # a phase that ends hands over to the next one in the same frame
@@ -154,6 +175,41 @@ class PersonController:
                 return
             dt = 0.0
         self._set_posture(p)
+
+    def _swap_bed(self, p) -> bool:
+        """A minded patient swaps between the lying prop and the walking character. True while they are in bed."""
+        lying = p.posture == "lying" and not (p.plan and p.plan[0].kind == "stand")
+        if lying and not self.in_bed:  # lay back down: the character goes, the prop comes back
+            self.api.hide()
+            self.bed_prop.show()
+            self.in_bed = True
+            self.events.append(("lie_down", ""))
+        elif not lying and self.in_bed:  # getting up: the character appears at the bedside
+            self.bed_prop.hide()
+            self.api.show()
+            self.in_bed = False
+            self.events.append(("get_up", ""))
+        return self.in_bed
+
+    def trail(self, world, point: tuple[float, float], dt: float) -> None:
+        """This person is being led (escorted, evacuated): their character follows the leader's trail point."""
+        pose = self.api.pose()
+        if pose is None:
+            return
+        self._trail_age += dt
+        d = math.hypot(point[0] - pose[0], point[1] - pose[1])
+        ended = self.api.status(self._task) != "running" if self._task is not None else True
+        if d > TRAIL_NEAR_M and (self._trail_goal is None or ended
+                                 or math.hypot(point[0] - self._trail_goal[0], point[1] - self._trail_goal[1]) > REROUTE_M) \
+                and self._trail_age >= TRAIL_REISSUE_S:
+            self._trail_age = 0.0
+            self._trail_goal = point
+            self._phase = None
+            self.api.set_speed(clamp_speed(TRAIL_SPEED))
+            self._issue_walk(point)
+        p = world.people[self.pid]
+        if p.posture not in ("lying", "gone"):
+            p.posture = "walking" if self.api.current_action() in WALKING else "standing"
 
     def _tick_sweep(self, p, dt: float) -> None:
         if not self._sweep:

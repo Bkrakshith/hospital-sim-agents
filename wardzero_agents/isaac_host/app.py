@@ -43,6 +43,14 @@ EXTENSIONS = (
 )
 KEY_ENV = ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_AUTH_TOKEN", "WARDZERO_KEY_FILE")
 CAMERA = "/OmniverseKit_Persp"
+TEXTURE_MAX_HEADLESS = 1024  # pixels: the default for --headless runs (headed runs keep full textures); 0 turns it off
+
+
+def max_mip_count(pixels: int) -> int:
+    """The RTX setting /rtx-transient/resourcemanager/maxMipCount for a largest texture side (64 -> 7, 1024 -> 11)."""
+    if pixels < 64 or pixels > 32768 or pixels & (pixels - 1):
+        raise ValueError(f"--texture-max must be a power of two from 64 to 32768, not {pixels}")
+    return pixels.bit_length()
 
 
 def _env_int(*names: str, default: int = 0) -> int:
@@ -80,6 +88,10 @@ def parse_args(argv=None) -> argparse.Namespace:
     p.add_argument("--stage", type=Path, default=stage_mod.STAGE_USD)
     p.add_argument("--collision", type=Path, default=stage_mod.COLLISION_USD)
     p.add_argument("--renderer", default="RaytracedLighting")
+    p.add_argument("--texture-max", type=int, default=None,
+                   help="largest texture side in pixels (64..32768, a power of two); bigger textures are downsampled. "
+                        f"Default: {TEXTURE_MAX_HEADLESS} when headless (it saves about 480 MiB per DH character), "
+                        "full size with --headed; 0 keeps full size")
     a = p.parse_args(argv)
     a.wait_for = [] if a.wait_for.strip() in ("", "none") else [w.strip() for w in a.wait_for.split(",") if w.strip()]
     unknown = [w for w in a.wait_for if w not in WAIT_TOKENS]
@@ -88,6 +100,13 @@ def parse_args(argv=None) -> argparse.Namespace:
     a.rooms = [r.strip() for r in a.rooms.split(",") if r.strip()] if a.rooms else None
     if a.fps <= 0:
         p.error("--fps must be positive")
+    if a.texture_max is None:
+        a.texture_max = 0 if a.headed else TEXTURE_MAX_HEADLESS
+    if a.texture_max:
+        try:
+            max_mip_count(a.texture_max)
+        except ValueError as exc:
+            p.error(str(exc))
     return a
 
 
@@ -129,6 +148,11 @@ class IsaacHost:
 
         self.app = SimulationApp({"headless": not self.args.headed, "renderer": self.args.renderer,
                                   "width": 1280, "height": 720})
+        if self.args.texture_max:  # before the stage opens: textures larger than this are downsampled on load
+            import carb
+
+            carb.settings.get_settings().set("/rtx-transient/resourcemanager/maxMipCount",
+                                             max_mip_count(self.args.texture_max))
         # SimulationApp's own SIGINT handler kills Kit at once; the host stops at a frame boundary instead
         signal.signal(signal.SIGINT, self._on_signal)
         signal.signal(signal.SIGTERM, self._on_signal)

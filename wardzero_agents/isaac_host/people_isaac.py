@@ -34,7 +34,10 @@ CHARACTERS_ROOT = "/World/Characters"
 SEATS_ROOT = "/World/Seats"
 STATIC_ROOT = "/World/StaticPatients"
 SEAT_HIPS_Z = 0.62  # sit effector 6 cm above the 0.56 m cushion top of the lobby chairs (spike S1 Q2)
-BED_TOP_Z = 0.99  # where the character origin rides: the mattress is 0.86 flat and the body's back plane sits 0.13 m under it
+BED_FLAT_Z = 1.0  # mattress top of SM_HospitalBed_01b (measured from its mesh: 0.80 to 1.00, flat part)
+BED_TOP_Z = BED_FLAT_Z + 0.09  # where a lying character's origin rides: its back plane sits 0.09 m under the origin
+HEAD_RISE_START_T, HEAD_RISE_END_T, HEAD_RISE_M = 0.3, 1.0, 0.2  # the head half of that mesh slopes up 0.2 m (t along the bed to its head)
+BEDSIDE_M = 0.95
 BODY_LENGTH_M = 1.75
 OVERLAP_M = 0.5  # people who would start closer than this are spread apart at spawn
 SPREAD_M = 0.65
@@ -66,6 +69,41 @@ def lying_matrix(bed, top_z: float = BED_TOP_Z, front_local: tuple = FRONT_LOCAL
             z_axis[0], z_axis[1], z_axis[2], 0.0, ox, oy, oz, 1.0)
 
 
+def flatten_dz(points_xy, centre, head, start: float = HEAD_RISE_START_T, end: float = HEAD_RISE_END_T,
+               rise: float = HEAD_RISE_M):
+    """Vertical shift (<= 0) that lays the raised head half of a bed mesh flat. ``points_xy``: Nx2 world x, y;
+    ``head``: unit vector from the bed's centre to its head end. A shear along the bed, so thickness is kept."""
+    import numpy as np
+
+    t = (np.asarray(points_xy, dtype=float) - np.asarray(centre, dtype=float)) @ np.asarray(head, dtype=float)
+    return -rise * np.clip((t - start) / (end - start), 0.0, 1.0)
+
+
+def bedside(bed, blocked) -> tuple[float, float]:
+    """A floor point beside a bed (across it from the centre), on the side where ``blocked(x, y)`` is false."""
+    c, s = math.cos(bed.yaw), math.sin(bed.yaw)
+    for sign in (1.0, -1.0):
+        x, y = bed.x - s * BEDSIDE_M * sign, bed.y + c * BEDSIDE_M * sign
+        if not blocked(x, y):
+            return x, y
+    return bed.x - c * 1.7, bed.y - s * 1.7  # the foot end
+
+
+def pick_bedside(bed, blocked, reachable) -> tuple[float, float]:
+    """The side of a bed to get up on: a free floor point the NavMesh can reach (``reachable(x, y)``), else the first free one."""
+    c, s = math.cos(bed.yaw), math.sin(bed.yaw)
+    first = None
+    for dist in (BEDSIDE_M, BEDSIDE_M + 0.25):
+        for sign in (1.0, -1.0):
+            x, y = bed.x - s * dist * sign, bed.y + c * dist * sign
+            if blocked(x, y):
+                continue
+            first = first or (x, y)
+            if reachable(x, y):
+                return x, y
+    return first or bedside(bed, blocked)
+
+
 def spread(points: list[tuple[float, float, float]]) -> list[tuple[float, float, float]]:
     """(x, y, yaw) starts: people who would stand on top of each other are moved sideways."""
     out: list[tuple[float, float, float]] = []
@@ -88,11 +126,12 @@ def spread(points: list[tuple[float, float, float]]) -> list[tuple[float, float,
 class IraAgent:
     """``people.BehaviorApi`` on one IBehaviorAgent."""
 
-    def __init__(self, agent, prim_path: str, carb_module=None):
+    def __init__(self, agent, prim_path: str, carb_module=None, bedside=None):
         import carb
         self._carb = carb_module or carb
         self.a = agent
         self.path = prim_path
+        self.bedside = bedside  # (x, y, face_x, face_y) for a patient in a bed: hide and show move them under the floor
 
     def _f3(self, x, y, z=0.0):
         return self._carb.Float3(float(x), float(y), float(z))
@@ -153,10 +192,82 @@ class IraAgent:
         stage = omni.usd.get_context().get_stage()
         pid = self.path[len(CHARACTERS_ROOT) + 1:].split("/")[0]  # the character's own prim under /World/Characters
         UsdGeom.Imageable(stage.GetPrimAtPath(f"{CHARACTERS_ROOT}/{pid}")).MakeInvisible()
+        if self.bedside is None:  # a patient in bed stays registered (an invisible agent made before play has none)
+            try:
+                self.a.set_enabled(False)
+            except Exception:
+                pass
+
+    def show(self):
+        import omni.usd
+        from pxr import UsdGeom
+
+        stage = omni.usd.get_context().get_stage()
+        pid = self.path[len(CHARACTERS_ROOT) + 1:].split("/")[0]
+        UsdGeom.Imageable(stage.GetPrimAtPath(f"{CHARACTERS_ROOT}/{pid}")).MakeVisible()
+        if self.bedside is not None:  # up beside the bed, facing it
+            x, y, fx, fy = self.bedside
+            self.a.teleport(target=self._f3(x, y, 0.0), facing=self._f3(fx, fy, 0.0))
+            return
         try:
-            self.a.set_enabled(False)
+            self.a.set_enabled(True)
         except Exception:
             pass
+
+
+class LyingProp:
+    """The posed character on a bed (``people.BedProp``): shown, hidden, or carried along with a bed being wheeled."""
+
+    def __init__(self, stage, path: str, op, bed=None):
+        self.stage, self.path, self.op = stage, path, op
+        self.bed = bed  # BedMover: the bed itself goes along when the patient is wheeled
+
+    def _img(self):
+        from pxr import UsdGeom
+
+        return UsdGeom.Imageable(self.stage.GetPrimAtPath(self.path))
+
+    def show(self):
+        self._img().MakeVisible()
+
+    def hide(self):
+        self._img().MakeInvisible()
+
+    def place(self, x, y, yaw):
+        from types import SimpleNamespace
+
+        from pxr import Gf
+
+        self.op.Set(Gf.Matrix4d(*lying_matrix(SimpleNamespace(x=x, y=y, yaw=yaw))))
+        if self.bed is not None:
+            self.bed.move_to(x, y, yaw)
+
+
+class BedMover:
+    """Moves the stage's bed (its de-instanced Xform) to follow a wheeled patient: a rigid shift and turn about the bed's centre."""
+
+    def __init__(self, stage, path: str, x: float, y: float, yaw: float):
+        from pxr import Gf, UsdGeom
+
+        self.x0, self.y0, self.yaw0 = x, y, yaw
+        prim = stage.GetPrimAtPath(path)
+        xf = UsdGeom.Xformable(prim)
+        self.m0 = xf.GetLocalTransformation()
+        self.parent = UsdGeom.Xformable(prim).ComputeParentToWorldTransform(0.0) if hasattr(xf, "ComputeParentToWorldTransform") \
+            else Gf.Matrix4d(1.0)
+        xf.ClearXformOpOrder()
+        self.op = xf.AddTransformOp()
+        self.op.Set(self.m0)
+
+    def move_to(self, x, y, yaw):
+        from pxr import Gf
+
+        d = yaw - self.yaw0
+        c0 = Gf.Matrix4d().SetTranslate(Gf.Vec3d(-self.x0, -self.y0, 0.0))
+        r = Gf.Matrix4d().SetRotate(Gf.Rotation(Gf.Vec3d(0, 0, 1), math.degrees(d)))
+        t = Gf.Matrix4d().SetTranslate(Gf.Vec3d(x, y, 0.0))
+        delta = c0 * r * t  # row vectors: about the old centre, then to the new one
+        self.op.Set(self.m0 * (self.parent * delta * self.parent.GetInverse()))
 
 
 class IsaacPeople:
@@ -167,6 +278,10 @@ class IsaacPeople:
         self.skelroots: dict[str, str] = {}  # person id -> SkelRoot prim path
         self.choice: dict[str, ch.Character] = {}
         self.static: list[str] = []
+        self.props: dict[str, LyingProp] = {}  # person id -> the lying prop (static patients and minded ones in bed)
+        self._flat_beds: set[str] = set()
+        self._bed_paths: dict[str, str] = {}
+        self.bedsides: dict[str, tuple[float, float, float, float]] = {}
         self.pending: dict[str, int] = {}  # runtime joiners waiting for their agent -> frames waited
         self._motion_lib: Optional[str] = None
 
@@ -177,7 +292,11 @@ class IsaacPeople:
         self.choice = self.allow.assign([(pid, p.inst.role, p.inst.sex, p.inst.age) for pid, p in brains])
         starts = spread([self._start_pose(world, p) for _, p in brains])
         for (pid, p), (x, y, yaw) in zip(brains, starts):
+            lying = p.posture == "lying"
+            # a character who is invisible at spawn gets no Behavior agent: one in bed is hidden after play (bind)
             self.skelroots[pid] = self._spawn_character(pid, self.choice[pid], x, y, yaw)
+            if lying:
+                self.bedsides[pid] = (x, y, p.x, p.y)  # where they get up, and what they face (the bed)
         for pid, p in world.people.items():
             if p.kind == "static" or (p.bed and p.posture == "lying"):
                 self._lying(pid, p, world)
@@ -186,14 +305,21 @@ class IsaacPeople:
 
     @staticmethod
     def _has_body(p) -> bool:
-        return p.kind != "static" and not (p.bed and p.posture == "lying")
+        return p.kind != "static"  # a minded patient in a bed has a walking character too (hidden until they get up)
 
     def _start_pose(self, world, p) -> tuple[float, float, float]:
         if p.posture == "seated" and p.seat:
             seat = world.seat(p.seat)
             ax, ay = pe.seat_approach(seat)
             return ax, ay, seat.yaw + math.pi  # in front of the seat, facing it: the first task sits them down
+        if p.posture == "lying" and p.bed in world.site.beds:
+            bed = world.site.beds[p.bed]
+            x, y = bedside(bed, world.site.grid.blocked)
+            return x, y, math.atan2(bed.y - y, bed.x - x)  # beside the bed, facing it
         return p.x, p.y, p.yaw
+
+    def _root_prim(self, pid: str):
+        return self.stage.GetPrimAtPath(f"{CHARACTERS_ROOT}/{pid}")
 
     def _motion_library(self) -> str:
         import omni.kit.commands
@@ -210,7 +336,7 @@ class IsaacPeople:
             self._motion_lib = str(path)
         return self._motion_lib
 
-    def _spawn_character(self, pid: str, char: ch.Character, x: float, y: float, yaw: float) -> str:
+    def _spawn_character(self, pid: str, char: ch.Character, x: float, y: float, yaw: float, z: float = 0.0) -> str:
         """Payload, then the Behavior System's APIs, the way IRA's CharacterLoader does it (spike S1 Q2)."""
         import NavSchema
         import omni.kit.commands
@@ -235,7 +361,7 @@ class IsaacPeople:
         rep.functional.modify.semantics([sr], {"class": "person"})
         xf = UsdGeom.Xformable(root)
         xf.ClearXformOpOrder()
-        xf.AddTranslateOp().Set(Gf.Vec3d(float(x), float(y), 0.0))
+        xf.AddTranslateOp().Set(Gf.Vec3d(float(x), float(y), float(z)))
         xf.AddRotateZOp().Set(math.degrees(float(yaw)))
         return str(sr.GetPath())
 
@@ -269,7 +395,8 @@ class IsaacPeople:
         bed = world.site.beds.get(p.bed)
         if bed is None:
             return
-        char = self.allow.choose(pid, "patient", p.inst.sex, p.inst.age)
+        char = self.choice.get(pid) or self.allow.choose(pid, "patient", p.inst.sex, p.inst.age)
+        self._flatten_bed(bed, world)
         if not self.stage.GetPrimAtPath(STATIC_ROOT):
             self.stage.DefinePrim(STATIC_ROOT, "Scope")
         path = Sdf.Path(STATIC_ROOT).AppendChild(pid)
@@ -286,15 +413,48 @@ class IsaacPeople:
             omni.kit.commands.execute("ApplyNavMeshAPICommand", prim_path=sr.GetPath(), api=NavSchema.NavMeshExcludeAPI)
         xf = UsdGeom.Xformable(root)
         xf.ClearXformOpOrder()
-        xf.AddTransformOp().Set(Gf.Matrix4d(*lying_matrix(bed)))
+        op = xf.AddTransformOp()
+        op.Set(Gf.Matrix4d(*lying_matrix(bed)))
+        mover = None
+        if bed.id in self._bed_paths:
+            mover = BedMover(self.stage, self._bed_paths[bed.id], bed.x, bed.y, bed.yaw)
+        self.props[pid] = LyingProp(self.stage, str(path), op, mover)
         self.static.append(pid)
+
+    def _flatten_bed(self, bed, world) -> None:
+        """Lay the raised head half of the bed mattress flat (a rigid lying body cannot follow its slope)."""
+        import numpy as np
+        from pxr import Gf, Usd, UsdGeom
+
+        if bed.id in self._flat_beds:
+            return
+        self._flat_beds.add(bed.id)
+        base = self.stage.GetPrimAtPath(f"/World/Building/Dressing/Ward_{bed.room}/Bed")
+        if not base:
+            log.warning("bed %s: no mattress prim to flatten", bed.id)
+            return
+        self._bed_paths[bed.id] = str(base.GetPath())
+        instances = [q.GetPath() for q in Usd.PrimRange(base, Usd.TraverseInstanceProxies()) if q.IsInstance()]
+        for path in instances:
+            self.stage.GetPrimAtPath(path).SetInstanceable(False)  # a private copy of the asset, so the mesh can be edited
+        head = np.array([math.cos(bed.yaw), math.sin(bed.yaw)])
+        for q in Usd.PrimRange(base):
+            if q.IsA(UsdGeom.Mesh) and q.GetName() == "Section1":
+                mesh = UsdGeom.Mesh(q)
+                pts = np.array(mesh.GetPointsAttr().Get(), dtype=float)
+                m = np.array(UsdGeom.Xformable(q).ComputeLocalToWorldTransform(Usd.TimeCode.Default()))
+                world_pts = np.c_[pts, np.ones(len(pts))] @ m
+                world_pts[:, 2] += flatten_dz(world_pts[:, :2], (bed.x, bed.y), head)
+                local = np.c_[world_pts[:, :3], np.ones(len(pts))] @ np.linalg.inv(m)
+                mesh.GetPointsAttr().Set([Gf.Vec3f(*map(float, r[:3])) for r in local])
+                log.info("bed %s: head section laid flat (%d points)", bed.id, len(pts))
 
     # ---- binding after play -------------------------------------------------------------------
     def _agent(self, pid: str):
         import omni.anim.behavior.core as bh
 
         a = bh.acquire_interface().get_agent(self.skelroots[pid])
-        return None if a is None else IraAgent(a, self.skelroots[pid])
+        return None if a is None else IraAgent(a, self.skelroots[pid], bedside=self.bedsides.get(pid))
 
     def bind(self, app, bodies, world: "StubWorld", settle_s: float = SETTLE_MAX_S, fps: int = 30) -> None:
         """Give every character's agent to a controller, start the people who begin seated and let them sit."""
@@ -312,8 +472,12 @@ class IsaacPeople:
         if missing:
             log.error("no Behavior agent for %s after %d frames; they stay kinematic", ", ".join(missing), k + 1)
         seated = []
+        bodies.props.update(self.props)
+        self._choose_bedsides(world)
         for pid, api in agents.items():
-            ctrl = pe.PersonController(pid, api)
+            ctrl = pe.PersonController(pid, api, bed_prop=self.props.get(pid))
+            if ctrl.in_bed:
+                api.hide()  # the posed prop is what is seen; the walking character appears when they get up
             bodies.add_controller(world, ctrl)
             ctrl.start(world)
             if world.people[pid].posture == "seated":
@@ -323,6 +487,28 @@ class IsaacPeople:
             if all(self._seated(world, bodies, pid) for pid in seated):
                 break
         log.info("people bound: %d agents, %d seated after %d frames", len(agents), len(seated), k + 1)
+
+    def _choose_bedsides(self, world: "StubWorld") -> None:
+        """Now that the NavMesh is baked: people in bed get up on a side from which they can walk to the corridor."""
+        if not self.bedsides:
+            return
+        import omni.anim.navigation.core as nav
+
+        nm = nav.acquire_interface().get_navmesh()
+        anchor = (world.site.resolve("ward_doors") or (11.2, 7.25))
+        for pid, (x, y, fx, fy) in list(self.bedsides.items()):
+            bed = world.site.beds.get(world.people[pid].bed or "")
+            if bed is None or nm is None:
+                continue
+
+            def reachable(px, py):
+                path = nm.query_shortest_path((anchor[0], anchor[1], 0.0), (px, py, 0.0))
+                pts = path.get_points() if path is not None and hasattr(path, "get_points") else path
+                return bool(pts) and math.hypot(pts[-1][0] - px, pts[-1][1] - py) < 0.4
+
+            nx, ny = pick_bedside(bed, world.site.grid.blocked, reachable)
+            self.bedsides[pid] = (nx, ny, fx, fy)
+            log.info("%s gets up at (%.2f, %.2f) beside bed %s", pid, nx, ny, bed.id)
 
     def _seated(self, world, bodies, pid: str) -> bool:
         api = bodies.controllers[pid].api
