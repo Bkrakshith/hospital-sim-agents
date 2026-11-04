@@ -136,18 +136,18 @@ class Site:
         occ = g.occ.tolist()
         h, w = g.occ.shape
         start = g.to_cell(e.x, e.y)
-        seen = np.zeros((h, w), dtype=bool)
+        seen = [[False] * w for _ in range(h)]  # plain lists: per-item numpy indexing here segfaulted once
         if not g.in_grid(*start) or occ[start[0]][start[1]]:
             return
-        seen[start] = True
+        seen[start[0]][start[1]] = True
         todo = [start]
         while todo:
             y, x = todo.pop()
             for ny, nx in ((y + 1, x), (y - 1, x), (y, x + 1), (y, x - 1)):
-                if 0 <= ny < h and 0 <= nx < w and not occ[ny][nx] and not seen[ny, nx]:
-                    seen[ny, nx] = True
+                if 0 <= ny < h and 0 <= nx < w and not occ[ny][nx] and not seen[ny][nx]:
+                    seen[ny][nx] = True
                     todo.append((ny, nx))
-        self.main = seen
+        self.main = np.array(seen, dtype=bool)
 
     def room_at(self, x: float, y: float) -> Optional[str]:
         hits = [r for r in self.rooms.values() if r.contains(x, y)]

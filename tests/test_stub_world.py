@@ -338,3 +338,108 @@ def test_spawned_instance_matches_the_world_spawn():
     assert inst(w, "N2").arrive_at_s == 2.0  # arrival time is when they appeared, not 0
     with pytest.raises(ValueError):
         spawned_instance(w.loaded, "P9", "companion")
+
+
+# ---- whole-hospital site --------------------------------------------------------------------
+import shutil
+
+import yaml
+
+from wardzero_agents.mind.prompts import persona_card, render_situation
+from wardzero_agents.contracts import Observation
+
+
+def site_world(tmp_path, patch=None, seed=7):
+    cfg = tmp_path / "config"
+    shutil.copytree(V1.parents[1], cfg)
+    p = cfg / "scenarios" / "waiting_area_v1.yaml"
+    data = yaml.safe_load(p.read_text())
+    data["cast"][0].pop("seat")
+    data["cast"][0]["start"] = {"bed": "B2"}
+    data.update({"static_patients": True, **(patch or {})})
+    p.write_text(yaml.safe_dump(data, sort_keys=False))
+    return StubWorld(load_scenario(p), seed)
+
+
+def run(w, secs):
+    t0 = w.last_t
+    for i in range(1, int(secs / 0.1) + 1):
+        w.step(t0 + i * 0.1)
+
+
+def test_walk_follows_route_not_straight_line():
+    w = make()
+    ls = w.loaded
+    w.apply_intent(I("walk_to", target="ward_doors"))
+    grid = ls.site.grid
+    seen = []
+    for i in range(1, 900):
+        w.step(i * 0.1)
+        s = st(w, "P5")
+        seen.append((s.x, s.y))
+        if s.state == "done":
+            break
+    assert st(w, "P5").state == "done"
+    assert all(not grid.blocked(x, y) for x, y in seen[45:])
+    dx, dy = ls.site.landmarks["ward_doors"].x, ls.site.landmarks["ward_doors"].y
+    assert math.hypot(st(w, "P5").x - dx, st(w, "P5").y - dy) < 0.5
+
+
+def test_unreachable_intent_fails():
+    w = make()
+    sealed = next((x, y) for x in range(-48, 40) for y in range(-24, 38)
+                  if not w.loaded.site.grid.blocked(x, y) and w.loaded.site.check_place(x, y) == "not reachable from the entrance")
+    w.apply_intent(I("walk_to", point=list(map(float, sealed))))
+    s = st(w, "P5")
+    assert s.state == "failed" and s.reason == "no route"
+
+
+def test_static_patients_fill_free_beds(tmp_path):
+    w = site_world(tmp_path)
+    statics = {pid: p for pid, p in w.people.items() if p.kind == "static"}
+    assert set(statics) == {"SB1", "SB3", "SB4", "SB5", "SB6"}
+    assert all(p.posture == "lying" for p in statics.values())
+    assert st(w, "P1").posture == "lying"
+    r = w.roster(0.0)
+    assert {e.id: e.role for e in r.people if e.id.startswith("S")} == {k: "patient_static" for k in statics}
+    # still when time passes, and not audible
+    run(w, 2.0)
+    assert all(st(w, k).posture == "lying" for k in statics)
+    ev = w.cough("P2", "severe", 0.0)
+    assert audio_route_none(w, ev, "SB3")
+
+
+def audio_route_none(w, ev, pid):
+    p = w.people[pid]
+    return route(ev, Pose(p.x, p.y, p.yaw), pid, 0.0, w.rng) is None or p.kind == "static"
+
+
+def test_static_patient_seen_in_bed(tmp_path):
+    w = site_world(tmp_path)
+    b = w.loaded.site.beds["B3"]
+    w.people["P1"].x, w.people["P1"].y = b.side_point("right")
+    w.people["P1"].yaw = math.atan2(b.y - w.people["P1"].y, b.x - w.people["P1"].x)
+    obs = w.observation("P1", 1.0, [])
+    sb3 = [s for s in obs.visible if s.id == "SB3"]
+    assert sb3 and sb3[0].detail == "a patient lying in bed B3"
+    # nobody sees through the wall from the lobby
+    w2 = make()
+    assert not [s for s in w2.observation("P1", 1.0, []).visible if s.id.startswith("S")]
+
+
+def test_static_patients_off(tmp_path):
+    w = site_world(tmp_path, {"static_patients": False})
+    assert not [p for p in w.people if p.startswith("S")]
+
+
+def test_prompt_says_hospital_and_room():
+    w = make()
+    ls = w.loaded
+    inst5 = inst(w, "P5")
+    obs = Observation(person="P5", t=1.0)
+    text = render_situation(inst5, obs, st(w, "P5"), [], [], 1.0, area=ls.area, site=ls.site)
+    assert "Main lobby and reception" in text or "A&E walk-in reception" in text
+    from wardzero_agents.mind.prompts import SYSTEM_FIXED
+    assert "a UK hospital" in SYSTEM_FIXED and "main-entrance waiting area" not in SYSTEM_FIXED
+    card = persona_card(inst5, ls.area, site=ls.site)
+    assert "Seat ids" in card and "AE_Triage" not in card

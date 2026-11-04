@@ -9,7 +9,8 @@ from typing import Any, Optional
 import yaml
 from pydantic import ValidationError
 
-from .models import AT_RE, CardDef, ModelRoles, Persona, PersonInstance, Scenario, Sign, Storyboard, WaitingArea
+from .models import (AT_RE, CardDef, Landmark, ModelRoles, Persona, PersonInstance, Scenario, Seat, Sign, Storyboard,
+                     WaitingArea)
 from .sampling import sample_instance
 
 
@@ -26,6 +27,7 @@ class LoadedScenario:
     storyboard: Storyboard
     deck: dict[str, CardDef]
     instances: list[PersonInstance]
+    site: Any = None  # wardzero_agents.site.Site
     root: Path = field(default_factory=Path)
     scenario_path: Path = field(default_factory=Path)
 
@@ -70,24 +72,53 @@ def load_scenario(path: "str | Path") -> LoadedScenario:
 
     raw_personas = (_read_yaml(root / "personas.yaml") or {}).get("personas", {})
     personas = {pid: _validate(Persona, p, root / "personas.yaml") for pid, p in raw_personas.items()}
-    area = _validate(WaitingArea, _read_yaml(root / f"{scenario.area}.yaml"), root / f"{scenario.area}.yaml")
+    site, area = _load_site_and_area(root, scenario)
     raw_signs = (_read_yaml(root / "signs.yaml") or {}).get("signs", [])
     signs = [_validate(Sign, s, root / "signs.yaml") for s in raw_signs]
 
     if scenario.models is None:
         scenario = scenario.model_copy(update={"models": default_models(scenario.provider)})
 
-    _cross_check(scenario, personas, area)
+    _cross_check(scenario, personas, area, site)
 
     deck = _load_deck(path.parent / scenario.deck)
     storyboard = _load_storyboard(path.parent / scenario.storyboard, deck, scenario)
 
     instances = [sample_instance(personas[c.persona], c, scenario.seed, i) for i, c in enumerate(scenario.cast)]
-    return LoadedScenario(scenario, personas, area, signs, storyboard, deck, instances, root, path)
+    return LoadedScenario(scenario, personas, area, signs, storyboard, deck, instances, site, root, path)
 
 
-def _cross_check(scenario: Scenario, personas: dict[str, Persona], area: WaitingArea) -> None:
+def _load_site_and_area(root: Path, scenario: Scenario):
+    """The site, with the scenario's optional area merged in, and the WaitingArea view of both.
+
+    The area's seats and landmarks are added to the site (the area wins on a clash). With no area
+    file the WaitingArea is built from the site's own seats and landmarks."""
+    from ..site import load_site
+    if scenario.site != "hospital":
+        raise ConfigError(f"site: unknown site '{scenario.site}' (only 'hospital' exists)")
+    try:
+        site = load_site(root)
+    except (FileNotFoundError, OSError, KeyError, ValueError) as e:
+        raise ConfigError(f"site: cannot load the site map: {e}") from None
+    if scenario.area is not None:
+        apath = root / f"{scenario.area}.yaml"
+        area = _validate(WaitingArea, _read_yaml(apath), apath)
+        from ..site import Landmark as SLandmark, Seat as SSeat
+        for lid, lm in area.landmarks.items():
+            site.landmarks[lid] = SLandmark(lid, lm.x, lm.y, lm.label)
+        for st in area.seats:
+            site.seats[st.id] = SSeat(st.id, st.x, st.y, st.yaw)
+        return site, area
+    area = WaitingArea(
+        seats=[Seat(id=q.id, x=q.x, y=q.y, yaw=q.yaw, row=q.id[:1]) for q in site.seats.values()],
+        landmarks={k: Landmark(x=m.x, y=m.y, label=m.label or k) for k, m in site.landmarks.items()},
+        entrance="entrance", exits=["entrance"], nurse_call_point="nurse_call_point")
+    return site, area
+
+
+def _cross_check(scenario: Scenario, personas: dict[str, Persona], area: WaitingArea, site=None) -> None:
     seat_ids = {s.id for s in area.seats}
+    occupied_beds: dict[str, str] = {}
     person_ids = [c.id for c in scenario.cast]
     taken: dict[str, str] = {}
     for i, c in enumerate(scenario.cast):
@@ -101,13 +132,31 @@ def _cross_check(scenario: Scenario, personas: dict[str, Persona], area: Waiting
             if c.seat in taken:
                 raise ConfigError(f"cast[{i}].seat: seat '{c.seat}' already taken by {taken[c.seat]}")
             taken[c.seat] = c.id
+        if c.start is not None:
+            if c.seat is not None:
+                raise ConfigError(f"cast[{i}].start: a person with a seat cannot also have a start")
+            if c.start.bed is not None:
+                bed = site.beds.get(c.start.bed) if site is not None else None
+                if bed is None:
+                    raise ConfigError(f"cast[{i}].start.bed: unknown bed '{c.start.bed}'")
+                if c.start.bed in occupied_beds:
+                    raise ConfigError(f"cast[{i}].start.bed: bed '{c.start.bed}' already has a patient "
+                                      f"({occupied_beds[c.start.bed]})")
+                occupied_beds[c.start.bed] = c.id
+            elif site is not None:
+                why = site.check_place(c.start.x, c.start.y, occupied_beds=tuple(occupied_beds))
+                if why is not None:
+                    raise ConfigError(f"cast[{i}].start: ({c.start.x}, {c.start.y}) is {why}")
         if c.companion_of is not None and c.companion_of not in person_ids:
             raise ConfigError(f"cast[{i}].companion_of: unknown person '{c.companion_of}'")
         if c.entrance is not None and c.entrance not in area.landmarks:
             raise ConfigError(f"cast[{i}].entrance: unknown landmark '{c.entrance}'")
     for name in [area.entrance, area.nurse_call_point, *area.exits]:
         if name not in area.landmarks:
-            raise ConfigError(f"{scenario.area}: unknown landmark '{name}'")
+            raise ConfigError(f"{scenario.area or 'site'}: unknown landmark '{name}'")
+    for k, name in enumerate(scenario.known_places):
+        if site is not None and site.resolve(name) is None:
+            raise ConfigError(f"known_places[{k}]: unknown place '{name}'")
 
 
 def _load_deck(path: Path) -> dict[str, CardDef]:
@@ -162,7 +211,7 @@ def _load_storyboard(path: Path, deck: dict[str, CardDef], scenario: Scenario) -
     return sb
 
 
-POSTURES = ("seated", "standing", "walking", "fallen", "gone")
+POSTURES = ("seated", "standing", "walking", "lying", "fallen", "gone")
 _KEY_RE = re.compile(r"\{([^{}]*)\}")
 
 

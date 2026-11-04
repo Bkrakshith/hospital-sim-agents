@@ -553,3 +553,12 @@ def test_key_check_covers_every_model_in_use(monkeypatch):
             raise keys.ModelUnavailable(f"Model {model} is not available to this claude account.")
     monkeypatch.setattr(keys, "check", reject_summary)
     assert _key_check(loaded) == 2
+
+
+def test_static_patients_get_no_mind(tmp_path):
+    s, _ = make(tmp_path)
+    people = [RosterEntry(id=i.person_id, persona=i.persona_id, display_name=i.display_name)
+              for i in s.loaded.instances]
+    sb3 = RosterEntry(id="SB3", persona="static_patient", display_name="Patient in bed B3", role="patient_static")
+    assert s.on_roster(Roster(t=1, people=people + [sb3])) == []
+    assert "SB3" not in s.minds

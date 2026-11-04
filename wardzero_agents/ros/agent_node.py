@@ -126,8 +126,8 @@ class AgentService:
         """Create minds for people we have not met. Returns their ids."""
         new = []
         for entry in roster.people:
-            if entry.id in self.people:
-                continue
+            if entry.id in self.people or entry.role == "patient_static":
+                continue  # static bed patients have no mind
             try:
                 inst = spawned_instance(self.loaded, entry.id, entry.persona, roster.t)
             except ValueError as exc:

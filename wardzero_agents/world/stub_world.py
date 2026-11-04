@@ -34,6 +34,7 @@ from wardzero_agents.contracts import (
     Status,
     WorldEvent,
 )
+from wardzero_agents.site import Router
 from wardzero_agents.world import audio
 from wardzero_agents.world.oracle import Entity, Pose, visible
 
@@ -45,6 +46,11 @@ ROBOT_Z = 1.25
 OVERLAYS = ("cough", "fidget", "look_at")
 INSTANT = ("sit_idle", "use_phone", "wait_standing", "read_sign", "gesture")
 EPS = 1e-9
+ARRIVE_M = 0.05
+REROUTE_M = 0.5  # an approach re-plans its route once the person it follows has moved this far
+LOS_STEP_M = 0.1
+STATIC_ROLE = "patient_static"
+STATIC_PERSONA = "static_patient"
 
 log = logging.getLogger(__name__)
 
@@ -74,6 +80,9 @@ class _Phase:
     dest: Optional[tuple[float, float]] = None  # walk destination (fixed)
     follow: Optional[str] = None  # walk: id of a person or "g1" to approach
     speed: float = 1.0
+    path: list = field(default_factory=list)  # walk: waypoints from the Router
+    i: int = 0  # index of the waypoint being walked to
+    goal: Optional[tuple[float, float]] = None  # the point the path was routed to
 
 
 @dataclass
@@ -94,6 +103,8 @@ class _Person:
     total_est: float = 1.0
     leaving: bool = False
     final_yaw: Optional[float] = None
+    kind: str = "mind"  # "static" for a patient lying in a bed with no mind
+    bed: Optional[str] = None
 
 
 class StubWorld:
@@ -105,20 +116,46 @@ class StubWorld:
         self._wet = 0
         self._spawned = 0
         self._omni: set[str] = set()
-        self._seats = {s.id: s for s in loaded.area.seats}
+        self.site = loaded.site
+        self.router = Router(self.site.grid)
+        self._sight = self._wall_cells()
+        self._seats = dict(self.site.seats)
         r = loaded.scenario.robot
         self.robot_pose = Pose(r.x, r.y, r.yaw)
         self.people: dict[str, _Person] = {}
+        taken_beds: set[str] = set()
         for inst in loaded.instances:
             if inst.seat is not None:
                 s = self._seats[inst.seat]
                 self.people[inst.person_id] = _Person(inst, s.x, s.y, s.yaw, "seated", seat=inst.seat)
+            elif inst.start is not None and inst.start.bed is not None:
+                b = self.site.beds[inst.start.bed]
+                taken_beds.add(b.id)
+                self.people[inst.person_id] = _Person(inst, b.x, b.y, b.yaw, "lying", bed=b.id)
+            elif inst.start is not None:
+                self.people[inst.person_id] = _Person(inst, inst.start.x, inst.start.y, inst.start.yaw, "standing")
             else:
                 self.people[inst.person_id] = self._at_entrance(inst)
+        if loaded.scenario.static_patients:
+            for b in self.site.beds.values():
+                if re.fullmatch(r"B[1-9][0-9]*", b.id) and b.id not in taken_beds:
+                    self.people[f"S{b.id}"] = self._static_patient(b)
 
     # ---- helpers -------------------------------------------------------------------------
+    def _static_patient(self, bed) -> _Person:
+        """A patient lying in a bed: no mind, a fixed status, seen but never heard."""
+        sid = f"S{bed.id}"
+        inst = PersonInstance(
+            person_id=sid, persona_id=STATIC_PERSONA, seed=0, memory_key=sid,
+            display_name=f"Patient in bed {bed.id}", age=70, sex="unknown", cough_per_hour=0.0,
+            cough_severity="mild", breathless=False, walk_speed=0.0, sit_to_stand_s=0.0, hearing_loss_db=0.0,
+            patience_min=0.0, anxiety=0.0, sociability=0.0, phone_use=0.0, attitude_to_robots="neutral",
+            english_fluency="native", mobility_aid="none", goals=[], backstory="", condition="in bed",
+            role="patient", seat=None, companion_of=None, arrive_at_s=0.0, entrance=None)
+        return _Person(inst, bed.x, bed.y, bed.yaw, "lying", bed=bed.id, kind="static")
+
     def _at_entrance(self, inst: PersonInstance) -> _Person:
-        lm = self.loaded.area.landmarks[inst.entrance or self.loaded.area.entrance]
+        lm = self.site.landmarks[inst.entrance or self.loaded.area.entrance]
         return _Person(inst, lm.x, lm.y, 0.0, "standing")
 
     def _get(self, person: str) -> _Person:
@@ -138,12 +175,9 @@ class StubWorld:
     def _resolve_place(self, target: Optional[str]) -> Optional[tuple[float, float]]:
         if target is None:
             return None
-        lm = self.loaded.area.landmarks.get(target)
-        if lm is not None:
-            return lm.x, lm.y
-        seat = self._seats.get(target)
-        if seat is not None:
-            return seat.x, seat.y
+        place = self.site.resolve(target)
+        if place is not None:
+            return place
         for s in self.signs:
             if s.id == target:
                 return s.x, s.y
@@ -204,7 +238,7 @@ class StubWorld:
             p.posture = "standing"
 
     def _stand_phase(self, p: _Person) -> list[_Phase]:
-        if p.posture == "seated":
+        if p.posture in ("seated", "lying"):
             # the seat is released when the stand phase completes (see _advance), so an
             # interrupted stand-up leaves the person seated and the seat taken
             return [_Phase("stand", left=p.inst.sit_to_stand_s)]
@@ -216,9 +250,19 @@ class StubWorld:
         if not plan:
             self._finish(p)
 
+    def _route(self, p: _Person, goal: tuple[float, float], speed: float,
+               follow: Optional[str] = None) -> Optional[_Phase]:
+        path = self.router.route((p.x, p.y), goal)
+        if path is None:
+            return None
+        return _Phase("walk", dest=None if follow else goal, follow=follow, speed=speed, path=path, i=1, goal=goal)
+
     def apply_intent(self, intent: Intent) -> list[AudioEvent]:
         p = self._get(intent.person)
         if p.posture == "gone":
+            return []
+        if p.kind == "static":
+            self._fail(p, intent, "patient is in bed")
             return []
         kind = intent.kind
         if kind in OVERLAYS:
@@ -248,15 +292,23 @@ class StubWorld:
             if dest is None:
                 self._fail(p, intent, "unknown target")
                 return []
+            walk = self._route(p, dest, speed)
+            if walk is None:
+                self._fail(p, intent, "no route")
+                return []
             self._begin(p, intent)
-            self._start(p, self._stand_phase(p) + [_Phase("walk", dest=dest, speed=speed)])
+            self._start(p, self._stand_phase(p) + [walk])
         elif kind == "approach":
             tgt = intent.target
             if tgt is None or tgt == intent.person or self._pos(tgt) is None:
                 self._fail(p, intent, "unknown target")
                 return []
+            walk = self._route(p, self._walk_dest(p, _Phase("walk", follow=tgt)), speed, follow=tgt)
+            if walk is None:
+                self._fail(p, intent, "no route")
+                return []
             self._begin(p, intent)
-            self._start(p, self._stand_phase(p) + [_Phase("walk", follow=tgt, speed=speed)])
+            self._start(p, self._stand_phase(p) + [walk])
         elif kind == "sit_down":
             seat = self._seats.get(intent.target or "")
             if seat is None:
@@ -269,22 +321,26 @@ class StubWorld:
             if self._seat_taken(seat.id, intent.person):
                 self._fail(p, intent, "seat occupied")
                 return []
+            walk = self._route(p, (seat.x, seat.y), speed)
+            if walk is None:
+                self._fail(p, intent, "no route")
+                return []
             self._begin(p, intent)
             p.claim = seat.id
-            self._start(
-                p,
-                self._stand_phase(p)
-                + [_Phase("walk", dest=(seat.x, seat.y), speed=speed), _Phase("sit", left=p.inst.sit_to_stand_s)],
-            )
+            self._start(p, self._stand_phase(p) + [walk, _Phase("sit", left=p.inst.sit_to_stand_s)])
         elif kind == "leave":
             name = intent.target or self.loaded.area.entrance
             dest = self._resolve_place(name)
             if dest is None:
                 self._fail(p, intent, "unknown target")
                 return []
+            walk = self._route(p, dest, speed)
+            if walk is None:
+                self._fail(p, intent, "no route")
+                return []
             self._begin(p, intent)
             p.leaving = True
-            self._start(p, self._stand_phase(p) + [_Phase("walk", dest=dest, speed=speed)])
+            self._start(p, self._stand_phase(p) + [walk])
         return []
 
     # ---- kinematics ----------------------------------------------------------------------
@@ -304,9 +360,11 @@ class StubWorld:
         total = 0.0
         for ph in p.plan:
             if ph.kind == "walk":
-                dest = self._walk_dest(p, ph)
-                if dest is not None:
-                    total += math.hypot(dest[0] - p.x, dest[1] - p.y) / max(ph.speed, 1e-6)
+                pts = [(p.x, p.y)] + list(ph.path[ph.i:])
+                if ph.follow is not None:
+                    dest = self._walk_dest(p, ph)
+                    pts = pts + ([dest] if dest is not None and ph.i >= len(ph.path) else [])
+                total += sum(math.hypot(b[0] - a[0], b[1] - a[1]) for a, b in zip(pts, pts[1:])) / max(ph.speed, 1e-6)
             else:
                 total += ph.left
         return total
@@ -335,25 +393,53 @@ class StubWorld:
                     if ph.kind == "stand":
                         p.posture = "standing"
                         p.seat = None
+                        p.bed = None
                     else:
                         seat = self._seats[p.claim]
                         p.x, p.y, p.yaw, p.posture = seat.x, seat.y, seat.yaw, "seated"
                 continue
-            dest = self._walk_dest(p, ph)
-            if dest is None:
-                p.plan = []
-                p.claim = None
-                p.state, p.reason = "failed", "target gone"
-                p.posture = "standing"
-                return
-            d = math.hypot(dest[0] - p.x, dest[1] - p.y)
-            heading = math.atan2(dest[1] - p.y, dest[0] - p.x) if d > EPS else p.yaw
+            if ph.follow is not None:
+                dest = self._walk_dest(p, ph)
+                if dest is None:
+                    p.plan = []
+                    p.claim = None
+                    p.state, p.reason = "failed", "target gone"
+                    p.posture = "standing"
+                    return
+                if ph.goal is None or math.hypot(dest[0] - ph.goal[0], dest[1] - ph.goal[1]) > REROUTE_M:
+                    path = self.router.route((p.x, p.y), dest)
+                    if path is None:
+                        p.plan = []
+                        p.claim = None
+                        p.state, p.reason = "failed", "no route"
+                        p.posture = "standing"
+                        return
+                    ph.path, ph.i, ph.goal = path, 1, dest
+            if ph.i >= len(ph.path):
+                wp = ph.goal if ph.goal is not None else (p.x, p.y)
+                last = True
+            else:
+                wp = ph.path[ph.i]
+                last = ph.i == len(ph.path) - 1
+            d = math.hypot(wp[0] - p.x, wp[1] - p.y)
             if d > 1e-6:
-                p.yaw = heading
+                p.yaw = math.atan2(wp[1] - p.y, wp[0] - p.x)
             reach = ph.speed * rem
             if reach >= d:
-                p.x, p.y = dest
+                p.x, p.y = wp
                 rem -= d / max(ph.speed, 1e-6)
+                if not last:
+                    ph.i += 1
+                    p.posture = "walking"
+                    continue
+                if ph.follow is not None:  # the person followed may have moved on while we walked
+                    nd = self._walk_dest(p, ph)
+                    if nd is not None and math.hypot(nd[0] - p.x, nd[1] - p.y) > ARRIVE_M:
+                        path = self.router.route((p.x, p.y), nd)
+                        if path is not None and math.hypot(path[-1][0] - p.x, path[-1][1] - p.y) > ARRIVE_M:
+                            ph.path, ph.i, ph.goal = path, 1, nd
+                            p.posture = "walking"
+                            continue
                 p.plan.pop(0)
                 if ph.follow is not None:
                     tp = self._pos(ph.follow)
@@ -361,8 +447,8 @@ class StubWorld:
                         p.yaw = math.atan2(tp[1] - p.y, tp[0] - p.x)
                 p.posture = "standing"
             else:
-                p.x += (dest[0] - p.x) / d * reach
-                p.y += (dest[1] - p.y) / d * reach
+                p.x += (wp[0] - p.x) / d * reach
+                p.y += (wp[1] - p.y) / d * reach
                 p.posture = "walking"
                 rem = 0.0
         if p.state == "running":
@@ -379,6 +465,30 @@ class StubWorld:
         for pid, p in self.people.items():
             if p.plan:
                 self._advance(pid, p, dt)
+
+    def _wall_cells(self) -> np.ndarray:
+        """Cells the building's wall segments pass through (doorways are already gaps in them).
+        Furniture and beds block walking but not sight, so sight uses walls only."""
+        g = self.site.grid
+        cells = np.zeros(g.occ.shape, dtype=bool)
+        for x0, y0, x1, y1 in self.site.walls:
+            n = max(1, int(math.hypot(x1 - x0, y1 - y0) / (g.res / 4)))
+            for k in range(n + 1):
+                iy, ix = g.to_cell(x0 + (x1 - x0) * k / n, y0 + (y1 - y0) * k / n)
+                if g.in_grid(iy, ix):
+                    cells[iy, ix] = True
+        return cells
+
+    def _los(self, a, b) -> bool:
+        """True when no wall lies between a and b."""
+        g = self.site.grid
+        d = math.hypot(b[0] - a[0], b[1] - a[1])
+        for k in range(1, int(d / LOS_STEP_M)):
+            f = k * LOS_STEP_M / d
+            iy, ix = g.to_cell(a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f)
+            if g.in_grid(iy, ix) and self._sight[iy, ix]:
+                return False
+        return True
 
     # ---- outputs -------------------------------------------------------------------------
     def statuses(self) -> list[Status]:
@@ -398,6 +508,7 @@ class StubWorld:
                 RosterEntry(
                     id=pid, persona=p.inst.persona_id, display_name=p.inst.display_name,
                     seat=p.inst.seat, companion_of=p.inst.companion_of,
+                    role=STATIC_ROLE if p.kind == "static" else None,
                 )
                 for pid, p in self._present()
             ],
@@ -407,8 +518,11 @@ class StubWorld:
         p = self._get(person)
         if p.posture == "gone":
             return Observation(person=person, t=t)
+        if p.kind == "static":
+            return Observation(person=person, t=t)
         me = Pose(p.x, p.y, p.yaw)
-        ents = [Entity("person", pid, q.x, q.y, q.posture) for pid, q in self._present() if pid != person]
+        ents = [Entity("person", pid, q.x, q.y, q.posture) for pid, q in self._present()
+                if pid != person and q.kind != "static"]
         if self.loaded.scenario.robot.enabled:
             ents.append(Entity("robot", ROBOT_ID, self.robot_pose.x, self.robot_pose.y, None))
         # wet-floor signs are readable from any side: face them towards this viewer
@@ -416,13 +530,17 @@ class StubWorld:
             s.model_copy(update={"facing_yaw": math.atan2(p.y - s.y, p.x - s.x)}) if s.id in self._omni else s
             for s in self.signs
         ]
-        seen = visible(me, ents, signs)
+        los = self._los
+        seen = visible(me, ents, signs, los=los)
         seats = [
             Entity("seat", sid, s.x, s.y, "taken" if self._seat_taken(sid, "") else "free")
             for sid, s in self._seats.items()
             if sid not in (p.seat, p.claim)  # the viewer's own seat is not an observation
         ]
-        seen += visible(me, seats, [], range_m=SEAT_VIEW_RANGE_M)
+        seen += visible(me, seats, [], range_m=SEAT_VIEW_RANGE_M, los=los)
+        beds = [Entity("person", pid, q.x, q.y, f"a patient lying in bed {q.bed}")
+                for pid, q in self.people.items() if q.kind == "static"]
+        seen += visible(me, beds, [], los=self._los)
         heard = []
         for ev in recent_audio:
             h = audio.route(ev, me, person, p.inst.hearing_loss_db, self.rng)

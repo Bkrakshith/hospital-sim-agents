@@ -55,10 +55,19 @@ class Persona(_Model):
     sources: list[str]
 
 
+class StartPose(_Model):
+    """A non-seated start. With bed set the person starts lying in that bed (x, y, yaw are the bed's)."""
+    x: float = 0.0
+    y: float = 0.0
+    yaw: float = 0.0
+    bed: Optional[str] = None
+
+
 class CastEntry(_Model):
     id: str
     persona: str
     seat: Optional[str] = None
+    start: Optional[StartPose] = None
     arrive_at_s: float = Field(default=0, ge=0)
     entrance: Optional[str] = None
     companion_of: Optional[str] = None
@@ -86,7 +95,10 @@ class RobotConfig(_Model):
 
 class Scenario(_Model):
     id: str
-    area: str
+    site: str = "hospital"
+    area: Optional[str] = None
+    static_patients: bool = True
+    known_places: list[str] = Field(default_factory=list)
     duration_min: float = Field(gt=0, le=60)
     seed: int
     perception: Literal["oracle", "full"] = "oracle"
@@ -164,6 +176,7 @@ class PersonInstance(_Model):
     companion_of: Optional[str]
     arrive_at_s: float
     entrance: Optional[str]
+    start: Optional[StartPose] = None
 
 
 AT_RE = re.compile(r"^t\+\d{2}:\d{2}$")

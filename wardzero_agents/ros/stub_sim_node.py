@@ -126,8 +126,8 @@ class StubSimService:
         for ev in events:
             heard: dict[str, Heard] = {}
             for pid, p in self.world.people.items():
-                if p.posture == "gone":
-                    continue
+                if p.posture == "gone" or p.kind == "static":
+                    continue  # patients lying in beds hear nothing
                 h = audio.route(ev, Pose(p.x, p.y, p.yaw), pid, p.inst.hearing_loss_db, self.world.rng)
                 if h is not None:
                     heard[pid] = h
@@ -230,7 +230,7 @@ class StubSimService:
             self._recent.popleft()
         if self._obs_now or self.t >= self._next_obs:
             out.observations = [self._observation(pid) for pid, p in self.world.people.items()
-                                if p.posture != "gone"]
+                                if p.posture != "gone" and p.kind != "static"]
             self._obs_now = False
             self._next_obs = self.t + OBS_PERIOD_S
 

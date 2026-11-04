@@ -77,4 +77,5 @@ def sample_instance(persona: Persona, cast: CastEntry, scenario_seed: int, index
         companion_of=cast.companion_of,
         arrive_at_s=cast.arrive_at_s,
         entrance=cast.entrance,
+        start=cast.start,
     )

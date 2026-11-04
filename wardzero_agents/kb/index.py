@@ -121,11 +121,11 @@ class KnowledgeBase:
 
 def _persona_text(instance: "PersonInstance", loaded: "LoadedScenario") -> str:
     """The same persona card the mind is given."""
-    return persona_card(instance, loaded.area)
+    return persona_card(instance, loaded.area, loaded.site, loaded.scenario.known_places)
 
 
 def _area_text(loaded: "LoadedScenario") -> str:
-    lines = ["Waiting area landmarks (id, label, x, y):"]
+    lines = ["Hospital landmarks (id, label, x, y):"]
     for lid, lm in loaded.area.landmarks.items():
         lines.append(f"- {lid}: {lm.label} at ({lm.x}, {lm.y})")
     lines.append("Signs:")
@@ -156,7 +156,7 @@ def _default_chunks(
         chunks.append(Chunk(f"<persona>#{i}", "<persona>", [inst.person_id], text, []))
     area = _area_text(loaded)
     synthetic.append(area)
-    chunks.append(Chunk("<area>#0", "<area>", ["waiting area"], area, []))
+    chunks.append(Chunk("<area>#0", "<area>", ["hospital", "waiting area"], area, []))
     return chunks, _hash_sources(pairs, synthetic, max_chars)
 
 

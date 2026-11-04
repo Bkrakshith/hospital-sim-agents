@@ -138,7 +138,7 @@ def _event_line(t: float, frame: dict, decision: Optional[dict], error: Optional
 def build_graph(deps: "MindDeps", checkpointer: Any = None):
     """Compile the mind graph for one person. thread_id in the run config must be the person id."""
     inst, loaded = deps.inst, deps.loaded
-    card = persona_card(inst, loaded.area)
+    card = persona_card(inst, loaded.area, loaded.site, loaded.scenario.known_places)
     person = inst.person_id
     n_persona = sum(1 for c in deps.kb.chunks if c.file == "<persona>") if deps.kb is not None else 0
 
@@ -154,7 +154,7 @@ def build_graph(deps: "MindDeps", checkpointer: Any = None):
         patience = state.get("patience_left", 1.0)
         situation = render_situation(inst, obs, status, state["triggers"], nudges, frame["clock_min"],
                                      mood=mood, patience_left=patience, current_intent=current,
-                                     area=loaded.area)
+                                     area=loaded.area, site=loaded.site)
         return {"situation": situation, "current_intent": current, "mood": mood,
                 "patience_left": patience, "short_term": state.get("short_term", []),
                 "last_summary_t": state.get("last_summary_t", state["t"]),

@@ -99,6 +99,7 @@ class DirectorService:
         self.paused = False
         self.stopped = False
         self.roster = Roster(t=0.0, people=[])
+        self.static_ids: set[str] = set()
         self.statuses: dict[str, Status] = {}
         self.seated_since: dict[str, float] = {}
         self.minds: dict[str, dict] = {}
@@ -114,6 +115,7 @@ class DirectorService:
     # ---- inputs --------------------------------------------------------------------------
     def on_roster(self, roster: Roster) -> None:
         self.roster = roster
+        self.static_ids = {p.id for p in roster.people if p.role == "patient_static"}
 
     def on_status(self, st: Status) -> None:
         prev = self.statuses.get(st.person)
@@ -171,7 +173,8 @@ class DirectorService:
 
     # ---- tick ----------------------------------------------------------------------------
     def view(self, t: float) -> WorldView:
-        present = {pid for pid, st in self.statuses.items() if st.posture != "gone"}
+        present = {pid for pid, st in self.statuses.items()
+                   if st.posture != "gone" and pid not in self.static_ids}
         return WorldView(t=t, statuses=dict(self.statuses), robot_xy=(self.robot.x, self.robot.y),
                          seated_since=dict(self.seated_since), present=present)
 

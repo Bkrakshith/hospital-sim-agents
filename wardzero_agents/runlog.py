@@ -68,7 +68,9 @@ class RunLog:
         sc = loaded.scenario
         spath = Path(loaded.scenario_path)
         storyboard, deck = spath.parent / sc.storyboard, spath.parent / sc.deck
-        plain = [loaded.root / "personas.yaml", loaded.root / f"{sc.area}.yaml", loaded.root / "signs.yaml"]
+        plain = [loaded.root / "personas.yaml", loaded.root / "signs.yaml"]
+        if sc.area:
+            plain.append(loaded.root / f"{sc.area}.yaml")
         taken = {spath.name, *(p.name for p in plain)}
         names = {}
         for kind, src in (("storyboard", storyboard), ("deck", deck)):
@@ -79,6 +81,9 @@ class RunLog:
             dst = dest / name
             if src.is_file() and not (dst.exists() and os.path.samefile(src, dst)):
                 shutil.copyfile(src, dst)
+        site_src, site_dst = loaded.root / "site", dest / "site"
+        if site_src.is_dir() and not (site_dst.exists() and os.path.samefile(site_src, site_dst)):
+            shutil.copytree(site_src, site_dst, dirs_exist_ok=True)
         raw = yaml.safe_load(spath.read_text(encoding="utf-8"))
         want = dict(raw)
         want.update(storyboard=names["storyboard"], deck=names["deck"])

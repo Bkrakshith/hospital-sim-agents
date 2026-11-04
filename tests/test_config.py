@@ -118,3 +118,24 @@ def test_first_name_matches_sampled_sex_and_is_deterministic():
         assert first in (FEMALE_NAMES if a.sex == "female" else MALE_NAMES)
         seen.add(a.sex)
     assert seen == {"female", "male"}
+
+
+def test_waiting_area_v1_unchanged():
+    ls = load_scenario(V1)
+    assert ls.scenario.site == "hospital" and ls.scenario.static_patients is False
+    assert ls.site is not None and "entrance" in ls.site.landmarks
+    ids = {s.id for s in ls.area.seats}
+    assert ids == {f"{r}{n}" for r in "ABCD" for n in (1, 2, 3)}
+    assert {"A1", "D3"} <= ids and {"A1", "D3"} <= set(ls.site.seats)
+    assert {i.person_id: i.seat for i in ls.instances} == {"P1": "B2", "P2": "C1", "P3": "C2", "P4": "A3", "P5": "D2"}
+
+
+def test_start_bed_and_known_places_checked(tmp_path):
+    ok = write_patched(tmp_path, V1, {"cast.0.seat": None, "cast.0.start": {"bed": "B2"}, "known_places": ["ward_doors"]})
+    assert load_scenario(ok).instances[0].start.bed == "B2"
+    with pytest.raises(ConfigError, match="unknown bed"):
+        load_scenario(write_patched(tmp_path / "a", V1, {"cast.0.seat": None, "cast.0.start": {"bed": "B9"}}))
+    with pytest.raises(ConfigError, match="inside a wall"):
+        load_scenario(write_patched(tmp_path / "b", V1, {"cast.0.seat": None, "cast.0.start": {"x": 14.105, "y": 2.4, "yaw": 0}}))
+    with pytest.raises(ConfigError, match="known_places"):
+        load_scenario(write_patched(tmp_path / "c", V1, {"known_places": ["nowhere"]}))

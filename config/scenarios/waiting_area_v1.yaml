@@ -1,5 +1,7 @@
 id: waiting_area_v1
 area: waiting_area
+static_patients: false
+known_places: [entrance, clinic_corridor, ward_doors, toilets, nurse_call_point, reception_g1, reception_front]
 duration_min: 60
 seed: 7
 provider: claude

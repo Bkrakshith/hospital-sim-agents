@@ -158,7 +158,7 @@ def test_schema_enums():
 
 def test_system_fixed_instructions():
     s = SYSTEM_FIXED.lower()
-    for phrase in ("uk hospital", "main-entrance", "waiting area", "british english", "in character"):
+    for phrase in ("a uk hospital", "british english", "in character"):
         assert phrase in s
 
 

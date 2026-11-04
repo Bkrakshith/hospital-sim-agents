@@ -33,11 +33,11 @@ _INTENT_HELP = {
     "talk": "say something to someone (text needed)",
     "gesture": "wave, point or nod",
     "cough": "cough",
-    "leave": "leave the waiting area (target defaults to the entrance)",
+    "leave": "leave the hospital (target defaults to the entrance)",
 }
 
 SYSTEM_FIXED = (
-    "You are one person in a UK hospital main-entrance waiting area. Each turn you are given your "
+    "You are one person in a UK hospital. Each turn you are given your "
     "persona card and the situation you are in right now, and you choose what you do next.\n"
     "Rules:\n"
     "- Choose only from the listed intents:\n"
@@ -46,7 +46,7 @@ SYSTEM_FIXED = (
     "or g1 for the reception robot. Use null when no target is needed.\n"
     "- Stay in character. Act as this person would, with their health, mood, patience and goals.\n"
     "- Say short lines in British English, one or two sentences at most, or say nothing (null). "
-    "Most of the time people in a waiting room say nothing.\n"
+    "Most of the time people in a hospital say nothing.\n"
     "- You only know what the situation tells you. Do not invent things you have not seen, heard "
     "or remembered.\n"
     "- Never quote statistics, studies or figures. Speak as an ordinary member of the public.\n"
@@ -58,7 +58,7 @@ SYSTEM_FIXED = (
 )
 
 SUMMARY_FIXED = (
-    "You keep the long-term memory of one person in a UK hospital waiting area. Given their "
+    "You keep the long-term memory of one person in a UK hospital. Given their "
     f"recent events, write at most {MAX_MEMORIES} short first-person memories worth keeping for a later "
     "visit (what they learned, how they were treated, what the robot did). importance is between "
     "0 and 1. Return an empty list if nothing is worth keeping."
@@ -116,7 +116,7 @@ def _level(x: float) -> str:
     return "low" if x < 0.35 else "moderate" if x < 0.65 else "high"
 
 
-def persona_card(inst: PersonInstance, area: WaitingArea) -> str:
+def persona_card(inst: PersonInstance, area: WaitingArea, site=None, known_places=()) -> str:
     """Stable description of one person and the places they can name. It is the cached prompt block."""
     lines = [
         f"You are {inst.display_name} (person id {inst.person_id}), {inst.age}, {inst.sex}.",
@@ -147,11 +147,79 @@ def persona_card(inst: PersonInstance, area: WaitingArea) -> str:
     if inst.companion_of:
         lines.append(f"You are here with {inst.companion_of} and are looking after them.")
     lines.append(f"You arrived and sat at seat {inst.seat}." if inst.seat else "You arrived without a seat.")
-    lines.append("Places in the waiting area (id: description):")
-    lines += [f"- {lid}: {lm.label}" for lid, lm in area.landmarks.items()]
-    lines.append("Seat ids: " + ", ".join(s.id for s in area.seats) + ".")
+    if site is None:
+        lines.append("Places in the waiting area (id: description):")
+        lines += [f"- {lid}: {lm.label}" for lid, lm in area.landmarks.items()]
+        lines.append("Seat ids: " + ", ".join(s.id for s in area.seats) + ".")
+    else:
+        lines += _known_places(inst, site, known_places)
     lines.append("The reception robot is g1.")
     return "\n".join(lines)
+
+
+def _start_xy(inst: PersonInstance, site, default_entrance: str = "entrance"):
+    if inst.seat is not None and inst.seat in site.seats:
+        s = site.seats[inst.seat]
+        return s.x, s.y
+    if inst.start is not None:
+        if inst.start.bed is not None and inst.start.bed in site.beds:
+            b = site.beds[inst.start.bed]
+            return b.x, b.y
+        return inst.start.x, inst.start.y
+    lm = site.landmarks.get(inst.entrance or default_entrance)
+    return (lm.x, lm.y) if lm else None
+
+
+def _neighbours(site, rid: str) -> list[str]:
+    """Rooms whose bounding box touches this room's (within half a metre)."""
+    def box(r):
+        xs, ys = [q[0] for q in r.poly], [q[1] for q in r.poly]
+        return min(xs), max(xs), min(ys), max(ys)
+    x0, x1, y0, y1 = box(site.rooms[rid])
+    out = []
+    for oid, o in site.rooms.items():
+        if oid == rid:
+            continue
+        a0, a1, b0, b1 = box(o)
+        if a0 <= x1 + 0.5 and a1 >= x0 - 0.5 and b0 <= y1 + 0.5 and b1 >= y0 - 0.5:
+            out.append(oid)
+    return out
+
+
+def _known_places(inst: PersonInstance, site, known_places) -> list[str]:
+    """The places this person can name: landmarks of the room they start in, the rooms next to it,
+    and the scenario's known_places. Not every id on the site."""
+    xy = _start_xy(inst, site)
+    here = site.room_at(*xy) if xy else None
+    rooms = [here] if here else []
+    rooms += _neighbours(site, here) if here else []
+    lines = ["Places you know (id: description):"]
+    seen: set[str] = set()
+    for lid, lm in site.landmarks.items():
+        if lid.endswith("_centre") or lid in seen:
+            continue
+        if here and site.room_at(lm.x, lm.y) == here:
+            lines.append(f"- {lid}: {lm.label}")
+            seen.add(lid)
+    for rid in rooms:
+        if rid not in seen:
+            r = site.rooms[rid]
+            lines.append(f"- {rid}: {r.label}" + (" (where you are)" if rid == here else ""))
+            seen.add(rid)
+    for name in known_places:
+        if name in seen:
+            continue
+        key = name.partition(":")[2] if ":" in name else name
+        lm = site.landmarks.get(key)
+        r = site.rooms.get(key)
+        label = lm.label if lm and not name.startswith("room:") else (r.label if r else key)
+        lines.append(f"- {key}: {label}")
+        seen.add(name)
+        seen.add(key)
+    seats = [q.id for q in site.seats.values() if site.room_at(q.x, q.y) in rooms]
+    if seats:
+        lines.append("Seat ids: " + ", ".join(seats) + ".")
+    return lines
 
 
 def _direction(bearing: float) -> str:
@@ -196,7 +264,16 @@ def _heard_line(h: Heard) -> str:
     return "An alarm is sounding."
 
 
-def _where(status: Status, area: Optional[WaitingArea]) -> str:
+def _where(status: Status, area: Optional[WaitingArea], site=None) -> str:
+    """_where_pos plus, with a site, the room the person is in."""
+    base = _where_pos(status, area)
+    rid = site.room_at(status.x, status.y) if site is not None and area is not None else None
+    if rid is None:
+        return base
+    return f"{base[:-1]}, in {site.rooms[rid].label}."
+
+
+def _where_pos(status: Status, area: Optional[WaitingArea]) -> str:
     """Where the person is now, from Status: a seat id when seated at a known seat, else a position."""
     if area is None:
         return f"You are {status.posture}."
@@ -215,11 +292,11 @@ def _where(status: Status, area: Optional[WaitingArea]) -> str:
 def render_situation(inst: PersonInstance, obs: Observation, status: Status, triggers: list[str],
                      nudges: list[Nudge], clock_min: float, *, mood: str = "calm",
                      patience_left: float = 1.0, current_intent: Optional[dict] = None,
-                     area: Optional[WaitingArea] = None) -> str:
+                     area: Optional[WaitingArea] = None, site=None) -> str:
     """What this person perceives now. Nudges come last, one per line."""
     m = round(clock_min)
     lines = [f"You have been waiting about {m} minute{'' if m == 1 else 's'}."]
-    lines.append(_where(status, area))
+    lines.append(_where(status, area, site))
     if current_intent:
         target = f" {current_intent['target']}" if current_intent.get("target") else ""
         state = current_intent.get("state") or status.state

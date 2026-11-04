@@ -140,7 +140,8 @@ def test_default_kb_persona_chunks_are_persona_cards(tmp_path):
     loaded = load_scenario(V1)
     kb = build_default_kb(tmp_path, loaded, HashEmbedder())
     personas = [c for c in kb.chunks if c.file == "<persona>"]
-    assert [c.text for c in personas] == [persona_card(i, loaded.area) for i in loaded.instances]
+    assert [c.text for c in personas] == [persona_card(i, loaded.area, loaded.site, loaded.scenario.known_places)
+                                          for i in loaded.instances]
 
 
 def test_sources_hash_changes_with_notes(tmp_path):

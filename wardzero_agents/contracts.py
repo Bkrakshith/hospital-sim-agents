@@ -58,7 +58,7 @@ class Status(_Envelope):
     x: float
     y: float
     yaw: float
-    posture: Literal["seated", "standing", "walking", "fallen", "gone"]
+    posture: Literal["seated", "standing", "walking", "lying", "fallen", "gone"]
     intent_id: Optional[str] = None
     intent_kind: Optional[IntentKind] = None
     progress: float
@@ -142,6 +142,7 @@ class RosterEntry(_Envelope):
     display_name: str
     seat: Optional[str] = None
     companion_of: Optional[str] = None
+    role: Optional[str] = None  # "patient_static" for a bed patient with no mind
 
 
 class Roster(_Envelope):
