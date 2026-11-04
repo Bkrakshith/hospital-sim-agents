@@ -122,13 +122,16 @@ NEAR_PLACE_M = 2.0  # close enough to the named place to have arrived
 SPOKEN_ADDRESSEE_S = 30.0  # the person who last spoke to the robot this recently was the one asking
 
 
+_CUE = re.compile(r"\b(head|go|take|follow|turn|left|right|straight|past|through|along|down the|up the|"
+                  r"next to|opposite|you'll find|it's on|this way|that way)\b", re.I)
+
+
 def _places(site) -> list[tuple[str, str, str]]:
-    """(label text lower-case, place id, kind) for every room and labelled landmark, longest first."""
+    """(name lower-case, place id, kind): room labels, landmark labels and landmark ids."""
     out = []
     for rid, r in site.rooms.items():
-        for name in {r.label, rid.replace("_", " ")}:
-            if name:
-                out.append((name.lower(), rid, "room"))
+        if r.label:
+            out.append((r.label.lower(), rid, "room"))
     for lid, lm in site.landmarks.items():
         if lid.endswith("_centre"):
             continue
@@ -138,46 +141,74 @@ def _places(site) -> list[tuple[str, str, str]]:
     return sorted(set(out), key=lambda x: -len(x[0]))
 
 
+def _guide_owners(d: "_Run") -> list[tuple[float, str]]:
+    """(time, person) of every guide offer: the guide rule owns those, not the spoken one."""
+    acts = {r["id"]: r for r in d.tasks if r.get("kind") == "action" and "id" in r}
+    out = []
+    for r in d.tasks:
+        if r.get("kind") == "result" and r.get("action") == "guide_start" and r.get("ok"):
+            act = acts.get(r["id"], {})
+            t0 = float(act.get("t", r.get("t", 0.0)))
+            who = act.get("person") or _requester(d.says, t0)
+            if who:
+                out.append((t0, who))
+    return out
+
+
 def rule_spoken_directions(d: "_Run") -> list[Hit]:
-    """The robot said where a place is (audio from the robot naming a room or landmark). The person it
-    spoke to has 120 s to get there: within 2 m of the place, or inside the named room. Nobody is
-    blamed if they left, or if the run ended before the 120 s were up."""
+    """The robot said how to get to a place (a direction cue, and a place the person is not already
+    at). They have 120 s to get there: within 2 m of it, or inside the named room. One utterance gives
+    at most one experience, for the last place named. Nobody is blamed if they left, or if the run
+    ended before the 120 s were up. A person who was also offered a guide is judged by that rule."""
     site = d.site
     if site is None:
         return []
     places = _places(site)
+    guides = _guide_owners(d)
     end = max([float(r["t"]) for r in d.status if "t" in r] or [0.0])
     out: list[Hit] = []
     for a in d.audio:
-        if a.get("source_kind") != "robot" or not a.get("text"):
+        if a.get("source_kind") != "robot" or not a.get("text") or not _CUE.search(str(a["text"])):
             continue
         t0 = float(a["t"])
         who = a.get("addressee")
         if who in (None, ROBOT, "g1"):
             who = _requester(d.says, t0, SPOKEN_ADDRESSEE_S)
-        if not who:
+        if not who or any(p == who and t0 - 20.0 <= tg <= t0 + GUIDE_WINDOW_S for tg, p in guides):
             continue
+        rows = sorted((r for r in d.status if r.get("person") == who and "t" in r and "x" in r),
+                      key=lambda r: r["t"])
+        before = [r for r in rows if r["t"] <= t0]
+        here = before[-1] if before else None
         text = str(a["text"]).lower()
-        named, taken = [], []
+        named: list[tuple[int, str, str, tuple]] = []
+        taken: list[str] = []
         for label, pid, kind in places:
-            if re.search(r"\b" + re.escape(label) + r"\b", text) and not any(label in t for t in taken):
-                named.append((pid, kind))
-                taken.append(label)
-        rows = sorted((r for r in d.status if r.get("person") == who and "t" in r), key=lambda r: r["t"])
-        window = [r for r in rows if t0 < r["t"] <= t0 + GUIDE_WINDOW_S]
-        for pid, kind in named:
+            m = re.search(r"\b" + re.escape(label) + r"\b", text)
+            if not m or any(label in t for t in taken):
+                continue
             xy = site.resolve(f"{kind}:{pid}")
             if xy is None:
                 continue
-            hit = next((r for r in window if "x" in r and (
-                math.hypot(r["x"] - xy[0], r["y"] - xy[1]) <= NEAR_PLACE_M
-                or (kind == "room" and site.room_at(r["x"], r["y"]) == pid))), None)
-            if hit is not None:
-                out.append((float(hit["t"]), who, "success", False, False))
-            elif any(r.get("posture") == "gone" for r in window) or end < t0 + GUIDE_WINDOW_S:
-                continue
-            else:
-                out.append((t0 + GUIDE_WINDOW_S, who, "failure", True, False))
+            if here is not None and (math.hypot(here["x"] - xy[0], here["y"] - xy[1]) <= NEAR_PLACE_M
+                                     or (kind == "room" and site.room_at(here["x"], here["y"]) == pid)):
+                continue  # already there: a greeting, not directions
+            taken.append(label)
+            named.append((m.start(), pid, kind, xy))
+        if not named:
+            continue
+        _, pid, kind, xy = max(named, key=lambda n: n[0])
+        window = [r for r in rows if t0 < r["t"] <= t0 + GUIDE_WINDOW_S]
+        hit = next((r for r in window if math.hypot(r["x"] - xy[0], r["y"] - xy[1]) <= NEAR_PLACE_M
+                    or (kind == "room" and site.room_at(r["x"], r["y"]) == pid)), None)
+        if hit is not None:
+            out.append((float(hit["t"]), who, "success", False, False))
+        elif any(r.get("posture") == "gone" for r in d.status
+                 if r.get("person") == who and t0 < r.get("t", 0) <= t0 + GUIDE_WINDOW_S) \
+                or end < t0 + GUIDE_WINDOW_S:
+            continue
+        else:
+            out.append((t0 + GUIDE_WINDOW_S, who, "failure", True, False))
     return out
 
 

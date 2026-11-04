@@ -328,3 +328,43 @@ def test_ceiling_set_once_at_third_violation():
         s = apply_event(s, ev("failure"), 10)
         assert s.ceiling == c
     assert s.violations == 5
+
+
+def _say(tmp_path, text, who_pos=(0.0, 0.0), extra=()):
+    jl(tmp_path, "audio", [{"t": 10.0, "source_kind": "robot", "source_id": "g1", "text": text,
+                            "addressee": "S1"}])
+    jl(tmp_path, "status", [{"t": 5.0, "person": "S1", "x": who_pos[0], "y": who_pos[1],
+                             "posture": "walking", "state": "running"},
+                            {"t": 300.0, "person": "N1", "x": 0, "y": 0, "posture": "seated",
+                             "state": "idle"}, *extra])
+
+
+def test_greeting_is_not_directions(tmp_path, preset):
+    _say(tmp_path, "Welcome to the main entrance, how can I help?")
+    assert detect(tmp_path, preset) == []
+    _say(tmp_path, "The toilets are good.")  # a place but no direction cue
+    assert detect(tmp_path, preset) == []
+
+
+def test_directions_with_cue_counted_once_for_last_place(tmp_path, preset):
+    _say(tmp_path, "Head past the entrance to the toilets on your left.")
+    out = detect(tmp_path, preset)
+    assert [(e.kind, e.person) for e in out] == [("failure", "S1")]
+
+
+def test_already_at_the_place_is_not_directions(tmp_path, preset):
+    from wardzero_agents.site import load_site
+    x, y = load_site(CONFIG).resolve("landmark:toilets")
+    _say(tmp_path, "Head through the door, the toilets are here.", who_pos=(x, y))
+    assert detect(tmp_path, preset) == []
+
+
+def test_guide_owns_the_offer_no_double_strike(tmp_path, preset):
+    _say(tmp_path, "Follow me to the toilets.")
+    jl(tmp_path, "says", [{"t": 5.0, "person": "S1", "text": "Where is it?", "addressee": "g1"}])
+    jl(tmp_path, "robot_tasks", [
+        {"t": 10.5, "kind": "action", "id": "g1a", "action": "guide_start", "track": "t1", "place": "toilets"},
+        {"kind": "result", "id": "g1a", "action": "guide_start", "ok": True, "reason": "started", "t": 10.6},
+        {"kind": "goal", "id": "g1a", "action": "goal", "ok": False, "reason": "blocked", "t": 40.0}])
+    out = detect(tmp_path, preset)
+    assert [(e.kind, e.person) for e in out] == [("failure", "S1")]
