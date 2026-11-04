@@ -90,13 +90,31 @@
       else this.vb = this._fitBox();
       this._applyVb();
     }
-    _fitBox() { const b = this.bounds; return this._boxFor(b.x0 - 2, b.y0 - 2, b.x1 + 2, b.y1 + 2); }
+    _fitBox() {
+      const pts = [];
+      for (const r of this.site.rooms) pts.push(...r.poly);
+      const b = pts.length ? bbox(pts) : this.bounds, p = Math.max(b.x1 - b.x0, b.y1 - b.y0) * 0.02;
+      return this._boxFor(b.x0 - p, b.y0 - p, b.x1 + p, b.y1 + p);
+    }
+    /* Frame rooms and points together with a fractional margin (and a minimum span in metres). */
+    _frameBox(ids, points, frac, minSpan) {
+      const pts = [...(points || []).map((p) => [p.x, p.y])];
+      for (const id of ids || []) { const r = this.rooms.get(id); if (r) pts.push(...r.poly); }
+      if (!pts.length) return this._fitBox();
+      const b = bbox(pts);
+      let w = b.x1 - b.x0, h = b.y1 - b.y0;
+      const pad = Math.max(w, h) * (frac == null ? 0.08 : frac);
+      const cx = (b.x0 + b.x1) / 2, cy = (b.y0 + b.y1) / 2, ms = (minSpan || 12) / 2;
+      const hw = Math.max(w / 2 + pad, ms), hh = Math.max(h / 2 + pad, ms * 0.6);
+      return this._boxFor(cx - hw, cy - hh, cx + hw, cy + hh);
+    }
+    frame(ids, points, frac, minSpan, animate) { this.setView(this._frameBox(ids, points, frac, minSpan), animate !== false); }
     _roomsBox(ids, pad) {
       const pts = [];
       for (const id of ids) { const r = this.rooms.get(id); if (r) pts.push(...r.poly); }
       if (!pts.length) return this._fitBox();
-      const b = bbox(pts);
-      return this._boxFor(b.x0 - pad, b.y0 - pad, b.x1 + pad, b.y1 + pad);
+      const b = bbox(pts), p = Math.max(pad, 0.12 * Math.max(b.x1 - b.x0, b.y1 - b.y0));
+      return this._boxFor(b.x0 - p, b.y0 - p, b.x1 + p, b.y1 + p);
     }
     _applyVb() { const v = this.vb; this.svg.setAttribute("viewBox", [v.x, v.y, v.w, v.h].join(" ")); }
     _resize() {
@@ -156,7 +174,11 @@
         if (this.opts.labels && !th) {
           const c = [(bb.x0 + bb.x1) / 2, (bb.y0 + bb.y1) / 2];
           const txt = el("text", { class: "room-label", "text-anchor": "middle", "dominant-baseline": "central" }, gLabels);
-          this.roomLabels.push({ txt, c, bb, label: r.label || r.id, short: r.id });
+          const full = (r.label || "").trim();
+          const cands = [full];
+          const cut = full.split(/\s*(?:,|\+|\()/)[0].trim();
+          if (cut && cut !== full) cands.push(cut);
+          this.roomLabels.push({ txt, c, bb, cands: cands.filter(Boolean) });
         }
       }
       for (const st of s.stairs || []) el("polygon", { points: poly(st), class: "stair" }, gFurn);
@@ -198,19 +220,22 @@
         m.g.setAttribute("transform", `translate(${m.x} ${-m.y}) scale(${k * (m.s || 1)})`);
       }
       if (!this.roomLabels.length) return;
-      const fs = 11.5, v = this.vb;
+      const fs = 11.5, v = this.vb, cw = fs * 0.58;
       for (const r of this.roomLabels) {
         const wpx = (r.bb.x1 - r.bb.x0) / k, hpx = (r.bb.y1 - r.bb.y0) / k;
-        const onscreen = r.c[0] > v.x && r.c[0] < v.x + v.w && -r.c[1] > v.y && -r.c[1] < v.y + v.h;
         let text = null;
-        if (onscreen && hpx > 16) {
-          if (r.label.length * fs * 0.56 < wpx * 0.92) text = r.label;
-          else if (r.short.length * fs * 0.6 < wpx * 0.92) text = r.short;
-        }
-        if (text !== null) {   // keep a label out from under a person, the robot or a static patient
-          const tw = text.length * fs * 0.56;
-          for (const m of this.markers) {
-            if (Math.abs(m.x - r.c[0]) / k < tw / 2 + 26 && Math.abs(m.y - r.c[1]) / k < 20) { text = null; break; }
+        if (hpx > 16) {
+          for (const cand of r.cands) {
+            const tw = cand.length * cw;
+            if (tw > wpx * 0.9) continue;
+            // the whole text must sit inside the visible map, with a margin
+            const hw = (tw / 2 + 8) * k, hh = 10 * k;
+            if (r.c[0] - hw < v.x || r.c[0] + hw > v.x + v.w || -r.c[1] - hh < v.y || -r.c[1] + hh > v.y + v.h) continue;
+            let clash = false;   // keep it out from under a person, the robot or a static patient
+            for (const m of this.markers) {
+              if (Math.abs(m.x - r.c[0]) / k < tw / 2 + 26 && Math.abs(m.y - r.c[1]) / k < 20) { clash = true; break; }
+            }
+            if (!clash) { text = cand; break; }
           }
         }
         if (text === null) { r.txt.setAttribute("display", "none"); continue; }

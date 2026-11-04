@@ -235,7 +235,7 @@
       S.scen = sc ? sc.id : null;
       renderScenarios();
       S.map.setFocus(sc ? sc.focus_rooms : []);
-      if (sc) S.map.zoomTo(sc.focus_rooms, 9); else S.map.fit();
+      if (sc) S.map.frame(sc.focus_rooms, sc.characters, 0.2, 30); else S.map.fit();
       if (sc) { const el = body.querySelector(".card.open"); if (el) el.scrollIntoView({ block: "start", behavior: "smooth" }); }
     }
 
@@ -247,7 +247,7 @@
         await WZ.saveProject(patch);
         S.sel = null; S.scen = null; S.tab = "characters";
         renderSide(); drawMap(); loadMemory();
-        S.map.setFocus([]); S.map.zoomTo(sc.focus_rooms, 9);
+        S.map.setFocus([]); S.map.frame(sc.focus_rooms, sc.characters.concat([sc.robot_start]), 0.2, 30);
         WZ.toast("Loaded " + sc.title + ": " + sc.characters.length + " characters");
       } catch (e) { WZ.toast(e.message, "bad"); }
     }
@@ -275,17 +275,24 @@
       const ageSel = h("select", { id: "f-age", onchange: () => { D.age = ageSel.value; } }, AGES.map((a) => h("option", { value: a, selected: a === D.age }, a)));
       const roleSel = h("select", { id: "f-role", onchange: () => { D.role = roleSel.value; D.rolePrompt = null; syncPrompts(); fillRooms(); if (!D.placed) autoPlace(); drawPreview(); } },
         presets.roles.map((r) => h("option", { value: r.id, selected: r.id === D.role }, r.label)));
-      const roleTa = h("textarea", { id: "f-roleprompt", rows: 5, spellcheck: "false", "aria-label": "Role prompt", oninput: () => { D.rolePrompt = roleTa.value; syncRestore(); } });
+      const roleTa = h("textarea", { id: "f-roleprompt", rows: 5, spellcheck: "false", "aria-label": "Role prompt", oninput: () => { D.rolePrompt = roleTa.value; syncRestore(); autosize(roleTa, 10); } });
       const roleRestore = h("button.link", { type: "button", onclick: () => { D.rolePrompt = null; syncPrompts(); } }, "Restore preset");
       const moodSel = h("select", { id: "f-mood", onchange: () => { D.mood = moodSel.value; D.moodPrompt = null; syncPrompts(); } },
         presets.moods.map((m) => h("option", { value: m.id, selected: m.id === D.mood }, m.label)));
-      const moodTa = h("textarea", { id: "f-moodprompt", rows: 3, spellcheck: "false", "aria-label": "Mood prompt", oninput: () => { D.moodPrompt = moodTa.value; syncRestore(); } });
+      const moodTa = h("textarea", { id: "f-moodprompt", rows: 3, spellcheck: "false", "aria-label": "Mood prompt", oninput: () => { D.moodPrompt = moodTa.value; syncRestore(); autosize(moodTa, 6); } });
       const moodRestore = h("button.link", { type: "button", onclick: () => { D.moodPrompt = null; syncPrompts(); } }, "Restore preset");
-      const roomSel = h("select", { id: "f-room", onchange: () => { D.room = roomSel.value; D.placed = false; autoPlace(); preview.zoomTo([D.room], 3); drawPreview(); } });
+      const roomSel = h("select", { id: "f-room", onchange: () => { D.room = roomSel.value; D.placed = false; autoPlace(); preview.frame([D.room], [{ x: D.x, y: D.y }], 0.12, 20); drawPreview(); } });
       const err = h("p.error", { role: "alert" });
       const coord = h("span.coord");
       const saveBtn = h("button.btn.primary", { type: "submit" }, existing ? "Save changes" : "Add to scene");
 
+      function autosize(ta, lines) {
+        ta.style.height = "auto";
+        const max = lines * 20.3 + 20;
+        ta.style.height = Math.min(ta.scrollHeight + 2, max) + "px";
+        ta.style.overflowY = ta.scrollHeight + 2 > max ? "auto" : "hidden";
+      }
+      function sizeAreas() { autosize(roleTa, 10); autosize(moodTa, 6); roleTa.scrollTop = 0; moodTa.scrollTop = 0; }
       function syncPrompts() {
         const rp = rolePre(), mp = moodPre();
         roleTa.value = D.rolePrompt != null ? D.rolePrompt : preText(rp);
@@ -294,6 +301,7 @@
         roleTa.placeholder = rc ? "Describe who this person is and how they behave. One behaviour per line works well." : "";
         moodTa.placeholder = mc ? "Describe how this person feels and how it shows. One behaviour per line works well." : "";
         syncRestore();
+        sizeAreas();
       }
       function syncRestore() {
         const rc = D.role === "custom", mc = D.mood === "custom";
@@ -378,8 +386,9 @@
       sexBtns.forEach((b) => b.setAttribute("aria-checked", b.dataset.v === D.sex));
       if (!existing) autoPlace();
       dlg.showModal();
+      sizeAreas();
       preview = new HospitalMap(psvg, WZ.site, { zoomTo: [D.room], pad: 3, onClick: onPreviewClick });
-      if (existing) preview.zoomToPoint(D.x, D.y, 9, false);
+      preview.frame([D.room], [{ x: D.x, y: D.y }], 0.12, 20, false);
       drawPreview();
       if (!existing) { nameIn.focus(); nameIn.select(); }
 
@@ -403,7 +412,7 @@
           S.sel = saved.id; S.tab = "characters";
           dlg.close();
           renderSide(); drawMap(); loadMemory();
-          S.map.zoomToPoint(saved.x, saved.y, 9);
+          S.map.frame([], P().characters.concat(P().robot_start ? [P().robot_start] : []), 0.2, 30);
           WZ.toast(existing ? "Saved " + saved.name : saved.name + " is on the map");
         } catch (e) { err.textContent = e.message; saveBtn.disabled = false; }
       }
