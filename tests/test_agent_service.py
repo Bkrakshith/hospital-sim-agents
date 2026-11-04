@@ -532,7 +532,7 @@ def test_key_check_covers_every_model_in_use(monkeypatch):
     from wardzero_agents import keys
     from wardzero_agents.ros.agent_node import _key_check, models_in_use
     loaded = load_scenario(V1)
-    assert models_in_use(loaded) == ["claude-opus-5-5", "claude-haiku-5-5"]
+    assert models_in_use(loaded) == ["claude-sonnet-5-5", "claude-haiku-5-5"]
     seen = []
 
     async def check(provider, client, model):
@@ -540,13 +540,13 @@ def test_key_check_covers_every_model_in_use(monkeypatch):
     monkeypatch.delenv("WARDZERO_TEST_FAKE_LLM", raising=False)
     monkeypatch.setattr(keys, "make_client", lambda p: object())
     monkeypatch.setattr(keys, "check", check)
-    assert _key_check(loaded) is None and seen == ["claude-opus-5-5", "claude-haiku-5-5"]
+    assert _key_check(loaded) is None and seen == ["claude-sonnet-5-5", "claude-haiku-5-5"]
     loaded.scenario = loaded.scenario.model_copy(update={
         "perception": "full",
-        "models": loaded.scenario.models.model_copy(update={"vision": "claude-sonnet-5-5"})})
+        "models": loaded.scenario.models.model_copy(update={"vision": "claude-opus-5-5"})})
     seen.clear()
     assert _key_check(loaded) is None
-    assert seen == ["claude-opus-5-5", "claude-haiku-5-5", "claude-sonnet-5-5"]
+    assert seen == ["claude-sonnet-5-5", "claude-haiku-5-5", "claude-opus-5-5"]
 
     async def reject_summary(provider, client, model):
         if model == "claude-haiku-5-5":

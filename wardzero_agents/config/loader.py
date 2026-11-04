@@ -32,7 +32,7 @@ class LoadedScenario:
 
 def default_models(provider: str) -> ModelRoles:
     if provider == "claude":
-        return ModelRoles(decide="claude-opus-5-5", summarise="claude-haiku-5-5", vision="claude-opus-5-5")
+        return ModelRoles(decide="claude-sonnet-5-5", summarise="claude-haiku-5-5", vision="claude-sonnet-5-5")
     raise ConfigError("models: OpenAI needs model names for decide, summarise and vision")
 
 

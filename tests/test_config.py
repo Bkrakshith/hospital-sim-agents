@@ -72,7 +72,7 @@ def test_companion_link_and_names():
 
 def test_default_models_claude():
     assert load_scenario(V1).scenario.models == ModelRoles(
-        decide="claude-opus-5-5", summarise="claude-haiku-5-5", vision="claude-opus-5-5")
+        decide="claude-sonnet-5-5", summarise="claude-haiku-5-5", vision="claude-sonnet-5-5")
 
 
 @pytest.mark.parametrize("patch,msg", [

@@ -60,10 +60,10 @@ Claude (the default provider):
 
 | Job | Model |
 |---|---|
-| decide (what to do next) | `claude-opus-5-5`, effort low |
+| decide (what to do next) | `claude-sonnet-5-5`, effort low |
 | summarise (memory) | `claude-haiku-5-5` |
-| vision | `claude-opus-5-5` |
-| cheaper option | `claude-sonnet-5-5` |
+| vision | `claude-sonnet-5-5` |
+| dearer option | `claude-opus-5-5` (set it in the scenario `models:`) |
 
 OpenAI has no defaults. The scenario must name its models.
 
@@ -227,8 +227,8 @@ These are estimates, to be measured.
 
 | Run (1 hour, oracle mode) | Estimate |
 |---|---|
+| Sonnet 5.5 (the default) | about $5-8 |
 | Opus 5.5 | about $10-15 |
-| Sonnet 5.5 | about $5-8 |
 | Haiku summaries | under $0.50 |
 | Replays | free |
 
