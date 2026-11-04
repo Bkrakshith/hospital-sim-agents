@@ -117,6 +117,12 @@ def parse_args(argv=None) -> argparse.Namespace:
     return a
 
 
+# The start-up steps after the app is up, in the binding order (the module docstring). ``boot_sequence`` is the only
+# place this order lives: ``run`` and the demos (robot_demo, whose frame-budget test guards the order) call it.
+STARTUP = ("enable_extensions", "open_stage", "physics", "make_service", "spawn_people", "spawn_objects",
+           "bake_navmesh", "robot_proxy", "play", "bind_people", "add_robots")
+
+
 class IsaacHost:
     """One run in one Kit process (one stage per process: a stage re-open leaks VRAM)."""
 
@@ -263,7 +269,7 @@ class IsaacHost:
         from ..robots.profile import get_profile
 
         r = self.loaded.scenario.robot
-        if r.enabled:
+        if r.enabled and self.robot_usd is None:
             self.robot_usd = ready_usd.ensure_ready_usd(get_profile(r.profile))
 
     @property
@@ -282,7 +288,7 @@ class IsaacHost:
             raise RuntimeError("the robot's ready USD is not made: call prepare_robot() before start_app()")
         self.robot = IsaacRobot(self.stage, self.app, self.loaded, get_profile(r.profile), self.robot_usd,
                                 self.args.fps, self.robot_domain, self.args.private_domain)
-        self.robot.add()
+        self.robot.add(self.svc.world)
         self.bodies.set_robot(self.robot.pose)
         self.bodies.robot_driver = self.robot
         self._mark("robot")
@@ -299,25 +305,21 @@ class IsaacHost:
             log.warning("could not frame the viewport: %s", exc)
 
     # ---- the run ----------------------------------------------------------------------------
+    def boot_sequence(self, order=STARTUP) -> None:
+        """Make the robot's USD, start Kit and run every start-up step. ``order`` exists for tests (a negative control)."""
+        self.prepare_robot()
+        self.start_app()
+        for step in order:
+            getattr(self, step)()
+
     def run(self) -> int:
         try:
             self.prepare_robot()
         except Exception as exc:
             print(f"Robot error: {exc}", file=sys.stderr)
             return 2
-        self.start_app()
         try:
-            self.enable_extensions()
-            self.open_stage()
-            self.physics()
-            self.make_service()
-            self.spawn_people()
-            self.spawn_objects()
-            self.bake_navmesh()
-            self.robot_proxy()
-            self.play()
-            self.bind_people()
-            self.add_robots()
+            self.boot_sequence()
             self.frame_view()
             if self.args.record:
                 log.warning("--record: recording arrives with the recording task (I5); this run is not recorded")

@@ -44,7 +44,7 @@ def test_room_rect_is_the_polygon_bounds(v1):
 
 
 def test_explicit_rooms_override_everything(v1):
-    plan = cull_plan(with_scenario(v1, preset_id="visiting_rush"), rooms=["B1", "B2"])
+    plan = cull_plan(with_scenario(v1, preset_id="visiting_rush"), rooms=["B1", "B2"], robot_view=False)
     assert plan.rooms == ["B1", "B2"] and set(plan.rects) == {"B1", "B2"} and plan.source == "rooms"
     with pytest.raises(ValueError, match="Nowhere"):
         cull_plan(v1, rooms=["Nowhere"])

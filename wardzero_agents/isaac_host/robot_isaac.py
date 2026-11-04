@@ -35,7 +35,7 @@ class IsaacRobot:
                  private_domain: int):
         self.cfg = loaded.scenario.robot
         # the scenario's namespace is the one SimRos and the robot use: the graph follows it, not robot.yaml's
-        self.profile = dataclasses.replace(profile, ns=self.cfg.ns)
+        self.profile, self.downgraded = rb.effective_profile(dataclasses.replace(profile, ns=self.cfg.ns))
         self.stage, self.app, self.loaded, self.usd = stage, app, loaded, Path(usd)
         self.fps, self.robot_domain, self.private_domain = fps, robot_domain, private_domain
         self.art_root: Optional[str] = None
@@ -52,7 +52,7 @@ class IsaacRobot:
         self.stats = {"proxy_moves": 0, "arm_writes": 0}
 
     # ---- step 9: one authoring pass --------------------------------------------------------
-    def add(self) -> None:
+    def add(self, world=None) -> None:
         from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
 
         layer = Sdf.Layer.FindOrOpen(str(self.usd))
@@ -81,6 +81,8 @@ class IsaacRobot:
             self.app.update()
         if self.profile.can_move:
             self._proxy = rb.ProxyMover(c.x, c.y)
+        if self.downgraded and world is not None:
+            rb.immobilise(world)
         self._articulation()
         log.info("robot %s at (%.2f, %.2f) facing %.0f deg: articulation %s, camera %s, graph %d nodes", self.profile.name,
                  c.x, c.y, math.degrees(c.yaw), self.art_root, self.camera_path, len(self.graph.nodes))
@@ -119,11 +121,7 @@ class IsaacRobot:
         import omni.graph.core as og
         from pxr import Sdf
 
-        profile = self.profile
-        if profile.base == "wheeled" and profile.can_move:  # no wheel data in robot.yaml yet: no drive nodes
-            log.warning("robot %s is wheeled but robot.yaml has no wheel joints: no odom/cmd_vel graph", profile.name)
-            profile = dataclasses.replace(profile, can_move=False)
-        self.graph = g = build_robot_graph(profile, self.art_root, self.robot_domain, self.private_domain,
+        self.graph = g = build_robot_graph(self.profile, self.art_root, self.robot_domain, self.private_domain,
                                            self.render_product, self.fps)
         values = [(k, [Sdf.Path(v) if isinstance(v, PrimPath) else v for v in val] if isinstance(val, list)
                    else val) for k, val in g.values]
@@ -147,7 +145,8 @@ class IsaacRobot:
     def attach_ros(self, world, private, robot) -> None:
         """Raw boxes (private bridge) become the robot's bbox_3d (the robot's bridge, or the private one when shared)."""
         if self.graph is not None and self.graph.topics_private:
-            self.link = rb.DetectionLink(world, self.profile.ns, private, robot or private)
+            self.link = rb.DetectionLink(world, self.profile.ns, private, robot or private,
+                                         close_range_m=rb.CLOSE_RANGE_M)
 
     @property
     def graph_owned(self) -> tuple:
@@ -191,8 +190,25 @@ class IsaacRobot:
                     UsdGeom.Xformable(prim).GetOrderedXformOps()[0].Set(Gf.Vec3d(move[0], move[1], 0.7))
                     self.stats["proxy_moves"] += 1
 
+    def camera_pitch(self) -> Optional[float]:
+        """The mounted camera's pitch against its sensor link (rad, positive down), read from the stage."""
+        if self.camera_path is None:
+            return None
+        import omni.usd
+        from pxr import Gf
+
+        cam = omni.usd.get_world_transform_matrix(self.stage.GetPrimAtPath(self.camera_path))
+        link_prim = self.stage.GetPrimAtPath(self.camera_path)
+        sensor = next(s for s in self.profile.sensors if s.kind in ("rgb", "rgbd"))
+        while link_prim.IsValid() and link_prim.GetName() != sensor.link:
+            link_prim = link_prim.GetParent()
+        link = omni.usd.get_world_transform_matrix(link_prim)
+        fwd = cam.TransformDir(Gf.Vec3d(0, 0, -1))  # a USD camera looks down its -Z
+        local = link.GetInverse().TransformDir(fwd)
+        return rb.pitch_down((local[0], local[1], local[2]))
+
     def describe(self) -> dict:
-        return {"art_root": self.art_root, "base": self.base_path, "camera": self.camera_path,
+        return {"camera_pitch": self.camera_pitch(), "art_root": self.art_root, "base": self.base_path, "camera": self.camera_path,
                 "render_product": self.render_product, "nodes": len(self.graph.nodes) if self.graph else 0,
                 "topics": dict(self.graph.topics) if self.graph else {}, **self.stats}
 

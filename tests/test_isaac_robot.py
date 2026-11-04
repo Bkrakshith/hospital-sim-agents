@@ -160,3 +160,100 @@ def test_camera_resolution_comes_from_the_sensor():
     assert rb.camera_resolution(G1_CLAUDE.sensors[0]) == (1280, 720)  # D455 catalogue row
     assert rb.camera_resolution(SensorSpec("c", "rgb", None, "l", params={"resolution": [800, 600]})) == (800, 600)
     assert rb.camera_resolution(SensorSpec("c", "rgb", None, "l")) == (640, 480)
+
+
+# ---- people too close for Isaac's annotator (it drops boxes cut by the image border) ----------------------------
+@pytest.fixture
+def real_world(tmp_path):
+    from pathlib import Path
+    from wardzero_agents.config.loader import load_scenario
+    from wardzero_agents.ros.sim_service import SimService
+    from wardzero_agents.runlog import RunLog
+    svc = SimService(load_scenario(Path(__file__).resolve().parents[1] / "config" / "scenarios" / "waiting_area_v1.yaml"),
+                     RunLog(tmp_path), wait_for=())
+    w = svc.world
+    r = w.robot
+    r.x, r.y, r.yaw = 1.05, 1.62, -math.pi / 2  # the G1 at reception, facing -y
+    for p in w.people.values():
+        p.x, p.y, p.posture = -9.0, 9.0, "seated"  # out of the way
+    return w
+
+
+def put(world, pid, x, y):
+    p = world.people[pid]
+    p.x, p.y, p.posture, p.plan = x, y, "standing", []
+
+
+def test_close_people_in_front_are_reported_as_truncated(real_world):
+    w = real_world
+    for pid, d in (("P1", 0.6), ("P2", 1.0), ("P3", 1.5)):
+        put(w, pid, 1.05, 1.62 - d)
+    got = rb.close_range_detections(w, 1.0, set())
+    assert len(got) == 3 and all(d["truncated"] is True for d in got)
+    assert {d["id"] for d in got} == {w.tracks.track(p) for p in ("P1", "P2", "P3")}
+    assert all(d["results"][0]["class_id"] == "person" for d in got)
+    assert "P1" not in str(got)
+
+
+def test_only_people_in_front_and_near_and_not_already_seen(real_world):
+    w = real_world
+    put(w, "P1", 1.05, 1.62 + 1.0)  # behind the robot
+    put(w, "P2", 1.05, 1.62 - 4.0)  # far: the annotator handles it
+    put(w, "P3", 1.05 + 1.2, 1.62 - 0.3)  # beside, outside the 87 degree view
+    assert rb.close_range_detections(w, 1.0, set()) == []
+    put(w, "P4", 1.05, 1.62 - 1.0)
+    (d,) = rb.close_range_detections(w, 1.0, set())
+    assert rb.close_range_detections(w, 1.0, {d["id"]}) == []  # the annotator already gave this track
+
+
+def test_the_link_merges_the_annotators_boxes_with_the_close_ones(real_world):
+    import json
+    w = real_world
+    put(w, "P1", 1.05, 1.62 - 0.6)
+    put(w, "P2", 1.05, 1.62 - 3.0)
+    private, robot = Bridge(), Bridge()
+    ln = rb.DetectionLink(w, "robot", private, robot, msgs=SimpleNamespace(Detection3DArray="D", String="S", QOS="q"),
+                          parse=lambda m: m, close_range_m=rb.CLOSE_RANGE_M)
+    private.subs["/wz/robot/semantic_labels_raw"][1](SimpleNamespace(data='{"0": {"class": "person"}}'))
+    private.subs["/wz/robot/bbox_3d_raw"][1](
+        (1.0, [{"class_id": "0", "center": (1.05, -1.38, 0.0), "orientation": (0, 0, 0, 1), "size": (0.5, 0.5, 1.9)}]))
+    dets = json.loads(robot.sent[-1][1])["detections"]
+    assert len(dets) == 2
+    far = [d for d in dets if "truncated" not in d]
+    near = [d for d in dets if d.get("truncated")]
+    assert len(far) == 1 and len(near) == 1 and far[0]["id"] != near[0]["id"]
+    ln.update(2.0)  # the camera went quiet: the close person is still reported with the empty-view heartbeat
+    assert [d["truncated"] for d in json.loads(robot.sent[-1][1])["detections"]] == [True]
+
+
+# ---- a wheeled robot we cannot drive is static everywhere ------------------------------------------------------
+def _profile(base="wheeled", can_move=True):
+    from wardzero_agents.robots.profile import RobotProfile
+    return RobotProfile(name="cart", can_move=can_move, base=base, radius=0.3, reach=(0.3, 1.0), max_speed=1.0, ns="cart",
+                        sensors=())
+
+
+def test_a_wheeled_robot_without_wheel_data_is_downgraded_once_for_everyone(real_world, caplog):
+    import logging
+    with caplog.at_level(logging.WARNING):
+        p, down = rb.effective_profile(_profile())
+    assert down and p.can_move is False and sum("wheel" in r.message for r in caplog.records) == 1
+    rb.immobilise(real_world)
+    assert real_world.robot.max_speed == 0.0  # the world's body no longer drives either
+    real_world.robot.set_cmd_vel(1.0, 0.0)
+    assert real_world.robot._v == 0.0
+
+
+def test_other_robots_are_left_alone():
+    for p in (_profile("static", False), _profile("legged", True), _profile("wheeled", False)):
+        same, down = rb.effective_profile(p)
+        assert same is p and not down
+    ok, down = rb.effective_profile(_profile(), drive={"wheel_joints": ["a", "b"], "wheel_radius": 0.1, "wheel_distance": 0.3})
+    assert ok.can_move and not down
+
+
+def test_camera_pitch_sign_and_axis():
+    # forward given in the link frame (x forward, z up): level -> 0, looking up -> negative, down -> positive
+    assert rb.pitch_down((1.0, 0.0, 0.0)) == pytest.approx(0.0)
+    assert rb.pitch_down((math.cos(0.7), 0.0, math.sin(0.7))) == pytest.approx(-0.7)  # tilted up 0.7 rad
+    assert rb.pitch_down((math.cos(0.83), 0.0, -math.sin(0.83))) == pytest.approx(0.83)  # the URDF's 47.6 degrees down

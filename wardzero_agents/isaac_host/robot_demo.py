@@ -38,32 +38,25 @@ TOP_NEAR = 6.8  # the near plane cuts the ceiling away without deactivating it (
 def parse(argv):
     p = argparse.ArgumentParser()
     p.add_argument("--out", required=True)
-    p.add_argument("--seconds", type=float, default=14.0)
+    p.add_argument("--seconds", type=float, default=40.0)
     p.add_argument("--mode", choices=("smoke", "budget"), default="smoke")
+    p.add_argument("--order-control", action="store_true", help="add the robot before play() (negative control for the budget test)")
     a, rest = p.parse_known_args(argv)
     return a, app_mod.parse_args(rest)
 
 
-def boot(args):
+def boot(args, args_extra):
     """The host's start-up up to and including the robot, and the loop pieces built the way ``IsaacHost.loop`` builds them."""
     from ..config.loader import load_scenario
 
     loaded = load_scenario(args.scenario)
     plan = stage_mod.cull_plan(loaded, rooms=args.rooms, full_site=args.full_site)
     host = app_mod.IsaacHost(args, loaded, plan)
-    host.prepare_robot()
-    host.start_app()
-    host.enable_extensions()
-    host.open_stage()
-    host.physics()
-    host.make_service()
-    host.spawn_people()
-    host.spawn_objects()
-    host.bake_navmesh()
-    host.robot_proxy()
-    host.play()
-    host.bind_people()
-    host.add_robots()
+    order = app_mod.STARTUP
+    if args_extra.order_control:  # negative control: the robot goes in before play(), the regression the budget test catches
+        order = tuple(x for x in order if x != "add_robots")
+        order = order[:order.index("play")] + ("add_robots",) + order[order.index("play"):]
+    host.boot_sequence(order)
     return host
 
 
@@ -181,6 +174,19 @@ def person_ids(world) -> set:
     return ids
 
 
+CLOSE_M = (1.5, 1.0, 0.6)
+
+
+def _close_row(world, probe, want_m: float, out=None) -> dict:
+    """What the robot's bbox_3d said while P1 stood want_m in front of it (host-side check, so the id is used here)."""
+    p, r = world.people["P1"], world.robot
+    if out is not None and want_m == CLOSE_M[0]:
+        probe.save_image(out / "robot_camera.png")  # the first stop: the visitor stands in the middle of the view
+    msgs = [json.loads(t) for t in probe.texts.get("bbox_3d", [])[-3:]]
+    return {"want_m": want_m, "dist_m": round(math.hypot(p.x - r.x, p.y - r.y), 2), "track": world.tracks.track("P1"),
+            "detections": [[{"id": d["id"], "truncated": bool(d.get("truncated"))} for d in m["detections"]] for m in msgs]}
+
+
 def run_smoke(host, demo, out: Path) -> dict:
     import omni.replicator.core as rep
     from PIL import Image
@@ -192,14 +198,25 @@ def run_smoke(host, demo, out: Path) -> dict:
     fps = host.args.fps
     n = int(demo.seconds * fps)
     joints = {}
-    events = {int(2.0 * fps): "walk", int(3.0 * fps): "talk", int(5.0 * fps): "action", int(6.0 * fps): "say",
+    events = {int(3.0 * fps): "talk", int(5.0 * fps): "action", int(6.0 * fps): "say",
               int(8.0 * fps): "offer", int(11.0 * fps): "withdraw"}
     arm_track = []
+    close = {"phase": -1, "settled": 0, "rows": []}  # P1 stops 1.5, 1.0 and 0.6 m in front of the G1, one after another
     for k in range(n):
         ev = events.get(k)
-        if ev == "walk":
-            svc.on_intent(Intent(id="demo-walk", person="P1", t=svc.t, kind="walk_to", point=(1.05, -0.3)))
-        elif ev == "talk":
+        p1 = world.people["P1"]
+        if k == int(2.0 * fps) or (close["phase"] >= 0 and close["settled"] >= fps and close["phase"] < len(CLOSE_M) - 1):
+            if close["phase"] >= 0:
+                close["rows"].append(_close_row(world, probe, CLOSE_M[close["phase"]], out))
+            close["phase"] += 1
+            close["settled"] = 0
+            svc.on_intent(Intent(id=f"demo-close{close['phase']}", person="P1", t=svc.t, kind="walk_to",
+                                 point=(PEDESTAL[0], PEDESTAL[1] - CLOSE_M[close["phase"]])))
+        elif close["phase"] >= 0 and p1.state == "done" and close["settled"] < fps:
+            close["settled"] += 1
+            if close["settled"] >= fps and close["phase"] == len(CLOSE_M) - 1 and len(close["rows"]) < len(CLOSE_M):
+                close["rows"].append(_close_row(world, probe, CLOSE_M[close["phase"]], out))
+        if ev == "talk":
             svc.on_intent(Intent(id="demo-talk", person="P2", t=svc.t, kind="talk", text="Excuse me, where is the pharmacy?"))
         elif ev == "action":
             probe.action({"id": "demo-call", "action": "press_call"})
@@ -219,7 +236,9 @@ def run_smoke(host, demo, out: Path) -> dict:
     stats["frames_measured"] = n
     # stills after the measured run
     saved = {}
-    if probe.save_image(out / "robot_camera.png"):
+    if probe.save_image(out / "robot_camera_close.png"):
+        saved["robot_camera_close"] = "robot_camera_close.png"
+    if (out / "robot_camera.png").exists():
         saved["robot_camera"] = "robot_camera.png"
     annots = {}
     for name, (eye, target, focal) in CAMS.items():
@@ -255,11 +274,12 @@ def run_smoke(host, demo, out: Path) -> dict:
               "forbidden_topics": forbidden, "leaked_ids": leaked, "stills": saved, "robot": robot.describe(),
               "arm_track": arm_track, "people": {pid: [round(p.x, 2), round(p.y, 2), p.posture] for pid, p in world.people.items()},
               "robot_pose": [round(v, 3) for v in world.robot.pose],
+              "close": close["rows"],
               "bbox_last": probe.texts.get("bbox_3d", [None])[-1],
               "bbox_with_people": sum(1 for t in probe.texts.get("bbox_3d", []) if json.loads(t)["detections"]),
               "task_results": [json.loads(t) for t in probe.texts.get("task_result", [])],
               "heard": [json.loads(t) for t in probe.texts.get("heard", [])],
-              "annotator_diag": diag, "dropped_boxes": robot.link.adapter.dropped if robot.link else None,
+              "annotator_diag": diag, "dropped_boxes": {"unknown_class": robot.link.adapter.unknown_class, "unmatched": robot.link.adapter.unmatched} if robot.link else None,
               "raw": {"messages": robot.link.raw_messages, "boxes": robot.link.raw_boxes,
                       "labels": robot.link.adapter.labels} if robot.link else None,
               "vram_mib": vram.last}
@@ -304,7 +324,7 @@ def main(argv=None) -> int:
     out.mkdir(parents=True, exist_ok=True)
     code, host = 1, None
     try:
-        host = boot(args)
+        host = boot(args, demo)
         result = (run_smoke if demo.mode == "smoke" else run_budget)(host, demo, out)
         (out / "demo_stats.json").write_text(json.dumps(result, indent=1, default=str))
         print("DEMO_STATS", json.dumps(result["stats"]), flush=True)

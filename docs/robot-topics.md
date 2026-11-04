@@ -15,6 +15,9 @@ never learns who a person is: detections are anonymous tracks (`t1`, `t2`), and 
 reports `source_id: "unknown"`. `hhumans audit` still flags any non-`wardzero_` node that
 subscribes to a forbidden topic on the private domain.
 
+The lab's own nodes on the robot domain (the host's bridge, the camera graph) carry the `wardzero_` prefix, which the
+audit allows; the robot's nodes must not start with it.
+
 ## Topics
 
 Direction is from the robot's side. Sensors are optional: a topic exists only if the robot has
@@ -29,7 +32,7 @@ for `speech/say`, a mobile base for `cmd_vel` and `goal_pose`).
 | `<ns>/joint_command` | `sensor_msgs/JointState` | out | Isaac host. Position targets by joint name; a robot with its own controller drives its arms and hands this way. The built-in G1 moves its own arm for hand-overs, so leave it alone. |
 | `<ns>/cmd_vel` | `geometry_msgs/Twist` | out | Linear x and angular z. Mobile robots only. |
 | `<ns>/odom` | `nav_msgs/Odometry` | in | 20 Hz, frame `map`. |
-| `<ns>/camera/rgb`, `camera/depth`, `camera/camera_info` | `sensor_msgs/Image`, `CameraInfo` | in | Isaac host only. 10 Hz, from the robot's camera mount (frame = the sensor's link). `depth` only for a depth camera (kind `rgbd`). |
+| `<ns>/camera/rgb`, `camera/depth`, `camera/camera_info` | `sensor_msgs/Image`, `CameraInfo` | in | Isaac host only. 5 Hz, from the robot's camera mount (frame = the sensor's link). `depth` only for a depth camera (kind `rgbd`). |
 | `<ns>/camera/bbox_3d` | `std_msgs/String` (JSON) | in | 5 Hz. Anonymous person tracks (see below). |
 | `<ns>/lidar/point_cloud` | `sensor_msgs/PointCloud2` | in | Isaac host only. |
 | `<ns>/perception/objects` | `std_msgs/String` (JSON) | in | 5 Hz. Items, held items, beds, fires, call lights in view. |
@@ -46,7 +49,7 @@ the rest, from the robot's OmniGraph on the robot domain: `/clock`, `/tf`, joint
 commands, the camera, and for a wheeled base that can move `odom` and `cmd_vel` as a Twist into a
 differential drive. Its `camera/bbox_3d` is the same JSON as the stub's: the host turns Isaac's
 camera boxes (world frame, numeric classes) into box centres in the `map` frame with anonymous
-tracks (10 Hz, only people fully inside the camera image: Isaac drops boxes cut by the image border). Lidar point clouds and walking legged bases (`cmd_vel` for the G1) are not wired yet.
+tracks (5 Hz). Isaac drops 3D boxes cut by the image border, so people closer than about 1.5 m, who do not fit the camera's 65 degree vertical view, are added by the host from the world (same shape, `"truncated": true`, within 1.8 m, in the view cone and line of sight). Lidar point clouds and walking legged bases (`cmd_vel` for the G1) are not wired yet.
 
 ## Task actions (`task/action`)
 

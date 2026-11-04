@@ -53,6 +53,7 @@ def test_numeric_class_ids_are_mapped_and_unknown_classes_are_dropped():
     ad.set_labels(LABELS)
     out = ad.convert(0.0, [det("1", 1.0, 0.2, 0, 0), det("7", 1.0, 0.2, 0, 0)])
     assert out["detections"] == []  # a bed is not a person; id 7 is not in the labels
+    assert (ad.unknown_class, ad.unmatched) == (2, 0)
     fresh, _ = adapter({"P1": (1.0, 0.2)})
     assert fresh.convert(0.0, [det("0", 1.0, 0.2, 0, 0)])["detections"] == []  # no labels yet: nothing is called a person
 
@@ -83,7 +84,7 @@ def test_one_person_gets_one_detection_and_a_stranger_is_not_given_a_track():
     ad.set_labels(LABELS)
     out = ad.convert(0.0, [det("0", 1.0, 0.2, 0, 0), det("0", 1.1, 0.2, 0, 0), det("0", 9.0, 9.0, 0, 0)])
     assert [d["bbox"]["center"]["x"] for d in out["detections"]] == [1.0]  # the nearer box wins P1
-    assert ad.dropped == 2
+    assert (ad.unmatched, ad.unknown_class) == (2, 0)
 
 
 def test_the_message_never_carries_a_person_id():

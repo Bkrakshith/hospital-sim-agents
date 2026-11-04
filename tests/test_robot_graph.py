@@ -110,7 +110,7 @@ def test_camera_frames_and_rate():
         assert f"{n}.inputs:frameSkipCount" not in dict(g.values)  # deprecated: the rate is the camera prim's tick rate
     assert value(g, "cam_rgb.inputs:type") == "rgb" and value(g, "cam_depth.inputs:type") == "depth"
     assert value(g, "cam_bbox.inputs:type") == "bbox_3d"
-    assert g.camera_hz == 10.0 and g1_graph(camera_hz=15.0).camera_hz == 15.0
+    assert g.camera_hz == 5.0 and g1_graph(camera_hz=15.0).camera_hz == 15.0
     assert g1_graph(profile=RobotProfile(**{**G1_CLAUDE.__dict__, "sensors": ()}), render_product=None).camera_hz == 0.0
 
 

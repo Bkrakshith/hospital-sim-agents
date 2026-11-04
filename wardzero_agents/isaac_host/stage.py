@@ -65,6 +65,7 @@ class CullPlan:
     rooms: list[str] = field(default_factory=list)
     rects: dict[str, Rect] = field(default_factory=dict)
     source: str = "full"  # "hints" | "placements" | "rooms" | "full"
+    exterior_rects: dict[str, Rect] = field(default_factory=dict)  # extra keep area for /World/Exterior only (a robot's view outdoors)
 
     @property
     def full(self) -> bool:
@@ -120,9 +121,97 @@ def placements(loaded: "LoadedScenario") -> list[tuple[float, float]]:
     return [p for p in pts if all(math.isfinite(v) for v in p)]
 
 
+ROBOT_VIEW_FOV_DEG = 90.0  # the head camera's colour FOV (D455 asset, catalogue color_fov_h)
+ROBOT_VIEW_RANGE_M = 15.0
+
+
+def view_wedge(x: float, y: float, yaw: float, fov_deg: float, range_m: float, arc: int = 8) -> list:
+    """The camera's view on the floor plan as a convex polygon: the apex, then points along the arc at range_m."""
+    half = math.radians(fov_deg) / 2.0
+    pts = [(x, y)]
+    for i in range(arc + 1):
+        a = yaw - half + 2.0 * half * i / arc
+        pts.append((x + range_m * math.cos(a), y + range_m * math.sin(a)))
+    return pts
+
+
+def wedge_hits_rect(poly: list, rect: Rect) -> bool:
+    """Separating-axis test of a convex polygon (fov < 180) against an axis-aligned rectangle."""
+    x0, y0, x1, y1 = rect
+    corners = [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
+    if max(p[0] for p in poly) < x0 or min(p[0] for p in poly) > x1:
+        return False
+    if max(p[1] for p in poly) < y0 or min(p[1] for p in poly) > y1:
+        return False
+    for i in range(len(poly)):
+        ax, ay = poly[i]
+        bx, by = poly[(i + 1) % len(poly)]
+        nx, ny = ay - by, bx - ax  # edge normal
+        proj = [nx * (px - ax) + ny * (py - ay) for px, py in poly]
+        side = max(proj, key=abs)  # the polygon lies on this side of its own edge
+        rp = [nx * (cx - ax) + ny * (cy - ay) for cx, cy in corners]
+        if (side >= 0 and max(rp) < -1e-9) or (side < 0 and min(rp) > 1e-9):
+            return False
+    return True
+
+
+EXTERIOR_VIEW_RANGE_M = 10.0  # the outdoors a robot looks onto through an entrance, kept for /World/Exterior only
+SIGHT_STEP_M = 0.1
+ROOM_SAMPLE_M = 1.0
+
+
+def sight_clear(grid, a: tuple, b: tuple) -> bool:
+    """No occupied cell of the site grid between a and b (cells outside the grid are open: outdoors)."""
+    d = math.hypot(b[0] - a[0], b[1] - a[1])
+    for k in range(1, int(d / SIGHT_STEP_M)):
+        f = k * SIGHT_STEP_M / d
+        iy, ix = grid.to_cell(a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f)
+        if grid.in_grid(iy, ix) and grid.occ[iy, ix]:
+            return False
+    return True
+
+
+def rooms_in_view(site, pose: tuple, fov_deg: float = ROBOT_VIEW_FOV_DEG, range_m: float = ROBOT_VIEW_RANGE_M) -> list:
+    """Room ids a camera at pose (x, y, yaw) can see: the room it stands in, and every room with a point inside the
+    view wedge that has a clear line of sight from the camera on the site grid (walls hide what is behind them;
+    doorways are open cells). Points are sampled every ROOM_SAMPLE_M."""
+    x, y, yaw = pose
+    wedge = view_wedge(x, y, yaw, fov_deg, range_m)
+    out = []
+    for rid, rm in site.rooms.items():
+        if rm.contains(x, y):
+            out.append(rid)
+            continue
+        x0, y0, x1, y1 = room_rect(rm)
+        if not wedge_hits_rect(wedge, (x0, y0, x1, y1)):
+            continue
+        xs = [x0 + ROOM_SAMPLE_M / 2 + i * ROOM_SAMPLE_M for i in range(max(1, int((x1 - x0) / ROOM_SAMPLE_M)))]
+        ys = [y0 + ROOM_SAMPLE_M / 2 + j * ROOM_SAMPLE_M for j in range(max(1, int((y1 - y0) / ROOM_SAMPLE_M)))]
+        if any(wedge_hits_rect(wedge, (px, py, px, py)) and rm.contains(px, py) and sight_clear(site.grid, (x, y), (px, py))
+               for px in xs for py in ys):
+            out.append(rid)
+    return sorted(out)
+
+
 def cull_plan(loaded: "LoadedScenario", hints: Optional[Mapping] = None, rooms: Optional[Iterable[str]] = None,
-              full_site: bool = False) -> CullPlan:
-    """The rooms (and rectangles) to keep for this scenario."""
+              full_site: bool = False, robot_view: bool = True) -> CullPlan:
+    """The rooms (and rectangles) to keep for this scenario, plus the rooms in the robot camera's view (a camera that
+    looks into culled space sees black); ``robot_view=False`` leaves them out."""
+    plan = _base_plan(loaded, hints, rooms, full_site)
+    r = loaded.scenario.robot
+    if plan.full or not robot_view or not r.enabled:
+        return plan
+    seen = [rid for rid in rooms_in_view(loaded.site, (r.x, r.y, r.yaw)) if rid not in plan.rooms]
+    rects = dict(plan.rects)
+    rects.update({rid: room_rect(loaded.site.rooms[rid]) for rid in seen})
+    wedge = view_wedge(r.x, r.y, r.yaw, ROBOT_VIEW_FOV_DEG, EXTERIOR_VIEW_RANGE_M)
+    outdoors = {"robot_view": (min(p[0] for p in wedge), min(p[1] for p in wedge),
+                               max(p[0] for p in wedge), max(p[1] for p in wedge))}
+    return CullPlan(plan.rooms + seen, rects, plan.source, outdoors)
+
+
+def _base_plan(loaded: "LoadedScenario", hints: Optional[Mapping] = None, rooms: Optional[Iterable[str]] = None,
+               full_site: bool = False) -> CullPlan:
     if full_site:
         return CullPlan()
     site = loaded.site
@@ -172,7 +261,7 @@ def select_off(boxes: Mapping[str, Optional[Box]], rects: Mapping[str, Rect], ma
 
 # ---- the wrapper layer (pxr) ------------------------------------------------------------------
 def _boxes(stage, parents: Iterable[str], remap: Optional[tuple[str, str]] = None) -> dict[str, Optional[Box]]:
-    from pxr import Usd, UsdGeom
+    from pxr import Usd, UsdGeom, UsdLux
 
     bc = UsdGeom.BBoxCache(Usd.TimeCode.Default(), [UsdGeom.Tokens.default_, UsdGeom.Tokens.render],
                            useExtentsHint=True)
@@ -183,6 +272,9 @@ def _boxes(stage, parents: Iterable[str], remap: Optional[tuple[str, str]] = Non
         if not pp:
             continue
         for c in pp.GetChildren():
+            if c.IsA(UsdLux.DomeLight) or c.IsA(UsdLux.DistantLight):
+                out[str(c.GetPath())] = None  # the sky and the sun light everything outdoors: they have no place to cull by
+                continue
             r = bc.ComputeWorldBound(c).ComputeAlignedRange()
             if r.IsEmpty():
                 if not c.IsA(UsdGeom.Xformable):
@@ -206,7 +298,10 @@ def compute_cull(plan: CullPlan, stage_path: Path = STAGE_USD, collision_path: O
     from pxr import Usd
 
     st = Usd.Stage.Open(str(stage_path))
-    off = select_off(_boxes(st, CULL_PARENTS), plan.rects)
+    boxes = _boxes(st, CULL_PARENTS)
+    outdoors = {p: b for p, b in boxes.items() if p.startswith("/World/Exterior/")}
+    off = select_off({p: b for p, b in boxes.items() if p not in outdoors}, plan.rects)
+    off += select_off(outdoors, {**plan.rects, **plan.exterior_rects})
     if collision_path is not None and Path(collision_path).exists():
         col = Usd.Stage.Open(str(collision_path))
         dp = col.GetDefaultPrim()

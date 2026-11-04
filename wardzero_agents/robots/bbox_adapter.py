@@ -53,7 +53,8 @@ class BboxAdapter:
         self.resolver = resolver
         self.frame_id = frame_id
         self.labels: dict[str, str] = {}  # numeric class id -> class word
-        self.dropped = 0  # boxes that were not a known class or matched nobody (a count only)
+        self.unknown_class = 0  # boxes whose class is not a person (or has no label yet)
+        self.unmatched = 0  # person boxes that matched nobody in the world (a stranger, or a ghost)
 
     def set_labels(self, text: str) -> None:
         """The camera helper's semantic_labels message: {"0": {"class": "person"}}. A bad message changes nothing."""
@@ -81,12 +82,12 @@ class BboxAdapter:
     def convert(self, stamp: float, dets: Iterable[dict]) -> dict:
         dets = list(dets)
         people = [d for d in dets if self._class_of(d["class_id"]) == PERSON]
-        self.dropped += len(dets) - len(people)
+        self.unknown_class += len(dets) - len(people)
         tracks = self.resolver([(d["center"][0], d["center"][1]) for d in people])
         out = []
         for d, tr in zip(people, tracks):
             if tr is None:
-                self.dropped += 1
+                self.unmatched += 1
                 continue
             (x, y, z0), (sx, sy, sz) = d["center"], d["size"]
             out.append({"id": tr, "results": [{"class_id": PERSON, "score": 1.0}],

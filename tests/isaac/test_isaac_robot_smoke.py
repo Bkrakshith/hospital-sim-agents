@@ -27,7 +27,7 @@ HOST_SH = ROOT / "scripts" / "isaac_host.sh"
 OUT = ROOT / "artifacts" / "screens" / "isaac_robot"
 BOOT_TIMEOUT_S = 900.0
 ROBOT_DOMAIN, PRIVATE_DOMAIN = 41, 42
-SECONDS = 14.0
+SECONDS = 40.0
 
 
 def write_scenario(tmp: Path, cast=("P1", "P2", "P4")) -> Path:
@@ -87,11 +87,21 @@ def test_the_g1_stands_at_reception_and_talks_on_its_own_domain(tmp_path, isaac_
     # the StubWorld's robot logic on the same domain: a task action answered, speech heard, the brief
     assert any(t["id"] == "demo-call" and t["ok"] for t in r["task_results"])
     assert any(h["text"] and "pharmacy" in h["text"] and h["source_id"] == "unknown" for h in r["heard"])
-    # a person walked up to the desk and the camera saw them: anonymous track, class only
+    # a person walked up to the robot and the camera saw them: anonymous track, class only
     assert r["bbox_with_people"] > 0
     boxes = [d for t in [json.loads(x) for x in [r["bbox_last"]] if x] for d in t["detections"]]
     for d in boxes:
         assert d["id"].startswith("t") and d["results"][0]["class_id"] == "person"
+    # a visitor 1.5, 1.0 and 0.6 m in front is in every bbox_3d message under one stable track, truncated or not
+    assert [row["want_m"] for row in r["close"]] == [1.5, 1.0, 0.6], r["close"]
+    tracks = {row["track"] for row in r["close"]}
+    assert len(tracks) == 1
+    for row in r["close"]:
+        assert abs(row["dist_m"] - row["want_m"]) < 0.35, row
+        assert all(row["track"] in [d["id"] for d in msg] for msg in row["detections"]), row
+    # the head camera keeps its tilt: the profile's mount pitch (up is negative), measured on the stage
+    from wardzero_agents.robots.profile import G1_HEAD_CAMERA_PITCH
+    assert r["robot"]["camera_pitch"] == pytest.approx(G1_HEAD_CAMERA_PITCH, abs=0.03)
     # fairness: no person id, no private topic on the robot's domain
     assert r["leaked_ids"] == [] and r["forbidden_topics"] == []
     # the hand-over gesture reached the arm and came back

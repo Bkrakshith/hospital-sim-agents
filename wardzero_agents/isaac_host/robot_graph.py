@@ -20,7 +20,7 @@ from ..robots.profile import RobotProfile
 from ..ros import topics
 
 BRIDGE = "isaacsim.ros2.bridge"
-CAMERA_HZ = 10.0  # the camera's tick rate (omni:sensor:tickRate on its prim, set by robot_isaac): it throttles the
+CAMERA_HZ = 5.0  # the camera's tick rate (omni:sensor:tickRate on its prim, set by robot_isaac): it throttles the
 # render product itself, which is what a 1280x720 image every frame costs. rgb, depth, camera_info and the boxes follow it.
 GRAPH_PATH = "/World/RobotGraph"
 
