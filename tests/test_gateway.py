@@ -18,9 +18,9 @@ ROLES = ModelRoles(decide="claude-opus-5-5", summarise="claude-haiku-5-5", visio
 SCHEMA = {"type": "object", "properties": {}}
 
 
-def req(role="decide", user="hello", images=None):
+def req(role="decide", user="hello", images=None, history=None):
     return LLMRequest(role=role, person="p1", system_fixed="SYS", persona_card="CARD",
-                      user=user, schema=SCHEMA, images=images or [])
+                      user=user, schema=SCHEMA, images=images or [], history=history or [])
 
 
 def _resp(code):
@@ -344,3 +344,38 @@ async def test_openai_max_tokens():
     roles = ModelRoles(decide="gpt-x", summarise="gpt-y", vision="gpt-x")
     r = await OpenAIGateway(Cut(text='{"b"'), roles, Budget(1.0), lambda r, x: None).complete(req())
     assert not r.ok and r.error == "max_tokens"
+
+
+async def test_cache_breakpoints_sit_between_stable_and_per_tick_parts():
+    gw, client, _ = make_anthropic()
+    await gw.complete(req(history=["Day so far:", "- t=1 sat", "- t=2 coughed"], user="NOW: the situation"))
+    kw = client.calls[0]
+    system, content = kw["system"], kw["messages"][0]["content"]
+    # breakpoint 1: after the system text and persona card (1 h, longest TTL first)
+    assert [b.get("cache_control") for b in system] == [None, {"type": "ephemeral", "ttl": "1h"}]
+    # breakpoint 2: on the last history block only; the per-tick text comes after it, uncached
+    assert [b["text"] for b in content] == ["Day so far:", "- t=1 sat", "- t=2 coughed", "NOW: the situation"]
+    assert [b.get("cache_control") for b in content] == [None, None, {"type": "ephemeral"}, None]
+    marked = [b for b in [*system, *content] if "cache_control" in b]
+    assert len(marked) == 2  # well under the limit of 4
+
+
+async def test_history_prefix_is_byte_identical_between_calls():
+    gw, client, _ = make_anthropic()
+    h = ["Day so far:", "- a", "- b"]
+    await gw.complete(req(history=h, user="tick one"))
+    await gw.complete(req(history=h + ["- c"], user="tick two, different"))
+    first, second = (c["messages"][0]["content"] for c in client.calls)
+    strip = lambda blocks: [b["text"] for b in blocks]
+    assert strip(second)[:len(h)] == strip(first)[:len(h)]
+    assert client.calls[0]["system"] == client.calls[1]["system"]
+
+
+async def test_no_history_means_no_message_breakpoint_and_images_follow_history():
+    gw, client, _ = make_anthropic()
+    await gw.complete(req(role="vision", images=[b"\x89PNGxx"], history=["H"]))
+    content = client.calls[0]["messages"][0]["content"]
+    assert [b["type"] for b in content] == ["text", "image", "text"]
+    assert content[0]["cache_control"] == {"type": "ephemeral"} and "cache_control" not in content[1]
+    await gw.complete(req())
+    assert all("cache_control" not in b for b in client.calls[1]["messages"][0]["content"])

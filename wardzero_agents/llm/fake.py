@@ -32,7 +32,7 @@ def _decision(kind: str, target: str = "", say: str = "") -> dict:
 def default_policy(req: LLMRequest) -> dict:
     if req.role == "summarise":
         return {"memories": []}
-    u = req.user
+    u = req.full_user
     if "ROBOT SAID TO YOU" in u:
         lm = _landmark(u.split("ROBOT SAID TO YOU", 1)[1].split("\n", 1)[0])
         return _decision("walk_to", lm, "Thank you") if lm else _decision("wait_standing", "", "Thank you")

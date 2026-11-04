@@ -40,6 +40,14 @@ class LLMRequest:
     user: str
     schema: dict
     images: list[bytes] = field(default_factory=list)
+    # Append-only text blocks that come before `user` (a person's day so far). The Claude backend
+    # puts a cache breakpoint after the last one, so each call reads the previous call's blocks.
+    history: list[str] = field(default_factory=list)
+
+    @property
+    def full_user(self) -> str:
+        """Everything the user turn says, as one string, for backends that do not cache by block."""
+        return "\n".join([*self.history, self.user])
 
 
 @dataclass

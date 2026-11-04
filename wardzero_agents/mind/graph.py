@@ -174,6 +174,12 @@ def build_graph(deps: "MindDeps", checkpointer: Any = None):
             ltm_hits = [h.text for h in mem]
         return {"kb_hits": kb_hits, "ltm_hits": ltm_hits}
 
+    def history_blocks(state: MindState) -> list[str]:
+        """The day so far: append-only, so the cached prefix grows by one block a call."""
+        if not state.get("short_term"):
+            return []
+        return ["What has happened so far today (oldest first):", *[f"- {h}" for h in state["short_term"]]]
+
     def user_text(state: MindState) -> str:
         out = []
         if state.get("kb_hits"):
@@ -182,17 +188,15 @@ def build_graph(deps: "MindDeps", checkpointer: Any = None):
         if state.get("ltm_hits"):
             out.append("Things you remember:")
             out += [f"- {h}" for h in state["ltm_hits"]]
-        if state.get("short_term"):
-            out.append("What has happened so far today (oldest first):")
-            out += [f"- {h}" for h in state["short_term"]]
         out.append("Decide what you do next. The situation now:")
         out.append(state["situation"])
         return "\n".join(out)
 
     async def decide(state: MindState) -> dict:
         user = user_text(state)
+        history = history_blocks(state)
         req = LLMRequest(role="decide", person=person, system_fixed=SYSTEM_FIXED, persona_card=card,
-                         user=user, schema=DECISION_SCHEMA)
+                         user=user, schema=DECISION_SCHEMA, history=history)
         res = await deps.gateway.complete(req)
         decision, error = None, res.error
         if res.ok:
@@ -206,7 +210,7 @@ def build_graph(deps: "MindDeps", checkpointer: Any = None):
             "reason": data.get("reason") if data else None, "latency_s": res.latency_s,
             "model": res.model,
             "prompt_sha256": hashlib.sha256(
-                "\0".join([SYSTEM_FIXED, card, user]).encode("utf-8")).hexdigest()[:16],
+                "\0".join([SYSTEM_FIXED, card, "\n".join([*history, user])]).encode("utf-8")).hexdigest()[:16],
         })
         return {"decision": decision, "error": error}
 

@@ -1,4 +1,12 @@
-"""Claude backend: beta messages with structured output, 1 h cached persona card, server fallback."""
+"""Claude backend: beta messages with structured output, prompt caching, server fallback.
+
+Request layout, stable parts first (a cache hit needs a byte-identical prefix):
+  system[0]  fixed instructions
+  system[1]  persona card + places                      <- breakpoint 1 (1 h): per person, never changes
+  user[0..n] the person's day so far, one block a line  <- breakpoint 2 (5 min): append-only
+  user[n+1]  images, then the per-tick text (retrieved background, memories, the situation now)
+Breakpoint 2 is read by the next call, which has the same blocks plus one more.
+"""
 from __future__ import annotations
 
 import asyncio
@@ -22,7 +30,10 @@ class AnthropicGateway(BaseGateway):
 
     async def _call(self, req: LLMRequest, model: str) -> LLMResult:
         decide = req.role == "decide"
-        blocks = [{"type": "image", "source": {"type": "base64", "media_type": media_type(i),
+        blocks = [{"type": "text", "text": h} for h in req.history]
+        if blocks:
+            blocks[-1]["cache_control"] = {"type": "ephemeral"}
+        blocks += [{"type": "image", "source": {"type": "base64", "media_type": media_type(i),
                                                "data": base64.b64encode(i).decode()}}
                   for i in req.images]
         blocks.append({"type": "text", "text": req.user})

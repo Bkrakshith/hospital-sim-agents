@@ -67,7 +67,7 @@ Claude (the default provider):
 
 OpenAI has no defaults. The scenario must name its models.
 
-Requests use structured outputs and a 1-hour prompt cache. On Opus and Sonnet a refusal
+Requests use structured outputs and prompt caching: the instructions and persona card are cached for 1 hour, and a person's day so far is cached as a second, 5-minute breakpoint ahead of the per-tick text. On Opus and Sonnet a refusal
 falls back automatically.
 
 ## Running

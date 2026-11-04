@@ -425,9 +425,11 @@ async def test_mood_and_patience_clamped(build):
 async def test_remember_and_recall_feed_the_prompt(build, ltm):
     ltm.add(P5.memory_key, RUN, 0.0, "fact", "Reception is where you check in for outpatient clinics", 0.9)
     seen_users = []
+    seen_reqs = []
 
     def policy(req):
-        seen_users.append(req.user)
+        seen_users.append(req.full_user)
+        seen_reqs.append(req)
         return decision("use_phone")
 
     m, effects, runlog = build(P5, FakeGateway(policy=policy))
@@ -440,6 +442,9 @@ async def test_remember_and_recall_feed_the_prompt(build, ltm):
     s = await m.state()
     assert len(s["short_term"]) == 2 and "use_phone" in s["short_term"][0]
     assert "use_phone" in seen_users[1]  # recent events reach the next prompt
+    assert seen_reqs[0].history == []
+    assert seen_reqs[1].history[0].startswith("What has happened so far")
+    assert "What has happened so far" not in seen_reqs[1].user  # history is its own (cached) blocks
     await m.aclose()
 
 

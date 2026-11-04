@@ -21,10 +21,10 @@ class OpenAIGateway(BaseGateway):
             content = [{"type": "input_image",
                         "image_url": "data:" + media_type(i) + ";base64," + base64.b64encode(i).decode()}
                        for i in req.images]
-            content.append({"type": "input_text", "text": req.user})
+            content.append({"type": "input_text", "text": req.full_user})
             inp = [{"role": "user", "content": content}]
         else:
-            inp = req.user
+            inp = req.full_user
         fail = lambda kind: LLMResult(False, None, kind, model)
         try:
             r = await asyncio.wait_for(self.client.responses.create(
