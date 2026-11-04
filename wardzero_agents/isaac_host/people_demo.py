@@ -51,19 +51,24 @@ SCRIPT_WARD2 = [  # an escort, and a minded bed patient who gets up and leaves
     (2.0, "B2P", "walk_to", {"target": "ward_doors"}),
 ]
 SCRIPT_WARD3 = [(1.0, "W2", "escort", {"target": "B2P", "point": (19.0, 13.0)})]
+
+
 def bedside_script(world):
-    """Six visitors walk from the ward corridor to the free side of B1..B6 (the point a person gets up at, ``people_isaac.bedside``)."""
+    """Six visitors walk from the ward corridor to the free side of B1..B6 (the point a person gets up at, ``people_isaac.bedside``) and two to the centres of the nurse bases Ward_WS1 and Ward_WS2."""
     from .people_isaac import bedside
 
     out = []
     for i, bid in enumerate(("B1", "B2", "B3", "B4", "B5", "B6")):
         x, y = bedside(world.site.beds[bid], world.site.grid.blocked)
         out.append((1.0 + 0.2 * i, f"W{i + 1}", "walk_to", {"point": (x, y), "target": None}))
+    for i, rid in enumerate(("Ward_WS1", "Ward_WS2")):  # and the two nurse bases
+        x, y = world.site.rooms[rid].centre
+        out.append((2.2 + 0.2 * i, f"W{7 + i}", "walk_to", {"point": (x, y), "target": None}))
     return out
 
 
 VIEWS = {
-    "bedsides": {"script": [], "script_fn": bedside_script, "cams": {
+    "bedsides": {"script_fn": bedside_script, "cams": {
         "top": ((21.0, 16.0, 22.0), (21.0, 16.01, 0.0), 8.0, 19.4)}},
     "lobby": {"script": SCRIPT, "cams": {
         "top": ((-3.5, 0.3, 22.0), (-3.5, 0.31, 0.0), 15.0, 19.4),

@@ -76,6 +76,10 @@ class IsaacBodies(Bodies):
         for q, point in trails:
             self._carry(world, q, point, dt)
         self.read_back(world)
+        for pid, prop in self.props.items():  # a patient propped up in bed sits up
+            p = world.people.get(pid)
+            if p is not None and p.posture == "lying" and hasattr(prop, "set_sitting_up"):
+                prop.set_sitting_up(p.sitting_up)
         if self.objects is not None:
             self.objects.update()  # after the poses: held items go where their holder is now
 

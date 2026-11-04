@@ -244,3 +244,60 @@ def test_the_host_takes_a_fire_mode():
     assert app.parse_args(base + ["--fire", "proxy"]).fire == "proxy"
     with pytest.raises(SystemExit):
         app.parse_args(base + ["--fire", "lava"])
+
+
+def test_a_patient_propped_up_in_bed_sits_up_in_the_drawing(world):
+    from wardzero_agents.isaac_host.bodies import IsaacBodies
+
+    class Prop:
+        def __init__(self):
+            self.calls = []
+
+        def set_sitting_up(self, v):
+            self.calls.append(v)
+
+    p = next(q for q in world.people.values())
+    p.posture, p.bed = "lying", "B1"
+    prop = Prop()
+    bodies = IsaacBodies()
+    bodies.props[p.inst.person_id] = prop
+    bodies.step(world, 0.1)
+    p.sitting_up = True
+    bodies.step(world, 0.2)
+    assert prop.calls == [False, True]
+
+
+def test_one_failing_item_does_not_stop_the_others(world, caplog):
+    class Flaky(FakeStage):
+        def add_item(self, key, kind, label):
+            if key == "tray_1":
+                raise RuntimeError("no such asset")
+            super().add_item(key, kind, label)
+
+    fs = Flaky()
+    m = ob.ObjectMirror(world, fs)
+    with caplog.at_level("ERROR"):
+        m.sync()
+        m.sync()
+    assert "tray_1" not in fs.items and {"ext_1", "spec_1", "ins_1"} <= set(fs.items)
+    assert fs.bells["B1"]["lit"] is False  # the bell is still drawn
+    assert sum("tray_1" in r.getMessage() for r in caplog.records) == 1  # logged once, with the exception
+
+
+def test_a_failing_fire_is_skipped_and_logged_once_and_other_fires_still_draw(world, caplog):
+    class Flaky(FakeStage):
+        def set_fire(self, key, x, y, params):
+            if key == "fire_1":
+                raise RuntimeError("flow broke")
+            super().set_fire(key, x, y, params)
+
+    fs = Flaky()
+    m = ob.ObjectMirror(world, fs)
+    a = world.objects.start_fire(1.0, 1.0, size=0.2, grow_per_s=0.0)
+    b = world.objects.start_fire(5.0, 5.0, size=0.2, grow_per_s=0.0)
+    with caplog.at_level("ERROR"):
+        m.sync()
+        a.size = 0.5
+        m.sync()
+    assert b.id in fs.fires and a.id not in fs.fires
+    assert sum("fire_1" in r.getMessage() for r in caplog.records) == 1

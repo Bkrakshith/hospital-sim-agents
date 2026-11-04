@@ -59,3 +59,22 @@ def test_door_leaves_posed_with_a_rotate_op_are_made_static():
               "/World/Fixtures/Doors/E_Compartment/Leaf0": False,
               "/World/Fixtures/Doors/E_Compartment/Base": False}
     assert fixes.rotated_leaves(bodies) == ["/World/Fixtures/Doors/Compartment/Leaf0", "/World/Fixtures/Doors/Compartment/Leaf1"]
+
+
+def test_only_door_leaves_are_touched():
+    bodies = {"/World/Fixtures/Doors/Compartment/Leaf0": True, "/World/Fixtures/Lifts/Lift1/Car": True,
+              "/World/Fixtures/Calls/MainCall/fx_button": True, "/World/Fixtures/DoorsX/Leaf0": True}
+    assert fixes.rotated_leaves(bodies) == ["/World/Fixtures/Doors/Compartment/Leaf0"]
+
+
+def test_more_than_the_known_pair_is_a_warning(caplog, monkeypatch, v1):
+    monkeypatch.setattr(fixes, "read_nav_volumes", lambda st: {})
+    monkeypatch.setattr(fixes, "read_door_bodies", lambda st: {"/World/Fixtures/Doors/Other/Leaf0": True,
+                                                              "/World/Fixtures/Doors/Compartment/Leaf0": True})
+    import sys, types
+    pxr = types.ModuleType("pxr")
+    pxr.Usd = types.SimpleNamespace(Stage=types.SimpleNamespace(Open=lambda p: None))
+    monkeypatch.setitem(sys.modules, "pxr", pxr)
+    with caplog.at_level("WARNING"):
+        fixes.stage_fixes(v1.site, CullPlan(), Path("x.usd"))
+    assert any("Other/Leaf0" in r.getMessage() and r.levelname == "WARNING" for r in caplog.records)

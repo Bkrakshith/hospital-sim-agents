@@ -138,7 +138,8 @@ def run(host, demo, out: Path) -> int:
         svc.step(dt)
         ms.append((time.perf_counter() - t0) * 1000.0)
         if k % 15 == 0:
-            log_rows.append({"t": round(t, 2), "objects": [o.model_dump(exclude={"schema_"}) for o in world.objects.snapshot()]})
+            log_rows.append({"t": round(t, 2), "objects": [o.model_dump(exclude={"schema_"}) for o in world.objects.snapshot()],
+                             "drawn": host.objects.describe()})  # what the stage holds, read back from the prims
         if k in stills:
             for name in cams:
                 shot(name, out / f"still_{name}_t{t:05.1f}.png")

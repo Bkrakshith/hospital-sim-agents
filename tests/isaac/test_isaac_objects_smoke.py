@@ -91,6 +91,12 @@ def test_a_fire_grows_and_goes_out(tmp_path, isaac_free):
     final = [o for o in data["rows"][-1]["objects"] if o["kind"] == "fire"][0]
     assert final["active"] is False and final["size"] == 0.0  # and went out
     assert data["stats"]["flow_ready"] is True  # drawn with Flow, not the proxy
+    drawn = [(row["t"], row["drawn"]["fires"].get("fire_1")) for row in data["rows"]]  # the emitter prim, read back
+    radii = [f["radius"] for _, f in drawn if f is not None]
+    assert drawn[0][1] is None and radii, "no Flow emitter prim appeared"  # no emitter before the fire starts
+    assert all(f["kind"] == "flow" for _, f in drawn if f is not None)
+    assert max(radii) > radii[0] + 0.1  # the emitter grew with the fire's size
+    assert drawn[-1][1] is None  # and the emitter prim is gone once the fire is out
     assert list(out.glob("still_corridor_*.png")) and list(out.glob("still_top_*.png"))
 
 
@@ -102,4 +108,12 @@ def test_a_tray_is_carried_to_a_bed_and_handed_over(tmp_path, isaac_free):
     assert math.hypot(tray["x"] - 25.1, tray["y"] - 16.2) < 0.6 and tray["z"] == pytest.approx(1.0)
     bell = [o for o in data["rows"][-1]["objects"] if o["kind"] == "call_bell"][0]
     assert bell["active"] is False  # the call was answered
+    drawn = [row["drawn"] for row in data["rows"]]
+    first, last = drawn[0]["items"]["tray_1"]["pos"], drawn[-1]["items"]["tray_1"]["pos"]
+    assert math.hypot(first[0] - 19.4, first[1] - 15.8) < 1.0  # the tray prim started with the nurse in the corridor ...
+    assert math.hypot(last[0] - 24.66, last[1] - 16.2) < 0.1 and last[2] == pytest.approx(1.0)  # ... and lies on the bed where it was handed over
+    mid = [d["items"]["tray_1"]["pos"] for d in drawn[3:8]]
+    assert any(m[0] > first[0] + 1.0 for m in mid)  # it travelled with the holder
+    lit = [d["bells"]["B3"][0] for d in drawn]
+    assert max(lit) > 1.0 and lit[-1] < 0.1  # the lamp's emissive colour: on while ringing, dark once answered
     assert list(out.glob("still_bed_*.png"))

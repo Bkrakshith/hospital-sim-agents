@@ -215,12 +215,56 @@ class IraAgent:
             pass
 
 
+class RestingPose:
+    """A one-frame SkelAnimation on a lying character's skeleton: arms down beside the body, torso bent forward when propped up.
+
+    The character is drawn without the Behavior System, so nothing animates it and it would stand in a T-pose. The joint
+    maths is ``rest_pose.resting``; this writes the result as an animation bound to the skeleton.
+    """
+
+    SIT_UP_DEG = 50.0
+
+    def __init__(self, stage, skeleton_path: str):
+        import numpy as np
+        from pxr import Sdf, UsdSkel
+
+        from . import rest_pose
+
+        self._rp, self._np = rest_pose, np
+        skel = UsdSkel.Skeleton(stage.GetPrimAtPath(skeleton_path))
+        self.names = [str(j) for j in skel.GetJointsAttr().Get()]
+        self.rest = np.array([[list(row) for row in m] for m in skel.GetRestTransformsAttr().Get()])
+        anim = UsdSkel.Animation.Define(stage, Sdf.Path(skeleton_path).AppendChild("RestingPose"))
+        anim.CreateJointsAttr(self.names)
+        self.anim = anim
+        UsdSkel.BindingAPI.Apply(skel.GetPrim()).CreateAnimationSourceRel().SetTargets([anim.GetPath()])
+        self.sit_up = None
+        self.set(False)
+
+    def set(self, sit_up: bool) -> None:
+        from pxr import Gf, Vt, UsdSkel
+
+        if sit_up == self.sit_up:
+            return
+        self.sit_up = sit_up
+        new = self._rp.resting(self.names, self.rest, self.SIT_UP_DEG if sit_up else 0.0)
+        parts = [UsdSkel.DecomposeTransform(Gf.Matrix4d(*[float(v) for v in m.reshape(16)])) for m in new]
+        self.anim.CreateTranslationsAttr(Vt.Vec3fArray([p[0] for p in parts]))
+        self.anim.CreateRotationsAttr(Vt.QuatfArray([p[1] for p in parts]))
+        self.anim.CreateScalesAttr(Vt.Vec3hArray([p[2] for p in parts]))
+
+
 class LyingProp:
     """The posed character on a bed (``people.BedProp``): shown, hidden, or carried along with a bed being wheeled."""
 
-    def __init__(self, stage, path: str, op, bed=None):
+    def __init__(self, stage, path: str, op, bed=None, pose: Optional[RestingPose] = None):
         self.stage, self.path, self.op = stage, path, op
         self.bed = bed  # BedMover: the bed itself goes along when the patient is wheeled
+        self.pose = pose  # RestingPose: arms at the sides, torso raised when propped up
+
+    def set_sitting_up(self, sitting_up: bool) -> None:
+        if self.pose is not None:
+            self.pose.set(sitting_up)
 
     def _img(self):
         from pxr import UsdGeom
@@ -418,7 +462,14 @@ class IsaacPeople:
         mover = None
         if bed.id in self._bed_paths:
             mover = BedMover(self.stage, self._bed_paths[bed.id], bed.x, bed.y, bed.yaw)
-        self.props[pid] = LyingProp(self.stage, str(path), op, mover)
+        pose = None
+        skel = next((q for q in Usd.PrimRange(root) if q.IsA(UsdSkel.Skeleton)), None)
+        if skel is not None:
+            try:
+                pose = RestingPose(self.stage, str(skel.GetPath()))
+            except Exception:
+                log.exception("could not set the resting pose of %s: it stays in a T-pose", pid)
+        self.props[pid] = LyingProp(self.stage, str(path), op, mover, pose)
         self.static.append(pid)
 
     def _flatten_bed(self, bed, world) -> None:

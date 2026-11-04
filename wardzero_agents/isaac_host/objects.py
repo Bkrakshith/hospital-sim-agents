@@ -16,12 +16,15 @@ Where an item is drawn:
 """
 from __future__ import annotations
 
+import logging
 import math
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Optional
 
 if TYPE_CHECKING:
     from ..world.stub_world import StubWorld
+
+log = logging.getLogger("wardzero.isaac.objects")
 
 ROBOT_HOLDER = "g1"
 CARRY_AHEAD_M = 0.35
@@ -73,6 +76,8 @@ class ObjectMirror:
         self._fires: dict[str, tuple] = {}  # key -> (x, y, size step) while burning
         self._gone_fires: set[str] = set()
         self._bells: dict[str, bool] = {}
+        self._dead: set[str] = set()  # items that could not be added
+        self._reported: set[str] = set()  # what has failed (and was logged once)
 
     # ---- the pure mapping --------------------------------------------------------------------
     def item_pose(self, item) -> tuple[bool, float, float, float, float]:
@@ -95,42 +100,70 @@ class ObjectMirror:
                 max(item.z, HANDS_MIN_Z_M), yaw)
 
     # ---- once a frame ------------------------------------------------------------------------
+    def _guard(self, what: str, fn, *args) -> bool:
+        """Run one stage call; a failure is logged once per (what) and the rest of the frame goes on. True when it worked."""
+        try:
+            fn(*args)
+            return True
+        except Exception:
+            if what not in self._reported:
+                self._reported.add(what)
+                log.exception("drawing %s failed; it is skipped from now on", what)
+            return False
+
     def sync(self) -> None:
+        """Mirror every item, bell and fire. One failing object never stops the others."""
         objs = self.world.objects
-        for item in objs.items.values():
-            if item.id not in self._items:
-                self.stage.add_item(item.id, item.kind, item.label)
-                self._items[item.id] = (None, None)
-            visible, x, y, z, yaw = self.item_pose(item)
-            pose, shown = self._items[item.id]
-            new_pose = (round(x, 3), round(y, 3), round(z, 3), round(yaw, 3))
-            if visible and new_pose != pose:
-                self.stage.place_item(item.id, x, y, z, yaw)
-                pose = new_pose
-            if visible != shown:
-                self.stage.show_item(item.id, visible)
-                shown = visible
-            self._items[item.id] = (pose, shown)
-        for bell in objs.bells.values():
-            if bell.bed_id not in self._bells:
-                bed = self.world.site.beds.get(bell.bed_id)
-                if bed is None:
-                    continue
-                hx, hy = bed_head(bed)
-                self.stage.add_bell(bell.bed_id, hx + math.cos(bed.yaw) * BELL_WALL_GAP_M,
-                                    hy + math.sin(bed.yaw) * BELL_WALL_GAP_M, BELL_Z_M, bed.yaw)
-                self._bells[bell.bed_id] = None
-            if self._bells.get(bell.bed_id) is not bell.active:
-                self.stage.light_bell(bell.bed_id, bell.active)
-                self._bells[bell.bed_id] = bell.active
-        for fire in objs.fires.values():
-            if fire.out:
-                if fire.id not in self._gone_fires:
-                    self._gone_fires.add(fire.id)
-                    if self._fires.pop(fire.id, None) is not None:
-                        self.stage.remove_fire(fire.id)
+        for item in list(objs.items.values()):
+            if item.id in self._dead:
                 continue
-            key = (fire.x, fire.y, math.floor(fire.size / FIRE_STEP + 1e-9))
-            if self._fires.get(fire.id) != key:
-                self.stage.set_fire(fire.id, fire.x, fire.y, fire_params(fire.size))
-                self._fires[fire.id] = key
+            if item.id not in self._items:
+                if not self._guard(f"item {item.id}", self.stage.add_item, item.id, item.kind, item.label):
+                    self._dead.add(item.id)
+                    continue
+                self._items[item.id] = (None, None)
+            self._sync_item(item)
+        for bell in list(objs.bells.values()):
+            if f"bell {bell.bed_id}" not in self._reported:
+                self._sync_bell(bell)
+        for fire in list(objs.fires.values()):
+            if f"fire {fire.id}" not in self._reported:
+                self._sync_fire(fire)
+
+    def _sync_item(self, item) -> None:
+        visible, x, y, z, yaw = self.item_pose(item)
+        pose, shown = self._items[item.id]
+        new_pose = (round(x, 3), round(y, 3), round(z, 3), round(yaw, 3))
+        if visible and new_pose != pose:
+            if self._guard(f"item {item.id}", self.stage.place_item, item.id, x, y, z, yaw):
+                pose = new_pose
+        if visible != shown and self._guard(f"item {item.id}", self.stage.show_item, item.id, visible):
+            shown = visible
+        self._items[item.id] = (pose, shown)
+
+    def _sync_bell(self, bell) -> None:
+        if bell.bed_id not in self._bells:
+            bed = self.world.site.beds.get(bell.bed_id)
+            if bed is None:
+                return
+            hx, hy = bed_head(bed)
+            if not self._guard(f"bell {bell.bed_id}", self.stage.add_bell, bell.bed_id,
+                               hx + math.cos(bed.yaw) * BELL_WALL_GAP_M, hy + math.sin(bed.yaw) * BELL_WALL_GAP_M,
+                               BELL_Z_M, bed.yaw):
+                return
+            self._bells[bell.bed_id] = None
+        if self._bells.get(bell.bed_id) is not bell.active and self._guard(
+                f"bell {bell.bed_id}", self.stage.light_bell, bell.bed_id, bell.active):
+            self._bells[bell.bed_id] = bell.active
+
+    def _sync_fire(self, fire) -> None:
+        if fire.out:
+            if fire.id not in self._gone_fires:
+                self._gone_fires.add(fire.id)
+                if self._fires.pop(fire.id, None) is not None:
+                    self._guard(f"fire {fire.id}", self.stage.remove_fire, fire.id)
+            return
+        key = (fire.x, fire.y, math.floor(fire.size / FIRE_STEP + 1e-9))
+        if self._fires.get(fire.id) != key and self._guard(f"fire {fire.id}", self.stage.set_fire, fire.id, fire.x,
+                                                           fire.y, fire_params(fire.size)):
+            self._fires[fire.id] = key

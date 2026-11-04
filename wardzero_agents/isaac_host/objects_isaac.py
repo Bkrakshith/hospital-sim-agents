@@ -4,8 +4,9 @@ Everything here needs Kit (pxr, carb); imports are inside the functions that use
 small stage interface that ``objects.ObjectMirror`` drives (and the unit tests fake); ``IsaacObjects`` ties the two to a
 StubWorld. The StubWorld stays the owner of the logic: nothing here decides anything.
 
-- Props: a tray, an extinguisher and the instruments are referenced from existing assets (see ``PROP_ASSETS``); the
-  specimen box is two cubes. Kinematic by default: any rigid body inside an asset (the instrument models are rigid
+- Props: the extinguisher and the instruments are referenced from existing assets (see ``PROP_ASSETS``); the meal tray
+  (tray, plate with food, cup, covered dish, roll, cutlery) and the specimen box (body, lid, band) are composed from
+  simple prims, about ten each. Kinematic by default: any rigid body inside an asset (the instrument models are rigid
   bodies) is made kinematic with its colliders off, so props never push a person, a robot or the NavMesh.
 - Fire: ``omni.flowusd`` sphere emitters, one per fire, on one shared FlowSimulate / FlowOffscreen / FlowRender layer
   (authored the way Isaac Sim's own incident extension does it, in metres and Z up). The emitter's radius, fuel and
@@ -33,7 +34,6 @@ log = logging.getLogger("wardzero.isaac.objects")
 HG1 = Path(__file__).resolve().parents[3]
 OBJECTS_USD = HG1 / "hospital-sim-env" / "objects" / "usd"
 PROP_ASSETS = {  # kind -> usd under the Isaac assets (instruments: hospital-sim-env/objects/usd/<name>.usd)
-    "tray": ASSETS_ROOT / "Isaac/Environments/Hospital/Props/SM_UtilitiesTray_01e.usd",  # 0.53 x 0.31 x 0.09 m, 3.6 k triangles
     "extinguisher": ASSETS_ROOT / "Isaac/Environments/Office/Props/SM_Extinguisher.usd",  # 0.18 x 0.26 x 0.58 m, 1.5 k triangles
 }
 ROOT = "/World/WZ"
@@ -58,6 +58,7 @@ class UsdObjectStage:
         self.paths: dict[str, str] = {}  # item key -> prim path
         self.bell_paths: dict[str, str] = {}
         self.fire_paths: dict[str, str] = {}
+        self._proxy_fires: set[str] = set()
         self._flow_ready = False
         self._ops: dict[str, tuple] = {}
         for scope in ("", "/Items", "/Bells", "/Fires"):
@@ -70,6 +71,11 @@ class UsdObjectStage:
         path = f"{ROOT}/Items/{_safe(key)}"
         if kind == "specimen_box":
             prim = self._specimen_box(path)
+        elif kind == "tray":
+            prim = self._meal_tray(path)
+        elif kind not in PROP_ASSETS and kind != "instrument":
+            log.warning("no model for an item of kind %r (%s): it is not drawn", kind, key)
+            return
         else:
             name = ob.instrument_asset(label) if kind == "instrument" else None
             asset = OBJECTS_USD / f"{name}.usd" if name else PROP_ASSETS[kind]
@@ -100,28 +106,58 @@ class UsdObjectStage:
             if p.HasAPI(UsdPhysics.CollisionAPI):
                 UsdPhysics.CollisionAPI(p).CreateCollisionEnabledAttr(False)
 
-    def _specimen_box(self, path: str):
-        """A white transport box with a blue lid and an orange band: 0.26 x 0.18 x 0.14 m, base at the origin."""
+    def _compose(self, path: str, parts):
+        """An Xform of simple shapes: parts are (name, shape, (x, y, z), (sx, sy, sz), rgb); shapes are unit cube, cylinder
+        (diameter 1, height 1, axis Z) or sphere (diameter 1)."""
         from pxr import Gf, UsdGeom
 
         root = self.stage.DefinePrim(path, "Xform")
-
-        def cube(name, size, z, rgb):
-            c = UsdGeom.Cube.Define(self.stage, f"{path}/{name}")
-            c.CreateSizeAttr(1.0)
-            xf = UsdGeom.Xformable(c)
-            xf.AddTranslateOp().Set(Gf.Vec3d(0.0, 0.0, z))
+        for name, shape, at, size, rgb in parts:
+            g = {"cube": UsdGeom.Cube, "cylinder": UsdGeom.Cylinder, "sphere": UsdGeom.Sphere}[shape].Define(
+                self.stage, f"{path}/{name}")
+            if shape == "cube":
+                g.CreateSizeAttr(1.0)
+            elif shape == "cylinder":
+                g.CreateRadiusAttr(0.5)
+                g.CreateHeightAttr(1.0)
+                g.CreateAxisAttr("Z")
+            else:
+                g.CreateRadiusAttr(0.5)
+            xf = UsdGeom.Xformable(g)
+            xf.AddTranslateOp().Set(Gf.Vec3d(*at))
             xf.AddScaleOp().Set(Gf.Vec3f(*size))
-            c.CreateDisplayColorAttr([Gf.Vec3f(*rgb)])
-
-        cube("Body", (0.26, 0.18, 0.11), 0.055, (0.92, 0.93, 0.95))
-        cube("Lid", (0.27, 0.19, 0.03), 0.125, (0.10, 0.30, 0.65))
-        cube("Band", (0.262, 0.055, 0.112), 0.056, (0.95, 0.45, 0.05))
+            g.CreateDisplayColorAttr([Gf.Vec3f(*rgb)])
         return root
+
+    def _specimen_box(self, path: str):
+        """A white transport box with a blue lid and an orange band: 0.26 x 0.18 x 0.14 m, base at the origin."""
+        return self._compose(path, [("Body", "cube", (0, 0, 0.055), (0.26, 0.18, 0.11), (0.92, 0.93, 0.95)),
+                                    ("Lid", "cube", (0, 0, 0.125), (0.27, 0.19, 0.03), (0.10, 0.30, 0.65)),
+                                    ("Band", "cube", (0, 0, 0.056), (0.262, 0.055, 0.112), (0.95, 0.45, 0.05))])
+
+    def _meal_tray(self, path: str):
+        """A hospital meal tray, 0.46 x 0.32 m, base at the origin: grey tray with a rim, a plate with food, a covered dish,
+        a cup on a saucer, a bread roll and cutlery."""
+        grey, white, steel = (0.55, 0.57, 0.60), (0.95, 0.95, 0.93), (0.78, 0.80, 0.83)
+        return self._compose(path, [
+            ("Tray", "cube", (0, 0, 0.01), (0.46, 0.32, 0.02), grey),
+            ("RimA", "cube", (0, 0.16, 0.025), (0.46, 0.012, 0.03), grey), ("RimB", "cube", (0, -0.16, 0.025), (0.46, 0.012, 0.03), grey),
+            ("Plate", "cylinder", (-0.07, -0.02, 0.026), (0.21, 0.21, 0.012), white),
+            ("Mash", "sphere", (-0.09, -0.02, 0.04), (0.09, 0.08, 0.05), (0.93, 0.85, 0.62)),
+            ("Peas", "sphere", (-0.04, 0.03, 0.038), (0.06, 0.06, 0.04), (0.35, 0.65, 0.25)),
+            ("Meat", "cube", (-0.07, -0.07, 0.04), (0.07, 0.04, 0.03), (0.50, 0.30, 0.18)),
+            ("DishBase", "cylinder", (0.12, 0.08, 0.024), (0.13, 0.13, 0.008), white),
+            ("DishCover", "sphere", (0.12, 0.08, 0.036), (0.12, 0.12, 0.09), steel),
+            ("Saucer", "cylinder", (0.13, -0.09, 0.024), (0.12, 0.12, 0.008), white),
+            ("Cup", "cylinder", (0.13, -0.09, 0.05), (0.07, 0.07, 0.05), (0.20, 0.45, 0.80)),
+            ("Roll", "sphere", (0.02, 0.10, 0.04), (0.07, 0.05, 0.04), (0.80, 0.60, 0.35)),
+            ("Cutlery", "cube", (-0.19, 0.0, 0.022), (0.02, 0.17, 0.004), steel)])
 
     def place_item(self, key: str, x: float, y: float, z: float, yaw: float) -> None:
         from pxr import Gf
 
+        if key not in self._ops:  # an item with no model (warned when added)
+            return
         t, r = self._ops[key]
         t.Set(Gf.Vec3d(x, y, z))
         r.Set(math.degrees(yaw))
@@ -129,6 +165,8 @@ class UsdObjectStage:
     def show_item(self, key: str, visible: bool) -> None:
         from pxr import UsdGeom
 
+        if key not in self.paths:
+            return
         img = UsdGeom.Imageable(self.stage.GetPrimAtPath(self.paths[key]))
         img.MakeVisible() if visible else img.MakeInvisible()
 
@@ -183,10 +221,39 @@ class UsdObjectStage:
             if not self._flow_ready:
                 log.warning("Flow is not available: fires are drawn as emissive proxies")
                 self.fire = "proxy"
-        if self.fire == "flow":
-            self._flow_emitter(key, x, y, params)
-        else:
-            self._proxy(key, x, y, params)
+        if self.fire == "flow" and key not in self._proxy_fires:
+            try:
+                self._flow_emitter(key, x, y, params)
+                return
+            except Exception:
+                log.exception("Flow failed for %s: this fire is drawn as an emissive proxy", key)
+                self._proxy_fires.add(key)
+                self.remove_fire(key)  # a half-made emitter goes
+        self._proxy(key, x, y, params)
+
+    def describe(self) -> dict:
+        """What is drawn right now, read back from the stage (for the smoke tests): items' translations and visibility,
+        bell emissive colours, and each fire's emitter radius (Flow) or proxy scale."""
+        from pxr import UsdGeom, UsdShade
+
+        out: dict = {"items": {}, "bells": {}, "fires": {}}
+        for key, path in self.paths.items():
+            prim = self.stage.GetPrimAtPath(path)
+            t = prim.GetAttribute("xformOp:translate").Get()
+            out["items"][key] = {"pos": [float(v) for v in t] if t is not None else None,
+                                 "visible": UsdGeom.Imageable(prim).ComputeVisibility() != UsdGeom.Tokens.invisible}
+        for key, path in self.bell_paths.items():
+            sh = UsdShade.Shader(self.stage.GetPrimAtPath(f"{path}/Mat/Surface"))
+            out["bells"][key] = [float(v) for v in sh.GetInput("emissiveColor").Get()]
+        for key, path in self.fire_paths.items():
+            em = self.stage.GetPrimAtPath(f"{path}/emitter")
+            if em and key not in self._proxy_fires and self.fire == "flow":
+                out["fires"][key] = {"kind": "flow", "radius": float(em.GetAttribute("radius").Get()),
+                                     "enabled": bool(em.GetAttribute("enabled").Get())}
+            else:
+                scale = UsdGeom.Xformable(self.stage.GetPrimAtPath(path)).GetOrderedXformOps()[1].Get()
+                out["fires"][key] = {"kind": "proxy", "radius": float(scale[0])}
+        return out
 
     def remove_fire(self, key: str) -> None:
         path = self.fire_paths.pop(key, None)
@@ -201,6 +268,7 @@ class UsdObjectStage:
             from omni.flowusd import _flowusd  # noqa: F401  (the extension is loaded)
             from pxr import Sdf
         except Exception:
+            log.exception("omni.flowusd could not be imported")
             return False
         st = carb.settings.get_settings()
         for name in ("enabled", "rayTracedReflectionsEnabled", "rayTracedTranslucencyEnabled", "pathTracingEnabled"):
@@ -220,6 +288,7 @@ class UsdObjectStage:
         off = make(f"{ROOT}/flowOffscreen", "FlowOffscreen")
         ren = make(f"{ROOT}/flowRender", "FlowRender")
         if sim is None or off is None or ren is None:
+            log.error("FlowCreatePrim failed for the Flow layer")
             return False
         for rel, kind in (("flowSimulate/advection", "FlowAdvectionCombustionParams"),
                           ("flowSimulate/advection/smoke", "FlowAdvectionChannelParams"),
@@ -329,13 +398,9 @@ class IsaacObjects:
     def __init__(self, stage, world: "StubWorld", fire: str = "flow"):
         self.ustage = UsdObjectStage(stage, fire)
         self.mirror = ob.ObjectMirror(world, self.ustage)
-        self._failed = False
 
     def update(self) -> None:
-        if self._failed:
-            return
-        try:
-            self.mirror.sync()
-        except Exception:
-            self._failed = True  # the logic goes on without the drawing
-            log.exception("mirroring the world's objects failed; objects are no longer drawn")
+        self.mirror.sync()  # contains each object's failures itself
+
+    def describe(self) -> dict:
+        return self.ustage.describe()

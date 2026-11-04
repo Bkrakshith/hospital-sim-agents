@@ -1,4 +1,4 @@
-"""Isaac smoke: six people walk from the ward corridor to a bedside of each of B1..B6 on the baked NavMesh.
+"""Isaac smoke: six people walk from the ward corridor to a bedside of each of B1..B6, and two to the nurse bases WS1 and WS2.
 
     WARDZERO_ISAAC=1 pytest -m isaac tests/isaac/test_isaac_bedsides_smoke.py -q -s
 
@@ -26,7 +26,7 @@ ROOT = Path(__file__).resolve().parents[2]
 HOST_SH = ROOT / "scripts" / "isaac_host.sh"
 OUT = ROOT / "artifacts" / "screens" / "isaac_objects" / "bedsides"
 BOOT_TIMEOUT_S = 900.0
-SEATS = [(18.3, 8.0), (19.0, 8.0), (19.8, 8.0), (18.3, 9.3), (19.0, 9.3), (19.8, 9.3)]
+SEATS = [(18.3, 8.0), (19.0, 8.0), (19.8, 8.0), (18.3, 9.3), (19.0, 9.3), (19.8, 9.3), (18.3, 10.6), (19.8, 10.6)]
 
 
 def ward_rooms() -> str:
@@ -85,3 +85,9 @@ def test_a_person_walks_to_every_bedside(tmp_path, isaac_free):
         x, y, posture, state, kind = last[f"W{i + 1}"]
         assert (state, kind) == ("done", "walk_to"), f"{bid}: walk ended {state!r} ({x:.1f}, {y:.1f})"  # never "blocked"
         assert math.hypot(x - beds[bid]["x"], y - beds[bid]["y"]) < 1.6, f"{bid}: ended at ({x:.1f}, {y:.1f}), not at the bed"
+    rooms = {r["id"]: r["poly"] for r in site["rooms"]}
+    for i, rid in enumerate(("Ward_WS1", "Ward_WS2")):  # the nurse bases
+        x, y, posture, state, kind = last[f"W{7 + i}"]
+        xs, ys = [p[0] for p in rooms[rid]], [p[1] for p in rooms[rid]]
+        assert (state, kind) == ("done", "walk_to"), f"{rid}: walk ended {state!r} ({x:.1f}, {y:.1f})"
+        assert min(xs) <= x <= max(xs) and min(ys) <= y <= max(ys), f"{rid}: ended at ({x:.1f}, {y:.1f}), outside the room"
