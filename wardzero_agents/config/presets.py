@@ -279,7 +279,7 @@ def preset_to_scenario(preset: ScenarioPreset, root: "str | Path", dest: "str | 
         {"id": preset.id, "beats": [b.model_dump(mode="json", exclude_none=True, exclude_defaults=False)
                                     for b in preset.timeline]}, sort_keys=False))
     scenario = {
-        "id": preset.id, "known_places": preset.known_places, "duration_min": preset.duration_min, "seed": 7,
+        "id": preset.id, "preset_id": preset.id, "known_places": preset.known_places, "duration_min": preset.duration_min, "seed": 7,
         "provider": "claude", "storyboard": f"../storyboards/{preset.id}.yaml", "deck": "../cards/studio.yaml",
         "robot": {"x": preset.robot_start.x, "y": preset.robot_start.y, "yaw": preset.robot_start.yaw},
         "robot_brief": preset.robot_brief, "objects": preset.objects,
@@ -287,3 +287,31 @@ def preset_to_scenario(preset: ScenarioPreset, root: "str | Path", dest: "str | 
     path = dest / "scenarios" / f"{preset.id}.yaml"
     path.write_text(yaml.safe_dump(scenario, sort_keys=False))
     return load_scenario(path)
+
+
+DEFAULT_CONFIG_ROOT = Path(__file__).resolve().parents[2] / "config"
+
+
+def preset_for_run(meta: dict, root: "str | Path | None" = None) -> Optional[ScenarioPreset]:
+    """The scenario preset a run was made from: meta["preset_id"], else the scenario id when a preset
+    has that id. None for a legacy scenario (or when the presets cannot be loaded)."""
+    try:
+        presets = load_scenario_presets(root or DEFAULT_CONFIG_ROOT)
+    except Exception:
+        return None
+    for key in ("preset_id", "scenario_id"):
+        pid = meta.get(key)
+        if isinstance(pid, str) and pid in presets:
+            return presets[pid]
+    return None
+
+
+def people_meta(loaded, preset: Optional[ScenarioPreset] = None) -> dict:
+    """meta["people"]: for each sampled person, {role: persona role, preset_role: studio role id or None,
+    static: False}. Static patients are made by the world, not sampled, and are named by id."""
+    if preset is None:
+        pid = getattr(loaded.scenario, "preset_id", None)
+        preset = preset_for_run({"preset_id": pid}) if pid else None
+    studio = {c.id: c.role for c in preset.characters} if preset else {}
+    return {i.person_id: {"role": i.role, "preset_role": studio.get(i.person_id), "static": False}
+            for i in loaded.instances}

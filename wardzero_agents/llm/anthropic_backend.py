@@ -42,7 +42,7 @@ class AnthropicGateway(BaseGateway):
         blocks.append({"type": "text", "text": req.user})
         kwargs = dict(
             model=model,
-            max_tokens=4096 if decide else 1024,
+            max_tokens=4096 if decide or req.role == "report" else 1024,
             system=[{"type": "text", "text": req.system_fixed},
                     {"type": "text", "text": req.persona_card,
                      "cache_control": {"type": "ephemeral", "ttl": "1h"}}],
@@ -53,7 +53,8 @@ class AnthropicGateway(BaseGateway):
         )
         fail = lambda kind: LLMResult(False, None, kind, model)
         try:
-            msg = await asyncio.wait_for(self.client.beta.messages.create(**kwargs), self.timeout_s)
+            msg = await asyncio.wait_for(self.client.beta.messages.create(**kwargs),
+                                         self.timeout_s * (4 if req.role == "report" else 1))
         except (asyncio.TimeoutError, anthropic.APITimeoutError):
             return fail("timeout")
         except anthropic.RateLimitError:

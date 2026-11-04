@@ -30,6 +30,13 @@ def _decision(kind: str, target: str = "", say: str = "") -> dict:
 
 
 def default_policy(req: LLMRequest) -> dict:
+    props = (req.schema or {}).get("properties", {})
+    if req.role == "report":
+        return {"narrative": "", "suggestions": []}
+    if req.role == "summarise" and "likeability" in props:  # the after-run questionnaire
+        return {"likeability": 3, "safety": 3, "competence": 3, "trust": 3, "comment": "It was fine."}
+    if req.role == "summarise" and "items" in props:  # the word-of-mouth classifier
+        return {"items": []}
     if req.role == "summarise":
         return {"memories": []}
     if req.role == "robot":  # the built-in robot waits and says nothing

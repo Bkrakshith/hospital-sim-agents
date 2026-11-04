@@ -80,6 +80,7 @@ class ModelRoles(_Model):
     summarise: str
     vision: str
     robot: str = "claude-sonnet-5-5"  # the built-in Claude robot
+    report: str = "claude-sonnet-5-5"  # the after-run report narrative
     effort_decide: Literal["low", "medium", "high"] = "low"
 
 
@@ -122,6 +123,7 @@ class Scenario(_Model):
     robot: RobotConfig = Field(default_factory=RobotConfig)
     robot_brief: Optional[dict] = None  # the job told to the robot; published latched on task/brief
     objects: list[dict] = Field(default_factory=list)  # items and call bells present at the start
+    preset_id: Optional[str] = None  # the Studio scenario preset this scenario was built from
     campaign: bool = False  # trust carries across runs and word of mouth is rolled (Studio sets it)
     ladder: dict[int, str] = Field(default_factory=dict)  # what each trust stage looks like (0..4)
     cast: list[CastEntry]

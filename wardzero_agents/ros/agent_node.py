@@ -444,6 +444,7 @@ def _write_meta(runlog: RunLog, run_dir: Path, update: dict) -> None:
 
 
 async def _serve(args, loaded: LoadedScenario, run_dir: Path, run_id: str, test_mode: bool) -> int:
+    from ..config.presets import people_meta
     from ..kb.embed import get_embedder
     from ..llm.gateway import Budget, make_gateway
     from ..memory.snapshots import save_snapshot
@@ -470,6 +471,7 @@ async def _serve(args, loaded: LoadedScenario, run_dir: Path, run_id: str, test_
         "run_index": run_index, "memory_snapshot_restored": loaded.scenario.memory_snapshot,
         "snapshot_pre_restore": snap_pre, "snapshot_in": snap_in, "snapshot_out": None,
         "budget_usd": loaded.scenario.budget_usd, "cost_usd": 0.0, "started_at": started, "kb_sources_sha256": kb.sources_sha256,
+        "preset_id": loaded.scenario.preset_id, "people": people_meta(loaded),
     }
     if camp is not None:
         base_meta.update({"word_of_mouth": camp[2], "run_index": run_index,
