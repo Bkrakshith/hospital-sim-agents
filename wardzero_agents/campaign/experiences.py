@@ -5,6 +5,7 @@ objects.jsonl and returns Experience rows. The debrief applies them to the trust
 from __future__ import annotations
 
 import json
+import math
 import re
 from pathlib import Path
 from typing import Callable, Optional
@@ -51,13 +52,13 @@ def _item_kinds(run_dir: Path) -> dict[str, str]:
 Hit = tuple  # (t, person, kind, easy, bad_outcome)
 
 
-def _requester(says: list[dict], t: float) -> Optional[str]:
-    """Whoever last spoke to the robot before t, within REQUEST_WITHIN_S."""
+def _requester(says: list[dict], t: float, within: float = REQUEST_WITHIN_S) -> Optional[str]:
+    """Whoever last spoke to the robot before t, within `within` seconds."""
     best = None
     for s in says:
         if s.get("person") in _ROBOT_NAMES or s.get("addressee") not in _ROBOT_NAMES:
             continue
-        if s["t"] <= t and t - s["t"] <= REQUEST_WITHIN_S and (best is None or s["t"] >= best["t"]):
+        if s["t"] <= t and t - s["t"] <= within and (best is None or s["t"] >= best["t"]):
             best = s
     return best["person"] if best else None
 
@@ -117,6 +118,69 @@ def rule_directions_nowhere(d: "_Run") -> list[Hit]:
     return out
 
 
+NEAR_PLACE_M = 2.0  # close enough to the named place to have arrived
+SPOKEN_ADDRESSEE_S = 30.0  # the person who last spoke to the robot this recently was the one asking
+
+
+def _places(site) -> list[tuple[str, str, str]]:
+    """(label text lower-case, place id, kind) for every room and labelled landmark, longest first."""
+    out = []
+    for rid, r in site.rooms.items():
+        for name in {r.label, rid.replace("_", " ")}:
+            if name:
+                out.append((name.lower(), rid, "room"))
+    for lid, lm in site.landmarks.items():
+        if lid.endswith("_centre"):
+            continue
+        for name in {lm.label, lid.replace("_", " ")}:
+            if name:
+                out.append((name.lower(), lid, "landmark"))
+    return sorted(set(out), key=lambda x: -len(x[0]))
+
+
+def rule_spoken_directions(d: "_Run") -> list[Hit]:
+    """The robot said where a place is (audio from the robot naming a room or landmark). The person it
+    spoke to has 120 s to get there: within 2 m of the place, or inside the named room. Nobody is
+    blamed if they left, or if the run ended before the 120 s were up."""
+    site = d.site
+    if site is None:
+        return []
+    places = _places(site)
+    end = max([float(r["t"]) for r in d.status if "t" in r] or [0.0])
+    out: list[Hit] = []
+    for a in d.audio:
+        if a.get("source_kind") != "robot" or not a.get("text"):
+            continue
+        t0 = float(a["t"])
+        who = a.get("addressee")
+        if who in (None, ROBOT, "g1"):
+            who = _requester(d.says, t0, SPOKEN_ADDRESSEE_S)
+        if not who:
+            continue
+        text = str(a["text"]).lower()
+        named, taken = [], []
+        for label, pid, kind in places:
+            if re.search(r"\b" + re.escape(label) + r"\b", text) and not any(label in t for t in taken):
+                named.append((pid, kind))
+                taken.append(label)
+        rows = sorted((r for r in d.status if r.get("person") == who and "t" in r), key=lambda r: r["t"])
+        window = [r for r in rows if t0 < r["t"] <= t0 + GUIDE_WINDOW_S]
+        for pid, kind in named:
+            xy = site.resolve(f"{kind}:{pid}")
+            if xy is None:
+                continue
+            hit = next((r for r in window if "x" in r and (
+                math.hypot(r["x"] - xy[0], r["y"] - xy[1]) <= NEAR_PLACE_M
+                or (kind == "room" and site.room_at(r["x"], r["y"]) == pid))), None)
+            if hit is not None:
+                out.append((float(hit["t"]), who, "success", False, False))
+            elif any(r.get("posture") == "gone" for r in window) or end < t0 + GUIDE_WINDOW_S:
+                continue
+            else:
+                out.append((t0 + GUIDE_WINDOW_S, who, "failure", True, False))
+    return out
+
+
 def rule_fast_contact(d: "_Run") -> list[Hit]:
     """The robot touched a person (within 0.5 m) while moving faster than 0.5 m/s."""
     return [(float(r["t"]), r["person"], "failure", False, True) for r in d.world
@@ -128,10 +192,22 @@ RULES: dict[str, Callable[["_Run"], list[Hit]]] = {
     "task_results": rule_task_results,
     "wrong_instrument": rule_wrong_instrument,
     "directions_nowhere": rule_directions_nowhere,
+    "spoken_directions": rule_spoken_directions,
     "fast_contact": rule_fast_contact,
 }
 # Which rules run for which scenario: all of them by default, scenario ids may narrow the list.
 RULES_FOR_SCENARIO: dict[str, tuple[str, ...]] = {}
+
+
+def _load_site(run_dir: Path):
+    """The site to read place names from: the run's config copy if it has one, else the default."""
+    from ..site import load_site
+    own = Path(run_dir) / "config"
+    try:
+        return load_site(own if (own / "site" / "hospital.json").exists() else Path(__file__).resolve().parents[2] / "config")
+    except Exception:
+        pass
+    return None
 
 
 class _Run:
@@ -142,6 +218,7 @@ class _Run:
         self.status = _rows(run_dir, "status")
         self.world = _rows(run_dir, "world")
         self.kinds = _item_kinds(run_dir)
+        self.site = _load_site(run_dir)
 
 
 def _is_repair(text: str) -> bool:

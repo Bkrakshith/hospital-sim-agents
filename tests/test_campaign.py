@@ -283,3 +283,48 @@ def test_start_campaign_loads_stage_and_flag(tmp_path):
     assert stages[key] >= 1 and set(stages) == {i.memory_key for i in V1.instances}
     assert not any(mems.values())
     assert wom == word_of_mouth(V1.scenario.seed, 4, 0.5)
+
+
+# ---- spoken directions (a static robot) ---------------------------------------------------------
+def _spoken(tmp_path, positions, end_t=None):
+    jl(tmp_path, "audio", [{"t": 10.0, "source_kind": "robot", "source_id": "g1",
+                            "text": "The toilets are down the corridor on your left.",
+                            "addressee": "S1"}])
+    rows = [{"t": t, "person": "S1", "x": x, "y": y, "posture": "walking", "state": "running"}
+            for t, x, y in positions]
+    if end_t:
+        rows.append({"t": end_t, "person": "N1", "x": 0, "y": 0, "posture": "seated", "state": "idle"})
+    jl(tmp_path, "status", rows)
+
+
+def test_spoken_directions_followed(tmp_path, preset):
+    from wardzero_agents.site import load_site
+    x, y = load_site(CONFIG).resolve("landmark:toilets")
+    _spoken(tmp_path, [(12.0, 0.0, 0.0), (80.0, x + 1.0, y)], end_t=300.0)
+    out = detect(tmp_path, preset)
+    assert [(e.kind, e.person) for e in out] == [("success", "S1")]
+
+
+def test_spoken_directions_never_reached(tmp_path, preset):
+    _spoken(tmp_path, [(12.0, 0.0, 0.0), (100.0, 1.0, 1.0)], end_t=300.0)
+    out = detect(tmp_path, preset)
+    assert [(e.kind, e.person, e.easy) for e in out] == [("failure", "S1", True)]
+
+
+def test_spoken_directions_run_ended_early(tmp_path, preset):
+    _spoken(tmp_path, [(12.0, 0.0, 0.0), (60.0, 1.0, 1.0)])
+    assert detect(tmp_path, preset) == []
+
+
+def test_ceiling_set_once_at_third_violation():
+    s = fresh("visitor")
+    for _ in range(2):
+        s = apply_event(s, ev("failure"), 10)
+    before_third = s.trust
+    s = apply_event(s, ev("failure"), 10)
+    c = s.ceiling
+    assert c == pytest.approx(before_third)
+    for _ in range(2):
+        s = apply_event(s, ev("failure"), 10)
+        assert s.ceiling == c
+    assert s.violations == 5

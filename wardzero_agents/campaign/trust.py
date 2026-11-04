@@ -79,7 +79,7 @@ def apply_event(s: TrustState, ev: Experience, roll: int) -> TrustState:
         drop = min(step, s.trust)
         n = s.violations + 1
         # the third strike caps what can ever be won back at about the level before it
-        ceiling = min(s.ceiling, s.trust) if n >= STRIKES else s.ceiling
+        ceiling = min(s.ceiling, s.trust) if n == STRIKES else s.ceiling
         return _set(s, s.trust - step, violations=n, ceiling=ceiling, last_drop=drop)
     if ev.kind == "success":
         return _set(s, s.trust + SUCCESS_STEP * k)
