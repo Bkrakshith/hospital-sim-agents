@@ -14,6 +14,7 @@ from pathlib import Path
 ap = argparse.ArgumentParser()
 ap.add_argument("--out", required=True)
 ap.add_argument("--per-row", type=int, default=7)
+ap.add_argument("--subset", choices=["all", "dh", "generic"], default="all", help="which characters (VRAM comparison)")
 ap.add_argument("--yaw", type=float, default=0.0, help="degrees about z, to turn the characters towards the camera")
 args = ap.parse_args()
 
@@ -31,6 +32,16 @@ from wardzero_agents.isaac_host import characters as ch  # noqa: E402
 from wardzero_agents.isaac_host.people_isaac import ASSETS_ROOT  # noqa: E402
 
 allow = ch.load_allowlist()
+if args.subset != "all":
+    allow.characters = [c for c in allow.characters if ("DH_Characters" in c.usd) == (args.subset == "dh")]
+
+
+def vram():
+    import subprocess
+    return int(subprocess.check_output(["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits"], text=True).split()[0])
+
+
+v0 = vram()
 omni.usd.get_context().new_stage()
 stage = omni.usd.get_context().get_stage()
 UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
@@ -71,6 +82,7 @@ for r, row in enumerate(rows):  # accessories hidden as at spawn
                         q.SetActive(False)
 for _ in range(40):
     app.update()
+print("VRAM", args.subset, len(allow.characters), "characters:", vram() - v0, "MiB over the empty stage", flush=True)
 W, H = 1920, 600
 sheet = Image.new("RGB", (W, H * len(rows)))
 cx = (len(rows[0]) - 1) * SP / 2

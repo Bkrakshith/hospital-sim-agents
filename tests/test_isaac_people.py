@@ -433,7 +433,7 @@ def test_lying_matrix_is_a_proper_rotation_with_the_head_towards_the_bed_head():
             assert f == pytest.approx((0.0, 0.0, 1.0), abs=1e-9)  # the face looks up
             mid = tuple(t[i] + z[i] * pi.BODY_LENGTH_M / 2 for i in range(2))
             assert mid == pytest.approx((10.0, 5.0), abs=1e-9)  # centred on the bed
-            assert t[2] == pytest.approx(0.86 + pi.LYING_THICKNESS_M)
+            assert t[2] == pytest.approx(0.86)
 
 
 def test_people_who_start_on_the_same_spot_are_spread_apart():

@@ -42,14 +42,20 @@ SCRIPT_WARD = [
     (4.0, "__arrival__", "arrival", {"persona": "ward_visitor"}),
     (10.0, "W1", "walk_to", {"target": "ward_doors"}),
 ]
+SCRIPT_SMOKE = [  # three people: one walks, one moves seat and sits, one stays put
+    (1.0, "P1", "walk_to", {"target": "reception_front"}),
+    (1.0, "P2", "sit_down", {"target": "A1"}),
+]
 VIEWS = {
     "lobby": {"script": SCRIPT, "cams": {
         "top": ((-3.5, 0.3, 22.0), (-3.5, 0.31, 0.0), 15.0, 19.4),
         "wide": ((1.2, -2.9, 2.5), (-4.0, 0.5, 0.8), 11.0, 0.05),
         "seats": ((-3.2, -2.2, 2.0), (-6.6, 0.5, 0.8), 14.0, 0.05)}},
+    "smoke": {"script": SCRIPT_SMOKE, "cams": {
+        "wide": ((1.2, -2.9, 2.5), (-4.0, 0.5, 0.8), 11.0, 0.05)}},
     "ward": {"script": SCRIPT_WARD, "cams": {
         "top": ((19.0, 14.0, 22.0), (19.0, 14.01, 0.0), 8.0, 19.4),
-        "wide": ((18.5, 2.5, 6.8), (24.5, 8.0, 0.6), 13.0, 5.2),
+        "wide": ((22.9, 6.9, 2.4), (25.1, 8.0, 0.9), 10.0, 0.05),
         "seats": ((17.0, 10.0, 2.2), (12.5, 7.3, 0.9), 12.0, 0.05)}},
 }
 
@@ -59,6 +65,7 @@ def parse(argv):
     p.add_argument("--out", required=True)
     p.add_argument("--seconds", type=float, default=12.0)
     p.add_argument("--view", choices=sorted(VIEWS), default="lobby")
+    p.add_argument("--no-cams", action="store_true", help="no render products: measures the host's own frame cost")
     p.add_argument("--frames", action="store_true", help="save a frame every third sim frame (10 fps) for a video")
     a, rest = p.parse_known_args(argv)
     return a, app_mod.parse_args(rest)
@@ -115,7 +122,7 @@ def run(host, demo, out: Path) -> int:
         return path
 
     view = VIEWS[demo.view]
-    cams = {name: camera(f"/World/DemoCams/{name}", eye, tgt, focal=f, near=near)
+    cams = {} if demo.no_cams else {name: camera(f"/World/DemoCams/{name}", eye, tgt, focal=f, near=near)
             for name, (eye, tgt, f, near) in view["cams"].items()}  # inside the kept area: outside it the lights are culled
     annots = {}
     for name, cp in cams.items():
@@ -140,7 +147,7 @@ def run(host, demo, out: Path) -> int:
         frames_dir.mkdir(exist_ok=True)
     ms = []
     n = int(demo.seconds * fps)
-    stills = {int(t * fps) for t in (0.1, 4.0, 8.0, 12.0, 16.0) if t < demo.seconds}
+    stills = {int(t * fps) for t in (0.1, 4.0, 8.0, 12.0, 16.0, demo.seconds - 0.1) if t < demo.seconds} if cams else set()
     fi = 0
     for k in range(n):
         t0 = time.perf_counter()
@@ -163,7 +170,7 @@ def run(host, demo, out: Path) -> int:
         if k in stills:
             for name in cams:
                 shot(name, out / f"still_{name}_t{t:05.1f}.png")
-        if demo.frames and k % 3 == 0:
+        if demo.frames and cams and k % 3 == 0:
             shot("wide", frames_dir / f"wide_{fi:04d}.png")
             shot("top", frames_dir / f"top_{fi:04d}.png")
             fi += 1

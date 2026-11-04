@@ -34,8 +34,7 @@ CHARACTERS_ROOT = "/World/Characters"
 SEATS_ROOT = "/World/Seats"
 STATIC_ROOT = "/World/StaticPatients"
 SEAT_HIPS_Z = 0.62  # sit effector 6 cm above the 0.56 m cushion top of the lobby chairs (spike S1 Q2)
-BED_TOP_Z = 0.86  # top of the mattress of SM_HospitalBed_01b (the stage's Section1 spans 0.77 to 1.28 with the head raised)
-LYING_THICKNESS_M = 0.13  # a supine body's back is this far below its centre line
+BED_TOP_Z = 0.99  # where the character origin rides: the mattress is 0.86 flat and the body's back plane sits 0.13 m under it
 BODY_LENGTH_M = 1.75
 OVERLAP_M = 0.5  # people who would start closer than this are spread apart at spawn
 SPREAD_M = 0.65
@@ -50,7 +49,7 @@ def asset(rel: str) -> str:
 
 
 def lying_matrix(bed, top_z: float = BED_TOP_Z, front_local: tuple = FRONT_LOCAL):
-    """Row-vector 4x4 (as 16 numbers) that lays a standing character on its back on a bed: head towards the bed's head
+    """Row-vector 4x4 (as 16 numbers) that lays a standing character on its back on a bed (top_z: where its origin rides): head towards the bed's head
     end (bed.yaw points at the head), face up, body centred on the bed."""
     c, s = math.cos(bed.yaw), math.sin(bed.yaw)
     h = (c, s, 0.0)  # local up (the head end) -> along the bed to its head
@@ -62,7 +61,7 @@ def lying_matrix(bed, top_z: float = BED_TOP_Z, front_local: tuple = FRONT_LOCAL
     z_axis = h
     ox = bed.x - c * BODY_LENGTH_M / 2
     oy = bed.y - s * BODY_LENGTH_M / 2
-    oz = top_z + LYING_THICKNESS_M
+    oz = top_z
     return (x_axis[0], x_axis[1], x_axis[2], 0.0, y_axis[0], y_axis[1], y_axis[2], 0.0,
             z_axis[0], z_axis[1], z_axis[2], 0.0, ox, oy, oz, 1.0)
 
