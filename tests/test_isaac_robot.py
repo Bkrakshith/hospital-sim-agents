@@ -257,3 +257,28 @@ def test_camera_pitch_sign_and_axis():
     assert rb.pitch_down((1.0, 0.0, 0.0)) == pytest.approx(0.0)
     assert rb.pitch_down((math.cos(0.7), 0.0, math.sin(0.7))) == pytest.approx(-0.7)  # tilted up 0.7 rad
     assert rb.pitch_down((math.cos(0.83), 0.0, -math.sin(0.83))) == pytest.approx(0.83)  # the URDF's 47.6 degrees down
+
+
+def test_close_range_detections_are_blocked_by_a_wall(real_world):
+    from test_robot_body import free_wall_spot
+    w = real_world
+    x, y, fx = free_wall_spot(w)  # a free cell, and a free cell hidden behind a wall to its east
+    r = w.robot
+    r.x, r.y, r.yaw = x, y, 0.0
+    put(w, "P1", fx, y)
+    assert not w._los((x, y), (fx, y))
+    assert rb.close_range_detections(w, 1.0, set(), max_range=10.0) == []  # in range and in the cone, but behind the wall
+    put(w, "P2", x + 1.0, y)
+    (d,) = rb.close_range_detections(w, 1.0, set(), max_range=10.0)  # the person in the open is still reported
+    assert d["id"] == w.tracks.track("P2")
+
+
+def test_a_fixed_robot_has_no_colliders_in_the_stage():
+    """Measured (round 2): a visitor standing 0.6 m from the static G1 cost +27 ms/frame in PhysX contacts between the
+    character and the robot's colliders; nothing is meant to touch a fixed robot (reach lives in the world logic)."""
+    assert rb.robot_collides(_profile("static", False)) is False
+    assert rb.robot_collides(_profile("wheeled", False)) is False
+    assert rb.robot_collides(_profile("wheeled", True)) is True  # a base that drives needs its wheels on the floor
+    assert rb.robot_collides(_profile("legged", True)) is True
+    down, _ = rb.effective_profile(_profile("wheeled", True))  # downgraded to fixed
+    assert rb.robot_collides(down) is False

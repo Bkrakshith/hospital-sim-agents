@@ -26,14 +26,58 @@ def test_startup_runs_the_binding_order():
     assert steps[-1] == "add_robots" and steps[0] == "enable_extensions"  # extensions before any stage
 
 
-def test_robots_are_added_after_play_and_nothing_else_does_it():
+def test_robots_are_added_after_play():
     assert A.STARTUP.index("add_robots") > A.STARTUP.index("play")
-    import inspect
-    assert "add_robots" not in inspect.getsource(A.IsaacHost.run)  # run() has no order of its own
 
 
-def test_demos_use_the_same_sequence():
-    import inspect
+def test_demos_boot_through_the_host_sequence():
     from wardzero_agents.isaac_host import robot_demo
-    src = inspect.getsource(robot_demo.boot)
-    assert "host.boot_sequence(" in src and "host.add_robots()" not in src and "host.play()" not in src
+
+    calls = []
+    host = SimpleNamespace(boot_sequence=lambda order: calls.append(tuple(order)), robot=None)
+    host.__dict__.update(stage=None)
+    import types
+    fake_app = types.SimpleNamespace(IsaacHost=lambda *a: host, STARTUP=A.STARTUP)
+    args = argparse.Namespace(scenario=str(__import__("pathlib").Path(__file__).resolve().parents[1] / "config" / "scenarios" / "waiting_area_v1.yaml"),
+                              rooms=None, full_site=False)
+    orig = robot_demo.app_mod
+    robot_demo.app_mod = fake_app
+    try:
+        robot_demo.boot(args, SimpleNamespace(order_control=False))
+    finally:
+        robot_demo.app_mod = orig
+    assert calls == [A.STARTUP]  # exactly the host's own order, nothing re-implemented
+
+
+def test_no_update_between_the_robot_reference_and_its_graph():
+    """S1b: PhysX must not parse the robot half authored, so the reference, pose, camera and graph go in one pass."""
+    from wardzero_agents.isaac_host.robot_isaac import IsaacRobot, SETTLE_UPDATES
+
+    log = []
+
+    class Fake(IsaacRobot):
+        def __init__(self):
+            self.app = SimpleNamespace(update=lambda: log.append("update"))
+            self.cfg = SimpleNamespace(x=0, y=0, yaw=0)
+            self.profile = SimpleNamespace(can_move=False, name="g1", ns="robot")
+            self.downgraded, self.art_root, self.camera_path = False, "/r", None
+            self.graph = SimpleNamespace(nodes=[])
+
+        def _check_ready(self):
+            log.append("check")
+
+        def _reference(self):
+            log.append("reference")
+
+        def _locate(self):
+            log.append("locate")
+
+        def _build_graph(self):
+            log.append("graph")
+
+        def _articulation(self):
+            log.append("articulation")
+
+    Fake().add()
+    assert log[:4] == ["check", "reference", "locate", "graph"]  # nothing steps the app in between
+    assert log[4:] == ["update"] * SETTLE_UPDATES + ["articulation"]

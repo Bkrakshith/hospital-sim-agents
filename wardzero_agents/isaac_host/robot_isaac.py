@@ -53,19 +53,47 @@ class IsaacRobot:
 
     # ---- step 9: one authoring pass --------------------------------------------------------
     def add(self, world=None) -> None:
-        from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
+        """The authoring pass (reference, pose, camera, graph: no ``app.update()`` between them), then the settle."""
+        self._check_ready()
+        self._reference()
+        self._locate()
+        self._build_graph()
+        self._settle()
+        c = self.cfg
+        if self.profile.can_move:
+            self._proxy = rb.ProxyMover(c.x, c.y)
+        if self.downgraded and world is not None:
+            rb.immobilise(world)
+        self._articulation()
+        log.info("robot %s at (%.2f, %.2f) facing %.0f deg: articulation %s, camera %s, graph %d nodes", self.profile.name,
+                 c.x, c.y, math.degrees(c.yaw), self.art_root, self.camera_path, len(self.graph.nodes))
+
+    def _check_ready(self) -> None:
+        from pxr import Sdf
 
         layer = Sdf.Layer.FindOrOpen(str(self.usd))
         if layer is None:
             raise FileNotFoundError(f"robot USD {self.usd} is missing")
         sanitise.require_ready(dict(layer.customLayerData or {}), str(self.usd))
+
+    def _reference(self) -> None:
+        from pxr import Gf, UsdGeom
+
         c = self.cfg
-        # --- no app.update() until the pose is authored: the robot must not be parsed while half placed ---
         xf = UsdGeom.Xform.Define(self.stage, ROBOT_PATH)
-        prim = xf.GetPrim()
-        prim.GetReferences().AddReference(str(self.usd))
+        xf.GetPrim().GetReferences().AddReference(str(self.usd))
         xf.AddTranslateOp().Set(Gf.Vec3d(c.x, c.y, self.profile.base_z))
         xf.AddRotateZOp().Set(math.degrees(c.yaw))
+
+    def _locate(self) -> None:
+        """Find the articulation root, base link and camera in the referenced prim and give the camera its tick rate."""
+        from pxr import Sdf, Usd, UsdGeom, UsdPhysics
+
+        prim = self.stage.GetPrimAtPath(ROBOT_PATH)
+        if not rb.robot_collides(self.profile):
+            for p in Usd.PrimRange(prim):
+                if p.HasAPI(UsdPhysics.CollisionAPI):
+                    UsdPhysics.CollisionAPI(p).CreateCollisionEnabledAttr(False)
         roots = [p for p in Usd.PrimRange(prim) if p.HasAPI(UsdPhysics.ArticulationRootAPI)]
         if len(roots) != 1:
             raise RuntimeError(f"{self.usd.name}: expected one articulation root, found {len(roots)}")
@@ -76,16 +104,10 @@ class IsaacRobot:
             prim_cam = self.stage.GetPrimAtPath(self.camera_path)  # the tick rate throttles the render product itself
             prim_cam.CreateAttribute("omni:sensor:tickRate", Sdf.ValueTypeNames.Float).Set(float(CAMERA_HZ))
             self.render_product = self._render_product()
-        self._build_graph()
+
+    def _settle(self) -> None:
         for _ in range(SETTLE_UPDATES):
             self.app.update()
-        if self.profile.can_move:
-            self._proxy = rb.ProxyMover(c.x, c.y)
-        if self.downgraded and world is not None:
-            rb.immobilise(world)
-        self._articulation()
-        log.info("robot %s at (%.2f, %.2f) facing %.0f deg: articulation %s, camera %s, graph %d nodes", self.profile.name,
-                 c.x, c.y, math.degrees(c.yaw), self.art_root, self.camera_path, len(self.graph.nodes))
 
     @staticmethod
     def _base_link(prim, UsdPhysics, Usd) -> Optional[str]:

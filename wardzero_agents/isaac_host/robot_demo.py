@@ -234,6 +234,8 @@ def run_smoke(host, demo, out: Path) -> dict:
     stats = loop.stats()
     stats["vram_peak_mib"] = vram.peak
     stats["frames_measured"] = n
+    import statistics
+    stats["ms_by_5s"] = [round(statistics.median(loop._ms[i:i + 5 * fps]), 1) for i in range(0, len(loop._ms), 5 * fps)]
     # stills after the measured run
     saved = {}
     if probe.save_image(out / "robot_camera_close.png"):

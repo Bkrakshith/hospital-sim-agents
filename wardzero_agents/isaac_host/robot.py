@@ -115,6 +115,12 @@ def effective_profile(profile, drive=None):
     return profile, False
 
 
+def robot_collides(profile) -> bool:
+    """Whether the robot's colliders stay on. A fixed robot's are switched off: with them on, a person standing about
+    0.6 m from the G1 cost +27 ms/frame in PhysX contacts (40 s smoke, round 2); nothing is meant to touch it."""
+    return bool(profile.can_move)
+
+
 def immobilise(world) -> None:
     """The world's stand-in body must not drive when the Isaac one cannot."""
     world.robot.max_speed = 0.0

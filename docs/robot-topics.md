@@ -90,7 +90,8 @@ a guide. Action results carry no `kind`, so a consumer must key results on the p
 
 `camera/bbox_3d`: `{"header": {"stamp", "frame_id": "map"}, "detections": [{"id": "t1",
 "results": [{"class_id": "person", "score": 1.0}], "bbox": {"center": {x, y, z, yaw}, "size":
-{x, y, z}}}]}`. Posture is read from the box: about 1.7 m tall is standing, about 1.2 m is
+{x, y, z}}, "truncated": true}]}` (`truncated` appears only on the Isaac host, for a person too close to fit the
+camera image: the box is the world's estimate, not Isaac's). Posture is read from the box: about 1.7 m tall is standing, about 1.2 m is
 seated, a low long box is a person lying down.
 
 `audio/heard`: `{"source_kind": "person"|"robot"|"pa"|"cough"|"alarm", "source_id": "unknown",
