@@ -159,6 +159,7 @@ class StubWorld:
         self._fighting: dict[str, str] = {}  # person -> fire id they are putting out
         self._logged_objects = None
         self.people: dict[str, _Person] = {}
+        self.body_driven: set[str] = set()  # people whose phases a body ends (see end_phase)
         taken_beds: set[str] = set()
         for inst in loaded.instances:
             if inst.seat is not None:
@@ -505,6 +506,75 @@ class StubWorld:
             p.posture = "standing"
         p.state, p.progress = "done", 1.0
 
+    def _end_timed(self, p: _Person, ph: _Phase) -> None:
+        """A stand or sit phase has run its time: the person is standing (seat and bed freed) or seated."""
+        if ph.kind == "stand":
+            p.posture = "standing"
+            p.seat = None
+            p.bed = None
+        else:
+            seat = self._seats[p.claim]
+            p.x, p.y, p.yaw, p.posture = seat.x, seat.y, seat.yaw, "seated"
+
+    def _settle(self, p: _Person) -> None:
+        """After a phase ends: the intent is done when the plan is empty, else its progress moves on."""
+        if p.state == "running":
+            if not p.plan:
+                self._finish(p)
+            else:
+                p.progress = max(p.progress, min(0.999, 1.0 - self._remaining(p) / p.total_est))
+
+    # ---- body-driven people (the Isaac host) -------------------------------------------------
+    # A person in ``body_driven`` is not walked by step(): a body (Isaac's character) does the walking, sitting
+    # and standing, and tells the world when each phase of the plan has ended. The plan, the validation and the
+    # intent's state machine stay exactly the same.
+    def walk_goal(self, pid: str) -> Optional[tuple[float, float]]:
+        """Where the head walk phase of this person's plan is going now (a followed person moves), or None."""
+        p = self._get(pid)
+        if not p.plan or p.plan[0].kind != "walk":
+            return None
+        ph = p.plan[0]
+        return self._walk_dest(p, ph) if ph.follow is not None else (ph.goal or ph.dest)
+
+    def seat(self, seat_id: str):
+        return self._seats[seat_id]
+
+    def look_target(self, ident: Optional[str]) -> Optional[tuple[float, float, float]]:
+        """(x, y, head height) of a person, the robot, a place or a sign, for a character to look at."""
+        pos = self._pos(ident) if ident else None
+        if pos is None:
+            pos = self._resolve_place(ident)
+        if pos is None:
+            return None
+        z = 1.5 if ident in self.people or ident == ROBOT_ID else 1.2
+        return pos[0], pos[1], z
+
+    def end_phase(self, pid: str) -> None:
+        """The body finished the head phase of the plan."""
+        p = self._get(pid)
+        if not p.plan:
+            return
+        ph = p.plan.pop(0)
+        if ph.kind == "walk":
+            if ph.follow is not None:
+                tp = self._pos(ph.follow)
+                if tp is not None:
+                    p.yaw = math.atan2(tp[1] - p.y, tp[0] - p.x)
+            p.posture = "standing"
+        else:
+            self._end_timed(p, ph)
+        self._settle(p)
+
+    def fail_intent(self, pid: str, reason: str) -> None:
+        """The body could not do the head phase (a walk blocked for good)."""
+        p = self._get(pid)
+        p.plan = []
+        p.claim = None
+        p.leaving = False
+        p.state, p.reason = "failed", reason
+        if p.posture == "walking":
+            p.posture = "standing"
+
     def _advance(self, pid: str, p: _Person, dt: float) -> None:
         rem = dt
         while p.plan and rem > EPS:
@@ -515,13 +585,7 @@ class StubWorld:
                 rem -= use
                 if ph.left <= EPS:
                     p.plan.pop(0)
-                    if ph.kind == "stand":
-                        p.posture = "standing"
-                        p.seat = None
-                        p.bed = None
-                    else:
-                        seat = self._seats[p.claim]
-                        p.x, p.y, p.yaw, p.posture = seat.x, seat.y, seat.yaw, "seated"
+                    self._end_timed(p, ph)
                 continue
             if ph.follow is not None:
                 dest = self._walk_dest(p, ph)
@@ -592,11 +656,7 @@ class StubWorld:
                 self._lead(p, ph)
                 p.posture = "walking"
                 rem = 0.0
-        if p.state == "running":
-            if not p.plan:
-                self._finish(p)
-            else:
-                p.progress = max(p.progress, min(0.999, 1.0 - self._remaining(p) / p.total_est))
+        self._settle(p)
 
     def step(self, t: float) -> None:
         if t <= self.last_t:
@@ -604,7 +664,7 @@ class StubWorld:
         dt = t - self.last_t
         self.last_t = t
         for pid, p in self.people.items():
-            if p.plan:
+            if p.plan and pid not in self.body_driven:
                 self._advance(pid, p, dt)
         if self.loaded.scenario.robot.enabled:
             # people lying in a bed are never "contacts"; passing a bed is bed_contact (below)

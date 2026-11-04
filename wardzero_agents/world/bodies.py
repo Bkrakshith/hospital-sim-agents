@@ -24,6 +24,9 @@ class Bodies:
     def step(self, world: "StubWorld", t: float) -> None:
         raise NotImplementedError
 
+    def on_intent(self, world: "StubWorld", intent) -> None:
+        """An intent the world has accepted (its plan is built); a body may start acting on it now."""
+
     def close(self) -> None:
         pass
 

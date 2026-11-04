@@ -185,6 +185,7 @@ class SimService:
         except ValueError as exc:
             log.warning("intent %s for %s ignored: %s", intent.kind, intent.person, exc)
             return
+        self.bodies.on_intent(self.world, intent)
         self._emit(events)
 
     def on_say(self, say: Say) -> None:
