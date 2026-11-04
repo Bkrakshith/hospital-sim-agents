@@ -72,6 +72,7 @@ class CastEntry(_Model):
     entrance: Optional[str] = None
     companion_of: Optional[str] = None
     seed: Optional[int] = None
+    name: Optional[str] = None  # overrides the sampled display name
 
 
 class ModelRoles(_Model):
@@ -118,6 +119,8 @@ class Scenario(_Model):
     memory_snapshot: Optional[str] = None
     lockstep: bool = False
     robot: RobotConfig = Field(default_factory=RobotConfig)
+    robot_brief: Optional[dict] = None  # the job told to the robot; published latched on task/brief
+    objects: list[dict] = Field(default_factory=list)  # items and call bells present at the start
     cast: list[CastEntry]
 
 

@@ -38,7 +38,7 @@ from wardzero_agents.contracts import (
 from wardzero_agents.site import Router
 from wardzero_agents.world import audio
 from wardzero_agents.world.objects import (
-    ACCEPT_WINDOW_S, EXTINGUISH_RANGE_M, PERSON_EXTINGUISH_PER_S, ROBOT_EXTINGUISH_PER_S, SURGEON_WINDOW_S, WorldObjects,
+    ACCEPT_WINDOW_S, EXTINGUISH_RANGE_M, PERSON_EXTINGUISH_PER_S, ROBOT_EXTINGUISH_PER_S, SURGEON_WINDOW_S, CallBell, Item, WorldObjects,
 )
 from wardzero_agents.world.reach import giver_reach_ok, receiver_zone_ok
 from wardzero_agents.world.oracle import Entity, Pose, visible
@@ -170,12 +170,26 @@ class StubWorld:
                 self.people[inst.person_id] = _Person(inst, inst.start.x, inst.start.y, inst.start.yaw, "standing")
             else:
                 self.people[inst.person_id] = self._at_entrance(inst)
+        self._seed_objects(loaded.scenario.objects)
         if loaded.scenario.static_patients:
             for b in self.site.beds.values():
                 if re.fullmatch(r"B[1-9][0-9]*", b.id) and b.id not in taken_beds:
                     self.people[f"S{b.id}"] = self._static_patient(b)
 
     # ---- helpers -------------------------------------------------------------------------
+    def _seed_objects(self, specs: list[dict]) -> None:
+        """Items and call bells the scenario starts with. Fires start from a card, not from here."""
+        for i, o in enumerate(specs):
+            kind = o.get("kind")
+            if kind == "call_bell":
+                bed = o["bed"]
+                self.objects.bells.setdefault(bed, CallBell(bed))
+            elif kind in ("tray", "specimen_box", "instrument", "extinguisher"):
+                self.objects.add_item(Item(
+                    id=o.get("id", f"{kind}_{i + 1}"), kind=kind, label=o.get("label", ""),
+                    owner=o.get("owner"), holder=o.get("holder"), x=float(o.get("x", 0.0)),
+                    y=float(o.get("y", 0.0)), z=float(o.get("z", 0.0))))
+
     @property
     def robot_pose(self) -> Pose:
         return Pose(*self.robot.pose)

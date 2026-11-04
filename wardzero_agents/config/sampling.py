@@ -47,6 +47,8 @@ def sample_instance(persona: Persona, cast: CastEntry, scenario_seed: int, index
     # the first name comes from the list that matches the sampled sex, so a name never contradicts it
     firsts = {"female": FEMALE_NAMES, "male": MALE_NAMES}.get(sex.lower(), FEMALE_NAMES + MALE_NAMES)
     name = f"{firsts[int(rng.integers(len(firsts)))]} {SURNAMES[int(rng.integers(40))]}"
+    if cast.name:  # an authored name replaces the drawn one; the draws above stay the same
+        name = cast.name
 
     return PersonInstance(
         person_id=cast.id,
