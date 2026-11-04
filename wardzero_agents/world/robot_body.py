@@ -12,6 +12,8 @@ from typing import Iterable, Optional
 CONTACT_MARGIN_M = 0.25
 SUBSTEP_M = 0.04  # never move further than this between blocked-cell checks
 TURN_RATE = 3.0  # rad/s while following a route
+STUCK_S = 5.0  # a goal with less than STUCK_M progress for this long is given up
+STUCK_M = 0.1
 ARRIVE_M = 0.12
 WAYPOINT_M = 0.15
 
@@ -34,6 +36,14 @@ class RobotBody:
         self._path: list[tuple[float, float]] = []
         self._final_yaw: Optional[float] = None
         self._touching: set[str] = set()
+        self._had_goal = False
+        self.goal_event: Optional[str] = None  # "arrived" | "stuck", read once by take_goal_event
+        self._anchor = (self.x, self.y)
+        self._anchor_t = 0.0
+
+    def take_goal_event(self) -> Optional[str]:
+        ev, self.goal_event = self.goal_event, None
+        return ev
 
     # ---- state ---------------------------------------------------------------------------
     @property
@@ -70,11 +80,16 @@ class RobotBody:
             return False
         self._path = [tuple(p) for p in route[1:]] or [(float(x), float(y))]
         self._final_yaw = yaw
+        self._had_goal = True
+        self.goal_event = None
+        self._anchor, self._anchor_t = (self.x, self.y), 0.0
         return True
 
     def cancel_goal(self) -> None:
+        """Dropped on purpose (new command): no goal event."""
         self._path = []
         self._final_yaw = None
+        self._had_goal = False
 
     # ---- motion --------------------------------------------------------------------------
     def _move(self, dist: float, grid) -> float:
@@ -124,8 +139,17 @@ class RobotBody:
             moved = self._move(v * dt, grid)
             self.vx = moved / dt
             self.wz = w
-            if v and abs(moved) < 0.25 * abs(v * dt) and self._path:
-                self.cancel_goal()  # wedged against something: give up the goal
+            if self._had_goal:
+                if not self.has_goal:
+                    self._had_goal = False
+                    self.goal_event = "arrived"
+                else:
+                    self._anchor_t += dt
+                    if math.hypot(self.x - self._anchor[0], self.y - self._anchor[1]) >= STUCK_M:
+                        self._anchor, self._anchor_t = (self.x, self.y), 0.0
+                    elif self._anchor_t >= STUCK_S:
+                        self.cancel_goal()
+                        self.goal_event = "stuck"
         new: list[str] = []
         if people is not None:
             near = {pid for pid, px, py in people

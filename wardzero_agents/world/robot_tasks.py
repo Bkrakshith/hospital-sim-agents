@@ -36,6 +36,7 @@ class RobotTasks:
         self.world = world
         self._spray: dict[str, str] = {}  # action id -> fire id
         self._guide: Optional[dict] = None
+        self.goal_id = "goal_pose"
         self._out = TaskOutputs()
 
     def _result(self, aid, action, ok, reason, t) -> None:
@@ -77,6 +78,9 @@ class RobotTasks:
         why = w._check_hand_over("g1", pid, item.id, place)
         if why != "ok":
             return self._result(aid, "hand_over", False, why, t)
+        old = w._offers.get(pid)
+        if old is not None and old["giver"] == "g1":  # one result per action: close the old offer
+            self._result(old["intent"], "hand_over", False, "superseded", t)
         w._offers[pid] = {"giver": "g1", "item": item.id, "place": place, "t": t, "intent": aid}
 
     def _take(self, aid, msg, t) -> None:
@@ -116,12 +120,24 @@ class RobotTasks:
             return self._result(aid, "guide_start", False, "unknown_place", t)
         if not w.robot.set_goal(*xy):
             return self._result(aid, "guide_start", False, "no_route", t)
+        self.goal_id = aid
         lm = w.site.landmarks.get(place)
         label = (lm.label if lm is not None and lm.label else place.replace("_", " "))
         self._guide = {"id": aid, "goal": xy}
         self._out.nudges.append(Nudge(person=pid, t=t, card=GUIDE_CARD,
                                       message=f"The robot is offering to walk you to {label}"))
         self._result(aid, "guide_start", True, "started", t)
+
+    def goal_pose(self, x, y, yaw, t) -> None:
+        """A goal_pose command; no route is reported as a goal result."""
+        if self.world.robot.set_goal(x, y, yaw):
+            self.goal_id = "goal_pose"
+        else:
+            self._goal("goal_pose", False, "no_route", t)
+
+    def _goal(self, gid, ok, reason, t) -> None:
+        self._out.results.append({"kind": "goal", "id": gid, "action": "goal", "ok": ok,
+                                  "reason": reason, "t": t})
 
     def _guide_stop(self, aid, msg, t) -> None:
         self.world.robot.cancel_goal()
@@ -141,8 +157,9 @@ class RobotTasks:
             if f.out:
                 del self._spray[aid]
                 self._result(aid, "extinguish", True, "ok", t)
-        if self._guide is not None and not w.robot.has_goal:
-            self._result(self._guide["id"], "guide_start", True, "arrived", t)
+        ev = w.robot.take_goal_event()
+        if ev is not None:
+            self._goal(self.goal_id, ev == "arrived", ev, t)
             self._guide = None
         for r in w.robot_results:
             self._out.results.append({**r, "t": t})

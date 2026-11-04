@@ -223,8 +223,8 @@ class StubSimService:
             self.world.robot.set_cmd_vel(*cmd)
 
     def on_goal(self, x: float, y: float, yaw: Optional[float] = None) -> None:
-        if self.robot and not self.world.robot.set_goal(x, y, yaw):
-            log.warning("goal_pose (%.2f, %.2f) has no route; ignored", x, y)
+        if self.robot:
+            self.tasks.goal_pose(x, y, yaw, self.t)
 
     def on_task_action(self, msg: dict) -> None:
         if not self.robot or not isinstance(msg, dict):

@@ -146,6 +146,7 @@ class StubWorld:
         self.robot = RobotBody(r.x, r.y, r.yaw, r.radius, r.max_speed, self.router)
         self.robot_reach = tuple(r.reach)
         self.tracks = Tracks()
+        self._bed_touch: set[str] = set()
         self.robot_results: list[dict] = []  # resolved robot hand-over offers, drained by the sim node
         self.objects = WorldObjects()
         self.experience: list[dict] = []  # failure hints for the robot's experience log
@@ -590,10 +591,19 @@ class StubWorld:
             if p.plan:
                 self._advance(pid, p, dt)
         if self.loaded.scenario.robot.enabled:
-            near = [(pid, p.x, p.y) for pid, p in self.people.items() if p.posture != "gone"]
+            # people lying in a bed are never "contacts"; passing a bed is bed_contact (below)
+            near = [(pid, p.x, p.y) for pid, p in self.people.items() if p.posture not in ("gone", "lying")]
             for pid in self.robot.step(dt, self.site.grid, near):
                 self._log.append(("world", {"t": t, "kind": "contact", "person": pid,
                                             "x": round(self.robot.x, 3), "y": round(self.robot.y, 3)}))
+            touching = set()
+            if self.robot.speed > 0.05:
+                touching = {b.id for b in self.site.beds.values()
+                            if math.hypot(b.x - self.robot.x, b.y - self.robot.y) <= self.robot.radius + 0.1}
+            for bid in sorted(touching - self._bed_touch):
+                self._log.append(("world", {"t": t, "kind": "bed_contact", "bed": bid,
+                                            "x": round(self.robot.x, 3), "y": round(self.robot.y, 3)}))
+            self._bed_touch = touching
         self._step_objects(t, dt)
 
     def _wall_cells(self) -> np.ndarray:

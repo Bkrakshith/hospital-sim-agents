@@ -365,3 +365,95 @@ def test_robot_topics_table():
     assert not topics.uses_g1_alias("robot", "other")
     for name in t.values():
         assert not any(name.startswith(p) for p in topics.FORBIDDEN_FOR_ROBOT)
+
+
+# ---- fix round 1 ----------------------------------------------------------------------------
+def test_second_hand_over_supersedes_the_open_one(tmp_path):
+    s, run = service(tmp_path)
+    track, place = bedside_robot(s)
+    s.on_task_action({"id": "h1", "action": "hand_over", "item": "T1", "to": track, "place": place})
+    advance(s, 0.3)
+    s.on_task_action({"id": "h2", "action": "hand_over", "item": "T1", "to": track, "place": place})
+    got = results(advance(s, 0.3))
+    assert [(r["id"], r["ok"], r["reason"]) for r in got] == [("h1", False, "superseded")]
+    s.on_intent(Intent(id="acc", person="P1", t=0, kind="accept_item"))
+    got = results(advance(s, 1.0))
+    assert [(r["id"], r["ok"], r["reason"]) for r in got] == [("h2", True, "ok")]
+
+
+def test_robot_moves_away_during_the_window(tmp_path):
+    s, _ = service(tmp_path)
+    track, place = bedside_robot(s)
+    s.on_task_action({"id": "m1", "action": "hand_over", "item": "T1", "to": track, "place": place})
+    advance(s, 0.3)
+    r = s.world.robot_pose
+    place_robot(s.world, r.x + 3.0, r.y, r.yaw)
+    s.on_intent(Intent(id="acc", person="P1", t=0, kind="accept_item"))
+    got = results(advance(s, 1.0))
+    assert [(r["id"], r["ok"], r["reason"]) for r in got] == [("m1", False, "out_of_reach_giver")]
+
+
+def test_receiver_moves_away_during_the_window(tmp_path):
+    s, _ = service(tmp_path)
+    track, place = bedside_robot(s)
+    s.on_task_action({"id": "m2", "action": "hand_over", "item": "T1", "to": track, "place": place})
+    advance(s, 0.3)
+    s.on_intent(Intent(id="down", person="P1", t=0, kind="lie_back"))
+    s.on_intent(Intent(id="acc", person="P1", t=0, kind="accept_item"))
+    got = results(advance(s, 1.0))
+    assert len(got) == 1 and got[0]["id"] == "m2" and got[0]["reason"] == "out_of_reach_receiver"
+
+
+def test_goal_arrived_result_and_log(tmp_path):
+    s, run = service(tmp_path)
+    w = s.world
+    place_robot(w, 0.46, 1.26, 0.0)
+    s.on_goal(3.0, 1.26, None)
+    got = [r for r in results(advance(s, 8.0, 0.05)) if r.get("kind") == "goal"]
+    assert [(r["ok"], r["reason"]) for r in got] == [(True, "arrived")]
+    rows = [json.loads(x) for x in (run / "robot_tasks.jsonl").read_text().splitlines()]
+    assert any(r["kind"] == "goal" and r["reason"] == "arrived" for r in rows)
+
+
+def test_goal_no_route_result(tmp_path):
+    s, _ = service(tmp_path)
+    s.on_goal(1e6, 1e6, None)
+    got = [r for r in results(advance(s, 0.2)) if r.get("kind") == "goal"]
+    assert [(r["ok"], r["reason"]) for r in got] == [(False, "no_route")]
+
+
+def test_goal_stuck_result(tmp_path):
+    s, run = service(tmp_path)
+    w = s.world
+    place_robot(w, 0.46, 1.26, 0.0)
+    s.on_goal(5.0, 1.26, None)
+    w.robot.max_speed = 0.0  # the robot cannot make progress
+    got = [r for r in results(advance(s, 7.0, 0.05)) if r.get("kind") == "goal"]
+    assert [(r["ok"], r["reason"]) for r in got] == [(False, "stuck")]
+    assert not w.robot.has_goal
+    rows = [json.loads(x) for x in (run / "robot_tasks.jsonl").read_text().splitlines()]
+    assert any(r["kind"] == "goal" and r["reason"] == "stuck" for r in rows)
+
+
+def test_passing_a_bed_logs_no_contact(tmp_path):
+    w = world(tmp_path)
+    b = w.site.beds[w.people["P1"].bed]
+    # drive past the patient's bed 0.6 m from the patient
+    place_robot(w, b.x - 1.5, b.y + 0.6, 0.0)
+    w.robot.set_cmd_vel(0.5, 0.0)
+    for i in range(1, 61):
+        w.step(i * 0.05)
+    assert not [r for s_, r in w.drain_log() if r.get("kind") == "contact"]
+
+
+def test_bed_contact_logged_when_robot_reaches_the_bed_centre_line(tmp_path):
+    w = world(tmp_path)
+    b = w.site.beds[w.people["P1"].bed]
+    w.site.grid.occ[:] = 0  # an open floor, so the robot can be driven onto the bed's centre
+    place_robot(w, b.x - 1.0, b.y, 0.0)
+    w.robot.set_cmd_vel(0.5, 0.0)
+    for i in range(1, 61):
+        w.step(i * 0.05)
+    log = [r for s_, r in w.drain_log()]
+    recs = [r for r in log if r.get("kind") == "bed_contact"]
+    assert len(recs) == 1 and recs[0]["bed"] == b.id
