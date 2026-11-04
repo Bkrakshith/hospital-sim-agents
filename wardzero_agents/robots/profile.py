@@ -15,6 +15,9 @@ import yaml
 from .sensors import SensorSpec
 
 
+G1_NAME = "g1_claude"
+
+
 @dataclass(frozen=True)
 class RobotProfile:
     name: str
@@ -31,8 +34,14 @@ class RobotProfile:
     def abilities(self) -> str:
         """The robot's body in words, for the prompt."""
         lo, hi = self.reach
+        if self.name == G1_NAME:
+            body = "Your body: a Unitree G1 humanoid with a head camera and a microphone and speaker."
+        else:
+            kind = {"legged": "legged", "wheeled": "wheeled", "static": "fixed-base"}.get(self.base, "mobile")
+            body = (f"Your body: a {kind} robot called {self.name}, body radius {self.radius:g} m, with "
+                    f"{', '.join(x.label() for x in self.sensors) or 'no sensors'}.")
         lines = [
-            "Your body: a Unitree G1 humanoid with a head camera and a microphone and speaker.",
+            body,
             f"Sensors: {', '.join(x.label() for x in self.sensors)}.",
             f"Your hands reach between {lo:g} m and {hi:g} m above the floor, within arm's length of you.",
             "You can hand an item you are holding to a person, take an item lying within arm's length, "
@@ -91,6 +100,8 @@ def save_profile(profile: RobotProfile, data: Optional[Path] = None) -> Path:
 
 
 def load_profile(name: str, data: Optional[Path] = None) -> RobotProfile:
+    """Rule: the dataclass default controller ("builtin_claude") is for the built-in G1 only. A saved profile
+    always records its controller; one saved without it was written by hand, and is "external" (the developer's own)."""
     path = profile_path(name, data)
     if not path.is_file():
         raise KeyError(f"unknown robot profile {name!r}")

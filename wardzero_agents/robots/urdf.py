@@ -179,10 +179,13 @@ def parse_urdf(folder) -> UrdfInfo:
 
 
 def _parse(folder: Path, info: UrdfInfo) -> None:
+    chosen = None
+    if folder.is_file() and folder.suffix == ".urdf":  # a specific URDF: parse it in place, meshes resolve around it
+        chosen, folder = folder, folder.parent
     if not folder.is_dir():
         info.issues.append(f"not a folder: {folder}")
         return
-    urdfs = sorted(folder.rglob("*.urdf"))
+    urdfs = [chosen] if chosen else sorted(folder.rglob("*.urdf"))
     if not urdfs:
         if any(folder.rglob("*.xacro")) or any(folder.rglob("*.urdf.xacro")):
             info.issues.append("xacro found: run xacro to produce a .urdf first")
@@ -190,7 +193,7 @@ def _parse(folder: Path, info: UrdfInfo) -> None:
             info.issues.append("no .urdf file found in the folder")
         return
     # the first in the folder itself, else the first anywhere below it
-    path = next((u for u in urdfs if u.parent == folder), urdfs[0])
+    path = chosen or next((u for u in urdfs if u.parent == folder), urdfs[0])
     info.urdf_path = path
     try:
         root = ET.parse(str(path)).getroot()

@@ -45,7 +45,8 @@ class SensorSpec:
 
     def label(self) -> str:
         """A short phrase for the robot's prompt."""
-        return str(self.params.get("label") or f"{self.kind} {self.model or self.id}")
+        text = str(self.params.get("label") or f"{self.kind} {self.model or self.id}")
+        return text + " (approx.)" if self.model and self.params.get("source") == "generic" else text
 
     def to_dict(self) -> dict:
         return {"id": self.id, "kind": self.kind, "model": self.model, "link": self.link,
@@ -79,11 +80,22 @@ def load_catalogue() -> list[dict]:
     return yaml.safe_load(CATALOGUE_PATH.read_text())["sensors"]
 
 
-def get_catalogue_entry(model_id: str) -> dict:
+def catalogue_entry(model_id: str) -> dict:
+    """The catalogue row for a model, including `source` ("datasheet" or "generic": approximate numbers)."""
     for e in load_catalogue():
         if e["id"] == model_id:
             return e
     raise KeyError(f"unknown sensor model {model_id!r}")
+
+
+get_catalogue_entry = catalogue_entry
+
+
+def sensor_from_catalogue(model_id: str, sensor_id: str, link: str, xyz=(0, 0, 0), rpy=(0, 0, 0),
+                          params: Optional[dict] = None) -> SensorSpec:
+    """A SensorSpec for a catalogue model; its `source` is copied into params so UIs and prompts can flag approximations."""
+    e = catalogue_entry(model_id)
+    return SensorSpec(sensor_id, e["kind"], model_id, link, xyz, rpy, {**(params or {}), "source": e["source"]})
 
 
 _SKIP_VENDORS = {"tashan", "texasinstruments"}  # tactile skin and mmWave radar: no matching sensor kind

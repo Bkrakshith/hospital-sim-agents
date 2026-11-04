@@ -132,3 +132,58 @@ def test_import_script_dry_run(tmp_path):
     assert any("nowhere_link" in w for w in out["warnings"])  # sensor on a link the URDF lacks
     r = subprocess.run(base + ["--urdf", str(tmp_path / "none.urdf")], capture_output=True, text=True)
     assert r.returncode == 1 and json.loads(r.stdout.strip().splitlines()[-1])["ok"] is False
+
+
+def test_generic_sources_surface():
+    assert S.catalogue_entry("ouster_os1")["source"] == "datasheet"
+    gen = next(e["id"] for e in S.load_catalogue() if e["source"] == "generic")
+    spec = S.sensor_from_catalogue(gen, "s1", "base", params={"label": "front sensor"})
+    assert spec.params["source"] == "generic" and spec.label() == "front sensor (approx.)"
+    ds = S.sensor_from_catalogue("realsense_d455", "cam", "head")
+    assert ds.params["source"] == "datasheet" and "approx" not in ds.label()
+    assert "approx" not in G1_CLAUDE.abilities()
+
+
+def test_abilities_not_g1_for_other_robots():
+    arm = RobotProfile(name="ward_arm", can_move=False, base="wheeled", radius=0.4, reach=(0.3, 1.0), max_speed=0.5,
+                       ns="arm", sensors=(S.sensor_from_catalogue("sick_tim781", "scan", "base"),), controller="external")
+    text = arm.abilities()
+    assert "G1" not in text and "Unitree" not in text and "ward_arm" in text and "wheeled" in text
+    assert "0.3 m and 1 m" in text and "(approx.)" not in text  # tim781 is a datasheet row
+    assert "Unitree G1 humanoid" in G1_CLAUDE.abilities()
+
+
+def test_loaded_profile_controller_rule(tmp_path):
+    d = tmp_path / "robots" / "hand_made"
+    d.mkdir(parents=True)
+    (d / "robot.yaml").write_text("name: hand_made\nbase: wheeled\n")
+    p = load_profile("hand_made", tmp_path)
+    assert p.controller == "external" and p.can_move is True  # written by hand: the developer's own controller
+    save_profile(RobotProfile(**{**p.__dict__, "controller": "none"}), tmp_path)
+    assert load_profile("hand_made", tmp_path).controller == "none"  # an explicit choice survives
+
+
+def _dry(tmp_path, urdf):
+    S.write_sensors_yaml(tmp_path, [])
+    r = subprocess.run([sys.executable, str(ROOT / "scripts" / "isaac_import_urdf.py"), "--dry-run", "--urdf", str(urdf),
+                        "--sensors", str(tmp_path / "wardzero_sensors.yaml"), "--out", str(tmp_path / "o.usd")],
+                       capture_output=True, text=True)
+    return r.returncode, json.loads(r.stdout.strip().splitlines()[-1])
+
+
+def test_dry_run_malformed_urdf(tmp_path):
+    bad = tmp_path / "bad.urdf"
+    bad.write_text("<robot><link name='a'>")
+    rc, out = _dry(tmp_path, bad)
+    assert rc == 1 and out["ok"] is False and out["errors"]
+
+
+def test_dry_run_parses_requested_urdf_in_place(tmp_path):
+    (tmp_path / "a_first.urdf").write_text('<robot name="a"><link name="only"/></robot>')
+    (tmp_path / "meshes").mkdir()
+    (tmp_path / "meshes" / "m.stl").write_text("s")
+    (tmp_path / "second.urdf").write_text(
+        '<robot name="b"><link name="b0"><visual><geometry><mesh filename="meshes/m.stl"/></geometry></visual></link>'
+        '<link name="b1"/><joint name="j" type="continuous"><parent link="b0"/><child link="b1"/></joint></robot>')
+    rc, out = _dry(tmp_path, tmp_path / "second.urdf")
+    assert rc == 0 and out["joints"] == 1 and not any("mesh" in w for w in out["warnings"])

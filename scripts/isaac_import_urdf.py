@@ -49,22 +49,21 @@ def check_inputs(urdf: Path, sensors_yaml: Path, out: Path, link_names=None):
         sys.path.insert(0, str(REPO))
         try:
             from wardzero_agents.robots.urdf import parse_urdf
-            info = parse_urdf(urdf.parent)
-            # the folder's first urdf may not be the one asked for; parse the asked-for one when it differs
-            if info.urdf_path != urdf:
-                import tempfile
-                import shutil
-                with tempfile.TemporaryDirectory() as t:
-                    shutil.copy(urdf, Path(t) / urdf.name)
-                    info = parse_urdf(Path(t))
+            info = parse_urdf(urdf)  # this very file, in place, so package:// and relative meshes resolve
             joints = sum(1 for j in info.joints if j["type"] in ("revolute", "continuous", "prismatic"))
             warnings += [i for i in info.issues if not i.startswith("no Gazebo sensors")]
             link_names = set(info.links)
+            if not info.links:
+                errors.append(f"URDF unusable: {info.issues[0] if info.issues else 'no links'}")
         except ImportError:  # no wardzero deps in this python: fall back to a plain read
             import xml.etree.ElementTree as ET
-            root = ET.parse(urdf).getroot()
-            link_names = {l.get("name") for l in root.findall("link")}
-            joints = sum(1 for j in root.findall("joint") if j.get("type") in ("revolute", "continuous", "prismatic"))
+            try:
+                root = ET.parse(urdf).getroot()
+                link_names = {l.get("name") for l in root.findall("link")}
+                joints = sum(1 for j in root.findall("joint")
+                             if j.get("type") in ("revolute", "continuous", "prismatic"))
+            except Exception as e:
+                errors.append(f"URDF is not valid XML: {e}")
     if sensors_yaml and Path(sensors_yaml).is_file():
         try:
             sensors = load_sensors(sensors_yaml)
