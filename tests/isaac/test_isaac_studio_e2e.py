@@ -96,6 +96,16 @@ def test_studio_runs_isaac_headless_with_recording_and_a_live_preview(tmp_path):
     voices = Path.home() / ".local" / "share" / "wardzero-agents" / "voices"  # the test's data dir is empty
     if voices.is_dir():
         env["WARDZERO_VOICES_DIR"] = str(voices)
+    if os.environ.get("WARDZERO_E2E_SCRIPTED") == "1":  # test-only speech on screen (the fake LLM never speaks)
+        script = tmp_path / "scripted_say.json"
+        script.write_text(json.dumps([
+            {"t": 4.0, "who": "V1", "text": "Good morning. Could you tell me where the outpatient clinics are?"},
+            {"t": 8.0, "who": "robot", "text": "Hello, I am the reception robot. The clinics are down the corridor on your left."},
+            {"t": 14.0, "who": "H1", "text": "Thank you, dear. My legs are not what they were."},
+            {"t": 17.0, "who": "V2", "text": "Excuse me, is there somewhere we can get a cup of tea?"},
+            {"t": 21.0, "who": "robot", "text": "The cafe is by the main entrance. Shall I call someone to help you walk there?"},
+            {"t": 26.0, "who": "H1", "text": "No, we will manage. Thank you very much."}]))
+        env["WARDZERO_TEST_SCRIPTED_SAY"] = str(script)
     for k in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_AUTH_TOKEN", "WARDZERO_KEY_FILE", "WARDZERO_SIM",
               "WARDZERO_STUDIO_SIM"):
         env.pop(k, None)

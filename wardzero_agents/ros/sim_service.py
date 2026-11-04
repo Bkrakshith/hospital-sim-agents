@@ -16,11 +16,14 @@ Nothing here imports rclpy at module level: SimRos imports the message types whe
 """
 from __future__ import annotations
 
+import json
 import logging
 import math
+import os
 import time
 from collections import deque
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Callable, Iterable, Optional
 
 from ..config.loader import LoadedScenario
@@ -69,6 +72,15 @@ class SimOutputs:
     stop: bool = False
 
 
+def _scripted_lines() -> list:
+    """WARDZERO_TEST_SCRIPTED_SAY=<json file>: [{"t": 3.0, "who": "robot" | person id, "text": "...", "to": id}].
+    Unset in every real run; never read by the default fake LLM."""
+    path = os.environ.get("WARDZERO_TEST_SCRIPTED_SAY")
+    if not path:
+        return []
+    return sorted(json.loads(Path(path).read_text(encoding="utf-8")), key=lambda d: float(d["t"]))
+
+
 class SimService:
     """The sim without ROS: feed it messages, call step(dt), publish what it returns.
 
@@ -114,6 +126,7 @@ class SimService:
         # Sim-side bookkeeping only: who the robot's microphone last picked up speaking. The robot
         # itself sees source "unknown"; the sim uses the true id to route the reply.
         self._last_robot_listener: Optional[tuple[float, str]] = None
+        self._scripted = _scripted_lines()
 
     # ---- inputs --------------------------------------------------------------------------
     def ready(self, what: str) -> None:
@@ -276,6 +289,20 @@ class SimService:
         heard = [h[pid] for _, _, h in self._recent if pid in h]
         return obs.model_copy(update={"heard": heard})
 
+    def _speak_scripted(self) -> None:
+        """Test only (WARDZERO_TEST_SCRIPTED_SAY): lines said at fixed sim times, so a recording has speech on screen
+        without a model. A line for a person who is not in the scene yet waits for them (up to 20 s)."""
+        while self._scripted and self._scripted[0]["t"] <= self.t:
+            line = self._scripted[0]
+            who = str(line.get("who", ""))
+            if who == "robot":
+                self.on_robot_say(str(line["text"]))
+            elif who in self.world.people and self.world.people[who].posture != "gone":
+                self.on_say(Say(person=who, t=self.t, text=str(line["text"]), addressee=line.get("to")))
+            elif self.t - line["t"] < 20.0:
+                return
+            self._scripted.pop(0)
+
     @property
     def held(self) -> bool:
         """The clock must not move: paused, waiting for the other nodes, a lockstep decision pending,
@@ -290,6 +317,7 @@ class SimService:
         if not held and not self._stop:
             self.t = min(self.duration_s, self.t + self.time_scale * wall_dt)
             self.bodies.step(self.world, self.t)
+        self._speak_scripted()
         self._flush_world()
         out = SimOutputs(clock=self.t)
         if self.robot:

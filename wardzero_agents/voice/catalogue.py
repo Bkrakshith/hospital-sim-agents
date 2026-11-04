@@ -15,6 +15,7 @@ from typing import Optional
 HF_BASE = "https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_GB"
 AGE_BANDS = ("young_adult", "adult", "older")
 DEFAULT_ROBOT_VOICE = "en_GB-cori-medium"
+ANNOUNCER_VOICE = "en_GB-vctk-medium#p236"  # the PA and any other non-person, non-robot speaker; never a person's voice
 
 
 @dataclasses.dataclass(frozen=True)
@@ -102,3 +103,14 @@ def installed_models(directory: Optional[Path] = None) -> set[str]:
     """Stems whose .onnx and .onnx.json are both in the folder."""
     d = voices_dir() if directory is None else Path(directory)
     return {s for s in MODELS if (d / f"{s}.onnx").is_file() and (d / f"{s}.onnx.json").is_file()}
+
+
+def credits_text(keys) -> str:
+    """The CREDITS.txt for the voices used in a run: one line per model with its licence and credit."""
+    used = sorted({VOICES[k].model for k in keys if k in VOICES})
+    lines = ["Voices in this recording (Piper text-to-speech, offline):", ""]
+    for stem in used:
+        m = MODELS[stem]
+        lines.append(f"- {stem}: {m.licence}. {m.credit}.")
+    lines += ["", "Voice models: https://huggingface.co/rhasspy/piper-voices"]
+    return "\n".join(lines) + "\n"

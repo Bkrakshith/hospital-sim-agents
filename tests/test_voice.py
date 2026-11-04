@@ -9,9 +9,9 @@ import numpy as np
 import pytest
 
 from wardzero_agents.voice import media, mix
-from wardzero_agents.voice.assign import assign_voices, robot_voice
-from wardzero_agents.voice.catalogue import DEFAULT_ROBOT_VOICE, MODELS, VOICES, installed_models
-from wardzero_agents.voice.post import build_voice, speech_events, video_timing
+from wardzero_agents.voice.assign import announcer_voice, assign_voices, robot_voice
+from wardzero_agents.voice.catalogue import ANNOUNCER_VOICE, DEFAULT_ROBOT_VOICE, MODELS, VOICES, credits_text, installed_models
+from wardzero_agents.voice.post import build_voice, load_cast, speech_events, video_timing
 
 ALL = set(MODELS)
 POOL = [v for v in VOICES.values() if v.key != DEFAULT_ROBOT_VOICE]
@@ -177,7 +177,7 @@ def test_the_cli_step_never_fails_the_run_when_voices_are_missing(tmp_path, monk
     run = make_run(tmp_path, EVENTS)
     monkeypatch.setenv("WARDZERO_DATA_DIR", str(tmp_path / "data"))
     cli._post_voice(run)
-    assert "No voice models" in capsys.readouterr().out and not (run / "audio").exists()
+    assert "No voice models" in capsys.readouterr().err and not (run / "audio").exists()
 
 
 def test_a_run_without_timing_starts_at_zero_and_one_with_it_reads_the_stamp(tmp_path):
@@ -232,8 +232,9 @@ needs_models = pytest.mark.skipif(
 def test_two_lines_are_synthesised_with_speech_in_them():
     from wardzero_agents.voice.tts import Synth
     s = Synth()
-    a, sr = s.say(VOICES[DEFAULT_ROBOT_VOICE], "Hello, I am the reception robot.", robot=True)
-    b, sr2 = s.say(VOICES["en_GB-vctk-medium#p225"], "Please take a seat.")
+    (a, sr), (b, sr2) = s.run([(VOICES[DEFAULT_ROBOT_VOICE], "Hello, I am the reception robot.", True),
+                               (VOICES["en_GB-vctk-medium#p225"], "Please take a seat.", False)])
+    assert s.lines == 2
     for x, rate in ((a, sr), (b, sr2)):
         assert 0.8 < x.size / rate < 8.0 and np.abs(x).max() > 0.1 and np.sqrt((x ** 2).mean()) > 0.01
 
@@ -257,3 +258,249 @@ def test_a_whole_run_is_voiced_into_a_wav_and_both_videos_in_sync(tmp_path):
     for n in ("overhead.mp4", "follow.mp4"):
         err = streams(run / "video" / n)
         assert "Audio: aac" in err and abs(media.duration_s(run / "video" / n) - 6.0) < 0.1
+
+
+# ---- fix round 1 ---------------------------------------------------------------------------------
+AGENTS = Path(__file__).resolve().parents[1]
+CONFIG = AGENTS / "config"
+
+
+def test_the_package_never_imports_piper():
+    import re
+    pat = re.compile(r"^\s*(import piper|from piper)\b", re.M)
+    bad = [str(p) for p in (AGENTS / "wardzero_agents").rglob("*.py") if pat.search(p.read_text(encoding="utf-8"))]
+    assert bad == []  # Piper is GPL-3: only scripts/piper_batch.py imports it, in its own process
+    assert "from piper" in (AGENTS / "scripts" / "piper_batch.py").read_text()
+
+
+def stage_run(tmp_path, scenario_dir: Path, scenario_file: str) -> Path:
+    import shutil
+    run = tmp_path / "run"
+    shutil.copytree(scenario_dir, run / "config")
+    (run / "meta.json").write_text(json.dumps({"run_id": "r1", "scenario_path": str(run / "config" / scenario_file)}))
+    return run
+
+
+def check_voice_sexes(people):
+    a = assign_voices(people, ALL, seed="x")
+    assert len(a) == len(people)
+    for pid, sex, _age in people:
+        assert a[pid].sex == sex
+
+
+def test_the_cast_of_a_yaml_scenario_run_has_sex_and_age(tmp_path):
+    import shutil
+    d = tmp_path / "cfg"
+    d.mkdir()
+    shutil.copy(CONFIG / "personas.yaml", d / "personas.yaml")
+    shutil.copy(CONFIG / "scenarios" / "waiting_area_v1.yaml", d / "waiting_area_v1.yaml")
+    run = stage_run(tmp_path, d, "waiting_area_v1.yaml")  # no site map, storyboard or deck in the copy
+    people, vk = load_cast(run)
+    assert [p[0] for p in people] == ["P1", "P2", "P3", "P4", "P5"] and vk == DEFAULT_ROBOT_VOICE
+    assert all(sex in ("female", "male") and 18 <= age <= 100 for _, sex, age in people)
+    check_voice_sexes(people)
+
+
+def test_the_cast_of_a_studio_project_run_has_the_characters_sex_and_age_band(tmp_path):
+    from wardzero_agents.config.presets import load_scenario_presets
+    from wardzero_agents.studio.compile import compile_project
+    from wardzero_agents.studio.project import Project
+    preset = load_scenario_presets(CONFIG)["ward_fire"]
+    chars = [c.model_copy(update={"sex": "female" if i % 2 == 0 else "male", "age_band": "71+" if i < 2 else "18-30"})
+             for i, c in enumerate(preset.characters)]
+    proj = Project(id="p1", name="n", scenario_id="ward_fire", characters=chars)
+    path = compile_project(proj, CONFIG, tmp_path / "staged")
+    import shutil
+    flat = tmp_path / "flat"  # a run's config copy is flat: the scenario sits beside personas.yaml
+    shutil.copytree(path.parent.parent, flat)
+    shutil.copy(path, flat / path.name)
+    run = stage_run(tmp_path, flat, path.name)
+    people, _ = load_cast(run)
+    assert [p[0] for p in people] == [c.id for c in chars]
+    assert [p[1] for p in people] == [c.sex for c in chars]
+    assert all(age >= 68 for _, _, age in people[:2]) and all(age < 40 for _, _, age in people[2:])
+    check_voice_sexes(people)
+
+
+def test_the_cast_does_not_need_the_site_map_and_an_unreadable_cast_warns_visibly(tmp_path):
+    old = AGENTS / "runs" / "20261104-082500_waiting_area_v1"
+    if old.is_dir():
+        assert len(load_cast(old)[0]) == 5
+    run = make_run(tmp_path, EVENTS)
+    with pytest.raises(ValueError, match="no scenario"):
+        load_cast(run)
+    said = []
+    models = tmp_path / "m"
+    models.mkdir()
+    for stem in ("en_GB-cori-medium", "en_GB-alba-medium"):
+        (models / f"{stem}.onnx").write_bytes(b"x")
+        (models / f"{stem}.onnx.json").write_bytes(b"{}")
+    import wardzero_agents.voice.post as post
+    from wardzero_agents.voice import tts
+    class Fake:
+        lines, seconds = 0, 0.0
+        def __init__(self, d): pass
+        def run(self, items): return [(tone(0.2), mix.SAMPLE_RATE) for _ in items]
+    orig = post.Synth
+    post.Synth = Fake
+    try:
+        res = build_voice(run, models_dir=models, say=lambda m: None, warn=said.append)
+    finally:
+        post.Synth = orig
+    assert any("cast could not be read" in m and "no scenario" in m for m in said) and res["wav"] is not None
+
+
+def test_the_pa_gets_an_announcement_voice_that_no_person_has():
+    a = announcer_voice(ALL, robot_voice(None, ALL))
+    assert a.key == ANNOUNCER_VOICE
+    people = [(f"P{i}", "female", 30) for i in range(40)]
+    voices = assign_voices(people, ALL, seed=1, reserved=[ANNOUNCER_VOICE, DEFAULT_ROBOT_VOICE])
+    assert ANNOUNCER_VOICE not in {v.key for v in voices.values()}
+    only = {"en_GB-cori-medium", "en_GB-alba-medium"}  # no vctk: any voice but the robot's
+    assert announcer_voice(only, robot_voice(None, only)).key == "en_GB-alba-medium"
+
+
+def test_pa_lines_use_the_announcer_and_never_a_persons_voice(tmp_path):
+    import wardzero_agents.voice.post as post
+    seen = []
+    class Fake:
+        lines, seconds = 0, 0.0
+        def __init__(self, d): pass
+        def run(self, items):
+            seen.extend((v.key, text, robot) for v, text, robot in items)
+            return [(tone(0.2), mix.SAMPLE_RATE) for _ in items]
+    models = tmp_path / "m"
+    models.mkdir()
+    for stem in MODELS:
+        (models / f"{stem}.onnx").write_bytes(b"x")
+        (models / f"{stem}.onnx.json").write_bytes(b"{}")
+    ev = EVENTS[:1] + [{"t": 6.0, "source_id": "pa", "source_kind": "pa", "text": "Visitors please leave.",
+                        "loudness_db": 70, "x": 0, "y": 0, "z": 2}]
+    run = make_run(tmp_path, ev)
+    orig, post.Synth = post.Synth, Fake
+    try:
+        build_voice(run, models_dir=models, say=lambda m: None, warn=lambda m: None)
+    finally:
+        post.Synth = orig
+    by_text = {t: k for k, t, _ in seen}
+    assert by_text["Visitors please leave."] == ANNOUNCER_VOICE and by_text["Excuse me."] != ANNOUNCER_VOICE
+
+
+def test_credits_list_the_voices_used_with_their_licences_and_the_report_shows_them(tmp_path):
+    txt = credits_text({DEFAULT_ROBOT_VOICE, "en_GB-vctk-medium#p225", "en_GB-vctk-medium#p226"})
+    assert txt.count("en_GB-vctk-medium:") == 1 and "CC BY 4.0" in txt and "Public domain" in txt
+    assert "alba" not in txt
+    assert "Piper text-to-speech" in (AGENTS / "NOTICE").read_text() and "CC BY 4.0" in (AGENTS / "NOTICE").read_text()
+
+
+def load_script(name):
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(name, AGENTS / "scripts" / f"{name}.py")
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+    return m
+
+
+def test_fetch_voices_gives_one_clean_error_on_a_network_failure_and_leaves_no_part_file(tmp_path, monkeypatch):
+    import urllib.error
+    fv = load_script("fetch_voices")
+    def boom(*a, **k):
+        raise urllib.error.URLError("no route to host")
+    monkeypatch.setattr(fv.urllib.request, "urlopen", boom)
+    with pytest.raises(SystemExit) as e:
+        fv.fetch("https://example.invalid/x.onnx", tmp_path / "x.onnx", "0" * 64)
+    assert "Could not download x.onnx" in str(e.value) and "\n" not in str(e.value)
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_fetch_voices_leaves_no_part_file_on_a_half_download_or_a_bad_hash(tmp_path, monkeypatch):
+    fv = load_script("fetch_voices")
+    class Resp:
+        def __init__(self, fail): self.n, self.fail = 0, fail
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def read(self, n):
+            self.n += 1
+            if self.n == 1:
+                return b"abc"
+            if self.fail:
+                raise ConnectionResetError("reset")
+            return b""
+    monkeypatch.setattr(fv.urllib.request, "urlopen", lambda *a, **k: Resp(True))
+    with pytest.raises(SystemExit):
+        fv.fetch("u", tmp_path / "y.onnx", "0" * 64)
+    monkeypatch.setattr(fv.urllib.request, "urlopen", lambda *a, **k: Resp(False))
+    with pytest.raises(SystemExit, match="SHA-256"):
+        fv.fetch("u", tmp_path / "y.onnx", "0" * 64)
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_a_broken_meta_json_is_a_warning_not_a_traceback(tmp_path):
+    run = make_run(tmp_path, EVENTS)
+    (run / "meta.json").write_text("{not json")
+    from wardzero_agents.voice.post import _run_meta
+    assert _run_meta(run) == {}
+    said = []
+    res = build_voice(run, models_dir=tmp_path / "none", say=said.append, warn=said.append)  # no models: still no crash
+    assert res["wav"] is None
+    from wardzero_agents import cli
+    assert cli.main(["voice", str(run), "--models-dir", str(tmp_path / "none")]) == 1
+
+
+def test_the_follow_clip_is_trimmed_to_the_overhead_length(tmp_path):
+    pytest.importorskip("imageio_ffmpeg")
+    run = tmp_path / "r"
+    (run / "video").mkdir(parents=True)
+    make_video(run / "video" / "overhead.mp4", 2)
+    make_video(run / "video" / "follow.mp4", 4)  # four seconds: more frames than the overhead clip
+    t0, length, vids = video_timing(run)
+    assert length == pytest.approx(2.0, abs=0.1)
+    wav = tmp_path / "v.wav"
+    mix.write_wav(wav, mix.mix([], 0.0, length))
+    for v in vids:
+        assert media.mux_audio(v, wav, max_duration=length)
+    assert abs(media.duration_s(run / "video" / "follow.mp4") - media.duration_s(run / "video" / "overhead.mp4")) < 0.1
+
+
+def decode_click_time(mp4: Path, out: Path) -> float:
+    subprocess.run([media.ffmpeg_exe(), "-y", "-v", "error", "-i", str(mp4), "-vn", "-ac", "1", "-ar", str(mix.SAMPLE_RATE),
+                    str(out)], check=True)
+    a, sr = mix.read_wav(out)
+    return float(np.argmax(np.abs(a) > 0.3)) / sr
+
+
+def test_a_click_placed_at_t_is_found_within_one_frame_in_the_muxed_mp4(tmp_path):
+    pytest.importorskip("imageio_ffmpeg")
+    mp4 = tmp_path / "overhead.mp4"
+    make_video(mp4, 4)
+    t0, t = 0.5, 2.0  # video frame 0 is at run time 0.5, the click at run time 2.0: video time 1.5 s
+    click = np.zeros(200, np.float32)
+    click[:100] = 0.9 * np.sin(2 * np.pi * 1000 * np.arange(100) / mix.SAMPLE_RATE)
+    wav = tmp_path / "v.wav"
+    mix.write_wav(wav, mix.mix([mix.Placed(t, click)], t0, media.duration_s(mp4), pan=False))
+    assert media.mux_audio(mp4, wav)
+    found = decode_click_time(mp4, tmp_path / "dec.wav")
+    offset_ms = (found - (t - t0)) * 1000.0
+    print(f"CLICK OFFSET {offset_ms:.1f} ms")
+    assert abs(offset_ms) < 1000.0 / 30.0
+    assert "start: 0.000000" in streams(mp4)  # the container starts together with the picture
+
+
+def test_the_scripted_say_hook_is_off_by_default_and_speaks_at_its_times(tmp_path, monkeypatch):
+    from wardzero_agents.config.loader import load_scenario
+    from wardzero_agents.ros.sim_service import SimService
+    from wardzero_agents.runlog import RunLog
+    v1 = CONFIG / "scenarios" / "waiting_area_v1.yaml"
+    monkeypatch.delenv("WARDZERO_TEST_SCRIPTED_SAY", raising=False)
+    assert SimService(load_scenario(v1), RunLog(tmp_path / "a"), wait_for=())._scripted == []
+    script = tmp_path / "s.json"
+    script.write_text(json.dumps([{"t": 1.0, "who": "robot", "text": "Hello there."},
+                                  {"t": 2.0, "who": "P1", "text": "Good morning."}]))
+    monkeypatch.setenv("WARDZERO_TEST_SCRIPTED_SAY", str(script))
+    svc = SimService(load_scenario(v1), RunLog(tmp_path / "b"), wait_for=())
+    for _ in range(40 * 3):
+        svc.step(1 / 40)
+    said = [(e.source_id, e.text) for e in svc.audio_log] if hasattr(svc, "audio_log") else None
+    rows = [json.loads(l) for l in (tmp_path / "b" / "audio.jsonl").read_text().splitlines()] if (tmp_path / "b" / "audio.jsonl").exists() else []
+    texts = {r["text"]: r["t"] for r in rows if r.get("text")}
+    assert texts.get("Hello there.", 0) >= 1.0 and texts.get("Good morning.", 0) >= 2.0

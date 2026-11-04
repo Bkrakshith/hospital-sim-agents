@@ -193,3 +193,12 @@ def test_the_loop_advances_through_the_recorders_step_when_there_is_one(tmp_path
     ros = type("R", (), {"publish": lambda self, out: None})()
     HostLoop(svc, ros, NoUpdate(), tl, time_scale=0.0, advance=advance).frame()
     assert calls == ["advance"] and svc.t == pytest.approx(DT)
+
+
+@pytest.mark.parametrize("time_scale", [0.0, 0.5, 1.0, 4.0])
+def test_the_time_scale_only_paces_the_wall_so_video_time_is_always_sim_time(tmp_path, time_scale):
+    """--record voices rely on run time = video time: --time-scale never changes how far a frame advances the clock."""
+    loop, svc, tl, wall = make(tmp_path, time_scale=time_scale)
+    for _ in range(30):
+        loop.frame()
+    assert svc.t == pytest.approx(30 * DT)

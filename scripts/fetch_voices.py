@@ -34,12 +34,19 @@ def fetch(url: str, dest: Path, want: str) -> None:
         return
     tmp = dest.with_name(dest.name + ".part")
     print(f"  fetching {dest.name} ...", flush=True)
-    with urllib.request.urlopen(url, timeout=60) as r, open(tmp, "wb") as f:
-        while True:
-            block = r.read(1 << 20)
-            if not block:
-                break
-            f.write(block)
+    try:
+        with urllib.request.urlopen(url, timeout=60) as r, open(tmp, "wb") as f:
+            while True:
+                block = r.read(1 << 20)
+                if not block:
+                    break
+                f.write(block)
+    except (OSError, ValueError) as exc:  # URLError, HTTPError, timeouts, a full disk
+        tmp.unlink(missing_ok=True)
+        raise SystemExit(f"Could not download {dest.name} ({type(exc).__name__}: {exc}). Check the network and run again.")
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
     got = sha256(tmp)
     if got != want:
         tmp.unlink()

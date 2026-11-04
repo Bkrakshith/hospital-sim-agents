@@ -6,7 +6,7 @@ import hashlib
 from typing import Iterable, Optional
 
 from ..isaac_host.characters import age_band
-from .catalogue import DEFAULT_ROBOT_VOICE, VOICES, Voice
+from .catalogue import ANNOUNCER_VOICE, DEFAULT_ROBOT_VOICE, VOICES, Voice
 
 
 def _rank(seed: object, pid: str, key: str) -> str:
@@ -26,6 +26,15 @@ def robot_voice(name: Optional[str], models: set) -> Optional[Voice]:
             return v
     pool = usable(models)
     return pool[0] if pool else None
+
+
+def announcer_voice(models: set, robot: Optional[Voice] = None) -> Optional[Voice]:
+    """The PA / non-person voice: its own speaker when installed, else any installed voice but the robot's."""
+    v = VOICES.get(ANNOUNCER_VOICE)
+    if v is not None and v.model in models:
+        return v
+    pool = [x for x in usable(models) if robot is None or x.key != robot.key]
+    return pool[0] if pool else robot
 
 
 def assign_voices(people: Iterable[tuple], models: set, seed: object = 0, reserved: Iterable[str] = ()) -> dict:

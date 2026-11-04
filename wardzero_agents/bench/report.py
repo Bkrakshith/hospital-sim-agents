@@ -257,7 +257,12 @@ def _video(run_dir: Path) -> Optional[dict]:
     """The run's overhead recording, when there is one (with its voices once the voice step has run)."""
     if not (run_dir / "video" / "overhead.mp4").is_file():
         return None
-    return {"src": "video/overhead.mp4", "voiced": (run_dir / "audio" / "voice.wav").is_file()}
+    credits = ""
+    try:
+        credits = (run_dir / "audio" / "CREDITS.txt").read_text(encoding="utf-8")
+    except OSError:
+        pass
+    return {"src": "video/overhead.mp4", "voiced": (run_dir / "audio" / "voice.wav").is_file(), "credits": credits}
 
 
 class _NoPreset:
@@ -370,6 +375,8 @@ def render_html(facts: dict) -> str:
     video = (f'<section id="video"><h2>{"Recording with voices" if vid["voiced"] else "Recording"}</h2>'
              f'<video controls preload="metadata" src="{_e(vid["src"])}"></video>'
              + ('<p class="note">The robot and the people are heard speaking in the picture\'s time.</p>' if vid["voiced"] else "")
+             + (f'<details class="note"><summary>Voice credits</summary><pre>{_e(vid["credits"])}</pre></details>'
+                if vid.get("credits") else "")
              + "</section>") if vid else ""
     tok = facts["tokens"]
     facts_rows = [

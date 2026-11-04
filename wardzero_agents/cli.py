@@ -459,7 +459,7 @@ def _post_voice(run_dir: Path) -> None:
     """Spoken voices for a recorded run, after the simulator has exited (CPU only). Never fails the run."""
     try:
         from .voice.post import build_voice
-        build_voice(run_dir, say=lambda m: print(m, flush=True))
+        build_voice(run_dir, say=lambda m: print(m, flush=True), warn=err)
     except Exception as exc:
         err(f"No voices ({type(exc).__name__}: {keys.redact(str(exc))[:200]}). Run `hhumans voice {run_dir}` to try again.")
 
@@ -469,7 +469,7 @@ def cmd_voice(args) -> int:
     run_dir = Path(args.run_dir).resolve()
     if not run_dir.is_dir():
         raise CliError(f"No folder at {run_dir}")
-    res = build_voice(run_dir, models_dir=Path(args.models_dir) if args.models_dir else None)
+    res = build_voice(run_dir, models_dir=Path(args.models_dir) if args.models_dir else None, warn=err)
     return 0 if res["wav"] is not None or res["warning"] is None else 1
 
 

@@ -1,0 +1,12 @@
+WardZero robot test lab (hospital-sim-agents)
+
+Spoken voices. Recorded runs can be voiced with Piper text-to-speech (run as a separate process, never linked) and these
+voice models, which are downloaded by scripts/fetch_voices.py and are not part of this repository:
+
+- en_GB-cori-medium: public domain. Bryce Beattie, from LibriVox readings.
+- en_GB-alba-medium: CC BY 4.0. Alba voice, CSTR / University of Edinburgh (https://datashare.ed.ac.uk/handle/10283/3270).
+- en_GB-northern_english_male-medium: CC BY-SA 4.0. Google crowdsourced UK and Ireland English (https://www.openslr.org/83/).
+- en_GB-vctk-medium: CC BY 4.0. CSTR VCTK corpus, University of Edinburgh (https://datashare.ed.ac.uk/handle/10283/3443).
+
+Voice models are from https://huggingface.co/rhasspy/piper-voices. A published film that uses them should repeat these
+credits (every voiced run writes audio/CREDITS.txt with the ones it used).

@@ -388,3 +388,14 @@ def test_report_embeds_the_voiced_overhead_video_when_there_is_one(tmp_path):
     (rd / "audio" / "voice.wav").write_bytes(b"x")
     page = build_report(rd, AE, None).read_text()
     assert "Recording with voices" in page and json.loads((rd / "report.json").read_text())["video"]["voiced"] is True
+
+
+def test_report_shows_the_voice_credits_under_the_video(tmp_path):
+    rd = debriefed_run(tmp_path)
+    (rd / "video").mkdir()
+    (rd / "video" / "overhead.mp4").write_bytes(b"x")
+    (rd / "audio").mkdir()
+    (rd / "audio" / "voice.wav").write_bytes(b"x")
+    (rd / "audio" / "CREDITS.txt").write_text("- en_GB-vctk-medium: CC BY 4.0. CSTR VCTK corpus.\n")
+    page = build_report(rd, AE, None).read_text()
+    assert "Voice credits" in page and "CSTR VCTK corpus" in page and page.index("<video") < page.index("Voice credits")
