@@ -101,6 +101,24 @@ class RecordConfig:
         return frames / float(self.fps)
 
 
+def wait_until_stable(count, update, stable_s: float = 1.0, timeout_s: float = 60.0, expect: int = 0,
+                      clock=time.monotonic) -> bool:
+    """Call ``update`` until ``count()`` (files written so far) has not grown for ``stable_s`` and reached ``expect``.
+    True when it settled, False at the timeout. (Replicator's ``wait_until_complete`` also waits for the robot's camera
+    writers and took as long as the recording itself.)"""
+    start = last_change = clock()
+    seen = -1
+    while True:
+        update()
+        n, now = count(), clock()
+        if n != seen:
+            seen, last_change = n, now
+        if n >= expect and now - last_change >= stable_s:
+            return True
+        if now - start >= timeout_s:
+            return False
+
+
 def encoder_args(cfg: RecordConfig) -> dict:
     """``start_encoding`` keywords: the frame count is unknown (0), the frame rate is the sim's."""
     return {"framerate": float(cfg.fps), "nframes": 0, "overwrite_video": True}
@@ -251,9 +269,12 @@ class Recorder:
             self.app.update()  # held: nothing moves, so nothing is recorded
             return
         self.sim_frames += 1
-        capture = self.cfg.record or self.sim_frames % self._stride == 0
-        if not capture:
+        if not self.cfg.record:
+            # preview alone: plain updates (the robot's camera writers fire on them; an orchestrator step only now and
+            # then would never line up with its 5 Hz tick), and the overhead annotator is read every few frames
             self.app.update()
+            if self.sim_frames % self._stride == 0:
+                self._preview_only_frame()
             return
         if self._follow_xf is not None:
             pose = self.robot_pose()
@@ -275,6 +296,16 @@ class Recorder:
             s = preview_scale(self.cfg.res) if self.cfg.record else 1
             self._sink.write(self._last_rgba[::s, ::s])
 
+    def _preview_only_frame(self) -> None:
+        import numpy as np
+
+        t0 = time.monotonic()
+        img = np.asarray(self._an_top.get_data())
+        self.render_s += time.monotonic() - t0
+        if img.size and self._sink is not None:
+            self.frames += 1
+            self._sink.write(img)
+
     # ---- the end ----
     def finish(self) -> dict:
         """Finalise the overhead MP4, encode the follow frames, and return what was recorded."""
@@ -286,15 +317,23 @@ class Recorder:
             self._sink.clear()
         if not cfg.record:
             return stats
-        try:
-            self._rep.orchestrator.wait_until_complete()
-        except Exception as exc:
-            log.warning("the writers did not finish cleanly: %s", exc)
+        t0 = time.monotonic()
+        folder = cfg.video_dir / FOLLOW_DIR
+        if self._follow_writer is not None and not wait_until_stable(
+                lambda: sum(1 for _ in folder.glob("rgb_*.jp*g")), self.app.update, expect=self.frames):
+            log.warning("the follow-camera frames were still arriving after the wait; the clip may be short")
+        stats["writers_wait_s"] = round(time.monotonic() - t0, 1)
         self._enc.finalize_encoding()
         self._fix_header(cfg.overhead_mp4, self.encoded)  # the encoder was told no length at the start
         stats["overhead_frames"] = self.encoded
         if self._follow_writer is not None:
+            t0 = time.monotonic()
             stats["follow_frames"] = self._encode_follow()
+            stats["follow_encode_s"] = round(time.monotonic() - t0, 1)
+        try:  # writer schedules for frames that will never come (the robot camera's 5 Hz) would stall Kit's shutdown ~50 s
+            self._rep.orchestrator.stop()
+        except Exception as exc:
+            log.warning("could not stop the Replicator orchestrator: %s", exc)
         log.info("recording done: %s", stats)
         return stats
 

@@ -167,19 +167,20 @@ def bag_stamps(bag: Path, topic: str) -> list:
 def check_one_time_base(run: Path, bag: Path) -> dict:
     """What the robot hears is on one time base: /clock (published once per frame from svc.t plus Isaac's start-up offset),
     tf-side joint stamps and camera_info stamps agree, never repeat and never go back. The run's own streams stay on svc.t."""
-    run_t = max(r["t"] for r in stream(run, "status"))
+    run_t = [r for r in stream(run, "host") if r.get("kind") == "final"][-1]["t"]  # the service's time at the end
     off = next(r for r in stream(run, "host") if r.get("kind") == "startup")["robot_clock_offset_s"]
     frame = 1 / 30
     clock = bag_stamps(bag, "/clock")
     assert len(clock) >= SECONDS * 25, len(clock)
-    assert all(b > a for a, b in zip(clock, clock[1:])), "/clock repeats or goes back"  # strictly increasing
+    # strictly increasing (the very last message repeats the final time: the scenario's end holds the clock at its length)
+    assert all(b > a for a, b in zip(clock[:-1], clock[1:-1])) and clock[-1] >= clock[-2], "/clock repeats or goes back"
     assert 0 <= clock[0] - off <= 2 * frame and abs(clock[-1] - off - run_t) <= frame + 1e-6, (clock[0], clock[-1], off, run_t)
     out = {"/clock": {"n": len(clock), "first_minus_offset": round(clock[0] - off, 4),
                       "last_minus_offset_minus_run_t": round(clock[-1] - off - run_t, 4)}, "run_t": run_t, "offset": off}
     near = lambda x: min(abs(x - c) for c in clock)  # noqa: E731
     joints = bag_stamps(bag, "/robot/joint_states")
     assert len(joints) >= SECONDS * 25 and all(b > a for a, b in zip(joints, joints[1:])), "joint stamps repeat"  # once a frame
-    assert max(near(x) for x in joints) <= 1e-6, "joint stamps are not /clock's"
+    assert max(near(x) for x in joints[:-1]) <= 1e-6 and near(joints[-1]) <= frame + 1e-6, "joint stamps are not /clock's"
     info = bag_stamps(bag, "/robot/camera/camera_info")
     assert len(info) >= SECONDS * 4 and all(b > a for a, b in zip(info, info[1:]))
     assert max(near(x) for x in info) <= frame + 1e-6, "camera stamps are on another time base"

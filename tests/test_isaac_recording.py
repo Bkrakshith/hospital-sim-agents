@@ -152,7 +152,8 @@ def test_recorded_frames_render_and_encode_only_while_the_timeline_runs(tmp_path
     assert (rec.frames, rec.encoded, rec.sim_frames) == (2, 2, 2)
 
 
-def test_preview_alone_renders_one_frame_in_six(tmp_path):
+def test_preview_alone_never_steps_the_orchestrator_and_reads_one_frame_in_six(tmp_path):
+    """An orchestrator step now and then would never line up with the robot camera's 5 Hz tick: its images would stop."""
     pytest.importorskip("numpy")
     pytest.importorskip("PIL")
     kit = FakeKit()
@@ -160,8 +161,8 @@ def test_preview_alone_renders_one_frame_in_six(tmp_path):
     rec._an_top = type("A", (), {"get_data": staticmethod(lambda: __import__("numpy").full((360, 640, 4), 9, "uint8"))})()
     for _ in range(12):
         rec.step()
-    assert kit.log.count("render") == 2 and kit.log.count("update") == 10 and "encode" not in kit.log
-    assert (tmp_path / "preview" / "latest.jpg").stat().st_size > 0
+    assert kit.log.count("render") == 0 and kit.log.count("update") == 12 and "encode" not in kit.log
+    assert rec.frames == 2 and (tmp_path / "preview" / "latest.jpg").stat().st_size > 0
 
 
 def test_recording_and_preview_together_downscale_the_record_frame(tmp_path):
@@ -239,3 +240,23 @@ def test_a_header_that_cannot_be_patched_is_warned_about(tmp_path, caplog):
     with caplog.at_level("WARNING"):
         rec._fix_header(bad, 10)
     assert "header duration" in caplog.text
+
+
+def test_wait_until_stable_returns_once_the_files_stop_arriving():
+    ticks = {"n": 0, "t": 0.0}
+    seq = [1, 2, 3, 3, 3, 3, 3, 3]
+
+    def update():
+        ticks["t"] += 0.5
+        ticks["n"] = seq[min(int(ticks["t"] / 0.5) - 1, len(seq) - 1)]
+    assert R.wait_until_stable(lambda: ticks["n"], update, stable_s=1.0, expect=3, clock=lambda: ticks["t"]) is True
+    assert ticks["t"] <= 3.5  # 3 reached at 1.5 s, stable 1 s later
+
+
+def test_wait_until_stable_waits_for_the_expected_count_and_gives_up():
+    t = {"t": 0.0}
+
+    def update():
+        t["t"] += 1.0
+    assert R.wait_until_stable(lambda: 5, update, stable_s=1.0, timeout_s=10, expect=9, clock=lambda: t["t"]) is False
+    assert t["t"] == 10.0

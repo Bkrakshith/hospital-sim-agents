@@ -388,8 +388,9 @@ class IsaacHost:
                 log.exception("could not finish the recording")
             self.recorder = None
         if self.bag is not None:
-            result = self.bag.stop()
-            log.info("rosbag %s (%s)", result, "finalised" if self.bag.finalised else "no metadata.yaml")
+            bag, self.bag = self.bag, None
+            result = bag.stop()
+            log.info("rosbag %s (%s)", result, "finalised" if bag.finalised else "no metadata.yaml")
 
     def loop(self) -> int:
         from ..ros.rosutil import RosBridge
