@@ -207,6 +207,16 @@ def test_the_robot_graph_fires_once_before_each_running_frame():
     assert log == ["fire", "update", "fire", "update"]
 
 
+def test_calibration_reads_isaacs_time_after_one_evaluation_and_a_robotless_run_has_none():
+    from types import SimpleNamespace
+    h, log = fake_host()
+    h.robot = SimpleNamespace(fire=lambda: log.append("fire"), sim_time=lambda: 2.8333)
+    h.startup = {}
+    assert h.calibrate_robot_clock() == 2.8333 and log == ["fire", "update"] and h.startup["robot_clock_offset_s"] == 2.8333
+    h.robot = None
+    assert h.calibrate_robot_clock() == 0.0
+
+
 def test_a_held_frame_fires_nothing():
     h, log = fake_host(playing=False)
     h.advance()
@@ -219,13 +229,6 @@ def test_the_recorder_steps_instead_of_update_but_the_graph_still_fires_once():
     h, log = fake_host(recorder=SimpleNamespace(step=lambda: rec_log.append("step")))
     h.advance()
     assert log == ["fire"] and rec_log == ["step"]
-
-
-def test_the_timeline_is_zeroed_so_isaac_stamps_match_the_service_time():
-    h, log = fake_host()
-    h._updates = lambda n: log.append(("updates", n))
-    h.zero_clock()
-    assert h.timeline.t == 0.0
 
 
 def test_a_header_that_cannot_be_patched_is_warned_about(tmp_path, caplog):

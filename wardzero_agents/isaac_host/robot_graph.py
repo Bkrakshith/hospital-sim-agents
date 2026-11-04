@@ -23,6 +23,7 @@ BRIDGE = "isaacsim.ros2.bridge"
 CAMERA_HZ = 5.0  # the camera's tick rate (omni:sensor:tickRate on its prim, set by robot_isaac): it throttles the
 # render product itself, which is what a 1280x720 image every frame costs. rgb, depth, camera_info and the boxes follow it.
 GRAPH_PATH = "/World/RobotGraph"
+SIMTIME_ATTR = f"{GRAPH_PATH}/simtime.outputs:simulationTime"
 IMPULSE_ATTR = f"{GRAPH_PATH}/tick.state:enableImpulse"  # set True once per frame: one evaluation, one message per topic
 
 
@@ -82,8 +83,8 @@ def build_robot_graph(profile: RobotProfile, art_root: str, robot_domain: int, p
     val("ctx_robot", "domain_id", int(robot_domain))
     val("ctx_robot", "useDomainIDEnvVar", False)
 
-    # TF and joints. There is no clock node: SimRos publishes /clock from the service's time (svc.t) on every domain, and
-    # the timeline is zeroed at the start of the loop, so the graph's stamps are on that time base too.
+    # TF and joints. There is no clock node: SimRos publishes /clock on every domain (the robot domain's on Isaac's own
+    # simulation-time base, which is what this graph and the camera helpers stamp with; see IsaacHost.calibrate_robot_clock).
     node("tf", "ROS2PublishTransformTree")
     node("js_pub", "ROS2PublishJointState")
     node("js_sub", "ROS2SubscribeJointState")

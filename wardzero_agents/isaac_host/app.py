@@ -341,7 +341,6 @@ class IsaacHost:
             self.boot_sequence()
             self.frame_view()
             self.start_recording()
-            self.zero_clock()
             return self.loop()
         except Exception:
             log.exception("the Isaac host failed")
@@ -359,11 +358,19 @@ class IsaacHost:
         self._updates(2)
         self._mark("recording")
 
-    def zero_clock(self) -> None:
-        """The timeline starts at 0 with the loop, so Isaac's own stamps (tf, joints, camera) are on the service's time."""
-        self.timeline.set_current_time(0.0)
-        self._updates(1)
-        self.timeline.set_current_time(0.0)
+    def calibrate_robot_clock(self) -> float:
+        """Isaac stamps the robot's tf, joints, camera and boxes with its simulation time, which started when the timeline
+        played and so runs ahead of the service's time (0 at the loop's start) by the frames of the start-up. It cannot
+        be reset without stopping the timeline, so the robot domain's /clock is on Isaac's base: svc.t plus this offset
+        (Isaac's time now). The people's /clock stays svc.t. One frame is spent reading it."""
+        if self.robot is None or self.timeline is None:
+            return 0.0
+        self.robot.fire()
+        self.app.update()
+        offset = self.robot.sim_time()
+        self.startup["robot_clock_offset_s"] = round(offset, 4)
+        log.info("robot clock offset: %.4f s (Isaac simulation time at the start of the run)", offset)
+        return offset
 
     def advance(self) -> None:
         """One frame for the loop: fire the robot's graph once (while the timeline runs), then update, or render for the
@@ -400,8 +407,9 @@ class IsaacHost:
         robot = self.robot
         # /clock is the service's time (svc.t) on every domain: the robot's graph publishes none
         clocks = [robot_bridge] if robot_bridge is not None else []
+        offset = self.calibrate_robot_clock()
         sim_ros = SimRos(svc, private, clock_bridges=clocks, robot_ros=robot_bridge,
-                         graph_owned=robot.graph_owned if robot is not None else ())
+                         graph_owned=robot.graph_owned if robot is not None else (), robot_clock_offset=offset)
         if robot is not None:
             robot.attach_ros(svc.world, private, robot_bridge)
         for b in self.bridges:

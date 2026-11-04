@@ -353,7 +353,7 @@ class SimRos:
     robot_topics keys (``bbox_3d``, ``odom``) that the Isaac robot graph publishes, so the service does not."""
 
     def __init__(self, svc: SimService, ros: Any, clock_bridges: Iterable[Any] = (), msgs: Any = None,
-                 robot_ros: Any = None, graph_owned: Iterable[str] = ()):
+                 robot_ros: Any = None, graph_owned: Iterable[str] = (), robot_clock_offset: float = 0.0):
         import json
 
         self.svc, self.ros = svc, ros
@@ -362,7 +362,9 @@ class SimRos:
         self.m = m = msgs if msgs is not None else default_msgs()
         self._json = json
         self.clock_pubs = [ros.publisher(topics.CLOCK, m.Clock, m.QOS)]
-        self.clock_pubs += [b.publisher(topics.CLOCK, m.Clock, m.QOS) for b in clock_bridges]
+        # the robot domains' /clock: svc.t plus a constant, the Isaac host's own simulation time (see ``stamp``)
+        self.robot_clock_offset = float(robot_clock_offset)
+        self.robot_clock_pubs = [b.publisher(topics.CLOCK, m.Clock, m.QOS) for b in clock_bridges]
         for pid in svc.world.people:
             self.subscribe_person(pid)
         rcfg = svc.loaded.scenario.robot
@@ -409,13 +411,22 @@ class SimRos:
         self.svc.ready("agents")
         self.svc.set_pending(n)
 
+    def _clock_msg(self, t: float):
+        """A Clock message for t seconds. One rounding, then divmod: sec and nanosec cannot disagree at a whole second."""
+        msg = self.m.Clock()
+        msg.clock.sec, msg.clock.nanosec = divmod(int(round(t * 1e9)), 1_000_000_000)
+        return msg
+
     def publish(self, out: SimOutputs) -> None:
         m, ros, rt = self.m, self.ros, self.rt
-        msg = m.Clock()
-        msg.clock.sec = int(out.clock)
-        msg.clock.nanosec = int(round((out.clock - int(out.clock)) * 1e9)) % 1_000_000_000
+        msg = self._clock_msg(out.clock)
         for pub in self.clock_pubs:
             pub.publish(msg)
+        robot_msg = msg
+        if self.robot_clock_pubs:
+            robot_msg = self._clock_msg(out.clock + self.robot_clock_offset) if self.robot_clock_offset else msg
+            for pub in self.robot_clock_pubs:
+                pub.publish(robot_msg)
         if out.roster is not None:
             for p in out.roster.people:
                 self.subscribe_person(p.id)
@@ -432,7 +443,7 @@ class SimRos:
         if out.odom is not None and self.odom_pub is not None:
             o = m.Odometry()
             o.header.frame_id, o.child_frame_id = "map", "base_link"
-            o.header.stamp = msg.clock
+            o.header.stamp = robot_msg.clock
             o.pose.pose.position.x, o.pose.pose.position.y = out.odom["x"], out.odom["y"]
             o.pose.pose.orientation.z = math.sin(out.odom["yaw"] / 2)
             o.pose.pose.orientation.w = math.cos(out.odom["yaw"] / 2)

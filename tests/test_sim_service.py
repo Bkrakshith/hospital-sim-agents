@@ -181,6 +181,36 @@ def test_sim_ros_publishes_clock_on_every_domain_and_the_outputs(tmp_path):
     assert ros.sent[-1][0] == topics.CONTROL and ros.sent[-1][1].action == "stop"
 
 
+def stamp(m):
+    return m.clock.sec * 1_000_000_000 + m.clock.nanosec
+
+
+def test_clock_stamps_never_go_back_at_a_whole_second(tmp_path):
+    """t accumulates 1/30 s steps in floating point: 0.9999999999999 must not become sec 0 / nanosec 0."""
+    s = make(tmp_path)
+    ros = FakeBridge()
+    sr = SimRos(s, ros, msgs=MSGS)
+    t, stamps = 0.0, []
+    for _ in range(3000):
+        t += 1.0 / 30.0
+        sr.publish(SimOutputs(clock=t))
+    stamps = [stamp(m) for tp, m in ros.sent if tp == topics.CLOCK]
+    assert all(b > a for a, b in zip(stamps, stamps[1:]))
+    assert 0 <= stamps[-1] / 1e9 - t < 1e-6
+
+
+def test_the_robot_domain_clock_carries_isaacs_own_time_base(tmp_path):
+    """Isaac stamps tf, joints and camera with its simulation time, which runs ahead of svc.t by a constant (the frames
+    before the loop) and cannot be reset without stopping the timeline. The robot domain's /clock is on that base, so
+    everything the robot hears agrees; the private domain's /clock stays svc.t."""
+    s = make(tmp_path)
+    private, robot_dom = FakeBridge(), FakeBridge()
+    sr = SimRos(s, private, msgs=MSGS, clock_bridges=[robot_dom], robot_clock_offset=2.8333)
+    sr.publish(SimOutputs(clock=0.25))
+    assert stamp([m for t, m in private.sent if t == topics.CLOCK][0]) == 250_000_000
+    assert stamp([m for t, m in robot_dom.sent if t == topics.CLOCK][0]) == 3_083_300_000
+
+
 def test_sim_ros_subscribes_people_who_join(tmp_path):
     s = make(tmp_path)
     ros = FakeBridge()

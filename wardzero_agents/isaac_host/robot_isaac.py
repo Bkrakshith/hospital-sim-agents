@@ -22,7 +22,7 @@ from ..robots import sanitise
 from ..robots.profile import RobotProfile
 from . import robot as rb
 from . import stage as stage_mod
-from .robot_graph import CAMERA_HZ, IMPULSE_ATTR, PrimPath, build_robot_graph
+from .robot_graph import CAMERA_HZ, IMPULSE_ATTR, SIMTIME_ATTR, PrimPath, build_robot_graph
 
 log = logging.getLogger("wardzero.isaac.robot")
 
@@ -175,6 +175,12 @@ class IsaacRobot:
         """robot_topics keys the graph publishes, so SimRos does not."""
         return tuple(k for k in ("bbox_3d", "odom") if self.graph is not None and
                      (k in self.graph.topics or (k == "bbox_3d" and self.graph.topics_private)))
+
+    def sim_time(self) -> float:
+        """Isaac's simulation time (s) as of the last graph evaluation: what it stamps tf, joints and camera with."""
+        import omni.graph.core as og
+
+        return float(og.Controller.attribute(SIMTIME_ATTR).get())
 
     def fire(self) -> None:
         """One evaluation of the robot's graph: call once per frame, while the timeline runs."""
