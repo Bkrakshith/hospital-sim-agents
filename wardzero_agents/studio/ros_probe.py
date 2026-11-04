@@ -27,10 +27,16 @@ def _stop() -> int:
     pub = node.create_publisher(String, CONTROL, QOS)
     msg = String()
     msg.data = to_json(Control(action="stop"))
-    end = time.monotonic() + 1.5  # let discovery find the subscribers, then send a few times
-    while time.monotonic() < end:
+    end = time.monotonic() + 2.0  # wait for a subscriber (the run's nodes) to be discovered
+    while pub.get_subscription_count() == 0 and time.monotonic() < end:
+        rclpy.spin_once(node, timeout_sec=0.1)
+    if pub.get_subscription_count() == 0:
+        node.destroy_node()
+        rclpy.shutdown()
+        return 3  # nobody is listening: the caller sends SIGINT instead
+    for _ in range(5):
         pub.publish(msg)
-        rclpy.spin_once(node, timeout_sec=0.2)
+        rclpy.spin_once(node, timeout_sec=0.1)
     node.destroy_node()
     rclpy.shutdown()
     return 0

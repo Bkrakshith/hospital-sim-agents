@@ -66,7 +66,7 @@ def env(tmp_path, monkeypatch):
         calls.append({"staged": staged, "bot": bot, "domain": domain})
         return [sys.executable, str(script), "--project-id", project.id]
 
-    runner = Runner(data, ROOT, runs, command=command, stop_publisher=lambda: False, key_present=lambda: False)
+    runner = Runner(data, ROOT, runs, command=command, stop_publisher=lambda domain: False, key_present=lambda: False)
     return {"data": data, "runs": runs, "runner": runner, "calls": calls}
 
 
@@ -363,7 +363,10 @@ async def test_connection_lights_from_probe(env):
     c = TestClient(TestServer(make_app(Ctx(env["data"], ROOT, env["runs"], env["runner"], probe=probe))))
     await c.start_server()
     try:
-        d = await (await c.get("/api/connection")).json()
+        async def lit():
+            d = await (await c.get("/api/connection")).json()
+            return d if d["lights"]["controller_seen"] else None
+        d = await wait_for(lit)
         assert d["ros"] and d["lights"] == {"controller_seen": True, "sensors_subscribed": True, "commands_seen": False}
     finally:
         cli.ros_available = orig
@@ -382,3 +385,134 @@ def test_cli_run_takes_robot_domain_and_studio_subcommand():
     assert a.robot_domain == 3 and a.project_id == "p1"
     s = build_parser().parse_args(["studio", "--port", "9000", "--no-browser"])
     assert s.port == 9000 and s.no_browser and callable(s.func)
+
+
+# ---- fix round 1 -------------------------------------------------------------------------------
+async def test_stop_without_subscriber_falls_back_to_sigint(client):
+    p = await mk(client)
+    await client.post("/api/run/start", json={"project_id": p["id"]}, headers=H)
+
+    async def up():
+        return (await (await client.get("/api/run/state")).json())["robot"]
+    await wait_for(up)
+    await asyncio.sleep(0.2)
+    r = await (await client.post("/api/run/stop", headers=H)).json()
+    assert r["via"] == "sigint"
+
+
+async def test_stop_sent_but_run_still_running_after_grace_gets_sigint(env):
+    seen = []
+    runner = Runner(env["data"], ROOT, env["runs"], command=lambda p, s, b, d: [
+        sys.executable, str(env["data"].parent / "fake_cli.py"), "--project-id", p.id],
+        stop_publisher=lambda domain: seen.append(domain) or True, stop_grace_s=0.4, key_present=lambda: False)
+    ctx = Ctx(env["data"], ROOT, env["runs"], runner)
+    c = TestClient(TestServer(make_app(ctx)))
+    await c.start_server()
+    try:
+        p = await (await c.post("/api/projects", json={"name": "T", "scenario_id": "ae_waiting"}, headers=H)).json()
+        await c.post("/api/run/start", json={"project_id": p["id"]}, headers=H)
+
+        async def up():
+            return (await (await c.get("/api/run/state")).json())["robot"]
+        await wait_for(up)
+        await asyncio.sleep(0.2)
+        r = await (await c.post("/api/run/stop", headers=H)).json()
+        assert r["via"] == "control" and seen and seen[0].isdigit()  # the run's ROS domain
+        assert (await (await c.get("/api/run/state")).json())["running"] is True  # nobody obeyed the message
+
+        async def done():
+            return (await (await c.get("/api/run/state")).json())["phase"] == "done"
+        await wait_for(done)  # the watchdog interrupted it
+    finally:
+        await asyncio.to_thread(runner.shutdown)
+        await c.close()
+
+
+def test_stopped_run_is_debriefed_and_reported_but_a_crash_is_not(tmp_path, monkeypatch):
+    from _rundir import make_ae_run
+    from wardzero_agents import cli
+    rd = make_ae_run(tmp_path / "r1")
+    calls = []
+    monkeypatch.setattr(cli, "_post_run", lambda run_dir, report=True: calls.append(run_dir))
+    monkeypatch.setattr(cli, "_load", lambda p: type("L", (), {"scenario": type("S", (), {
+        "duration_min": 10, "id": "x"})(), "scenario_path": "x"})())
+
+    def fake(code):
+        def start(args, loaded, overrides, meta, out=None):
+            out["run_dir"] = rd
+            return code
+        return start
+    args = cli.build_parser().parse_args(["run", "x.yaml"])
+    monkeypatch.setattr(cli, "_start_live", fake(130))
+    assert cli.cmd_run(args) == 130 and calls == [rd]
+    assert json.loads((rd / "meta.json").read_text())["stopped_early"] is True
+    calls.clear()
+    monkeypatch.setattr(cli, "_start_live", fake(1))
+    assert cli.cmd_run(args) == 1 and calls == []
+
+
+def test_report_banner_says_stopped_early(tmp_path):
+    from _rundir import make_ae_run
+    from wardzero_agents.bench.report import build_report_async
+    rd = make_ae_run(tmp_path / "r2", stopped_early=True)
+    out = asyncio.run(build_report_async(rd, None, None))
+    assert "Stopped early at" in out.read_text()
+
+
+async def test_robot_profile_validated(client):
+    r = await client.post("/api/projects", json={"name": "x", "scenario_id": "ae_waiting", "robot_profile": "ghost"},
+                          headers=H)
+    assert r.status == 400 and "ghost" in (await r.json())["error"]
+    p = await mk(client)
+    r = await client.put(f"/api/projects/{p['id']}", json={"robot_profile": "ghost"}, headers=H)
+    assert r.status == 400
+
+
+async def test_probe_graph_with_fake_subprocess_and_timeout(tmp_path, monkeypatch):
+    from wardzero_agents.studio import server
+    ok = tmp_path / "ok.py"
+    ok.write_text('import json,os\nprint(json.dumps({"controller_seen": True, "domain": os.environ["ROS_DOMAIN_ID"]}))')
+    d = await server.probe_graph(5, "robot", argv=[sys.executable, str(ok)])
+    assert d["controller_seen"] is True and d["domain"] == "5"
+    hang = tmp_path / "hang.py"
+    hang.write_text("import time\ntime.sleep(60)")
+    monkeypatch.setattr(server, "PROBE_TIMEOUT_S", 0.3)
+    assert await server.probe_graph(0, "robot", argv=[sys.executable, str(hang)]) is None
+
+
+async def test_connection_returns_cached_lights_without_waiting(env, monkeypatch):
+    import wardzero_agents.cli as cli
+    monkeypatch.setattr(cli, "ros_available", lambda: True)
+    gate = asyncio.Event()
+
+    async def probe(domain, ns):
+        await gate.wait()  # a slow probe must not slow the endpoint
+        return {"controller_seen": True, "sensors_subscribed": True, "commands_seen": True}
+    ctx = Ctx(env["data"], ROOT, env["runs"], env["runner"], probe=probe, probe_every=0.05)
+    c = TestClient(TestServer(make_app(ctx)))
+    await c.start_server()
+    try:
+        t0 = time.monotonic()
+        d = await (await c.get("/api/connection")).json()
+        assert time.monotonic() - t0 < 1 and d["lights"]["controller_seen"] is False
+        gate.set()
+
+        async def lit():
+            return (await (await c.get("/api/connection")).json())["lights"]["controller_seen"]
+        await wait_for(lit)
+    finally:
+        await c.close()
+
+
+async def test_runner_reads_log_incrementally(client):
+    p = await mk(client)
+    await client.post("/api/run/start", json={"project_id": p["id"]}, headers=H)
+
+    async def up():
+        return (await (await client.get("/api/run/state")).json())["robot"]
+    await wait_for(up)
+    pos = client.env["runner"]._log_pos
+    assert pos > 0
+    await client.get("/api/run/state")
+    assert client.env["runner"]._log_pos >= pos
+    await client.post("/api/run/stop", headers=H)

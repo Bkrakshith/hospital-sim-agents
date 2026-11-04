@@ -34,11 +34,14 @@ log = logging.getLogger("wardzero.studio")
 STATIC = Path(__file__).parent / "static"
 RUN_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 SCRIPTS = Path(__file__).resolve().parents[2] / "scripts"
-PROBE_TIMEOUT_S = 1.0
+PROBE_TIMEOUT_S = 8.0  # the probe runs in the background; requests never wait for it
+PROBE_EVERY_S = 3.0
+NO_LIGHTS = {"controller_seen": False, "sensors_subscribed": False, "commands_seen": False}
 JOB_LOG_MAX = 40000
 
 CTX = web.AppKey("ctx", object)
 SOCKETS = web.AppKey("sockets", set)
+PROBE = web.AppKey("probe", object)
 
 
 class ApiError(Exception):
@@ -51,7 +54,7 @@ class Ctx:
     """What the handlers share: where things live, and the long-lived pieces."""
 
     def __init__(self, data: Path, config_root: Path, runs_dir: Path, runner: Runner,
-                 convert_command=None, probe=None):
+                 convert_command=None, probe=None, probe_every: float = PROBE_EVERY_S):
         self.data, self.config_root, self.runs_dir, self.runner = data, config_root, runs_dir, runner
         self.projects = ProjectStore(data)
         self.roles, self.moods = load_roles(config_root), load_moods(config_root)
@@ -61,6 +64,9 @@ class Ctx:
         self.tasks: set = set()
         self.convert_command = convert_command or default_convert_command
         self.probe = probe or probe_graph
+        self.probe_every = probe_every
+        self.probe_target = (0, "robot")  # robot domain and namespace the last /api/connection asked about
+        self.lights = dict(NO_LIGHTS)
 
 
 # ---- helpers ----------------------------------------------------------------------------------
@@ -85,6 +91,15 @@ async def _errors(request: web.Request, handler):
     except Exception as e:  # never leak details
         log.error("studio API call failed: %s", type(e).__name__)
         return _err(500, "The Studio could not do that. See its terminal for the error type.")
+
+
+def check_robot_profile(ctx: Ctx, project: Project) -> None:
+    if project.robot_profile in PROFILES:
+        return
+    try:
+        load_profile(project.robot_profile, ctx.data)
+    except (KeyError, ValueError):
+        raise ProjectError(f"Unknown robot '{project.robot_profile}'. Save it under Robots first.") from None
 
 
 def _project(ctx: Ctx, request) -> Project:
@@ -187,16 +202,17 @@ def topic_table(profile: RobotProfile) -> list[dict]:
              else "sim_to_robot"} for key, name in robot_topics(profile.ns).items() if key not in skip]
 
 
-async def probe_graph(domain: int, ns: str) -> Optional[dict]:
-    """Look at the ROS graph on the robot's domain from a short child process; None if ROS is not available
-    or it takes longer than a second."""
+async def probe_graph(domain: int, ns: str, argv: Optional[list] = None) -> Optional[dict]:
+    """Look at the ROS graph on the robot's domain from a short child process; None if ROS is not available,
+    it fails or it takes too long. argv replaces the child's command (tests)."""
     from ..cli import ros_available
-    if not ros_available():
-        return None
+    if argv is None:
+        if not ros_available():
+            return None
+        argv = [sys.executable, "-m", "wardzero_agents.studio.ros_probe", "probe", ns]
     try:
         proc = await asyncio.create_subprocess_exec(
-            sys.executable, "-m", "wardzero_agents.studio.ros_probe", "probe", ns,
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+            *argv, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
             env=dict(os.environ, ROS_DOMAIN_ID=str(domain),
                      PYTHONPATH=str(Path(__file__).resolve().parents[2])))
     except OSError:
@@ -209,7 +225,21 @@ async def probe_graph(domain: int, ns: str) -> Optional[dict]:
             proc.kill()
         except ProcessLookupError:
             pass
+        await proc.wait()  # reap it: no zombie
         return None
+
+
+async def refresh_lights(ctx: "Ctx") -> None:
+    """Keep ctx.lights fresh: one graph probe every few seconds, for the robot the page last asked about."""
+    from ..cli import ros_available
+    while True:
+        if ros_available():
+            domain, ns = ctx.probe_target
+            seen = await ctx.probe(domain, ns)
+            ctx.lights = {k: bool((seen or {}).get(k)) for k in NO_LIGHTS}
+        else:
+            ctx.lights = dict(NO_LIGHTS)
+        await asyncio.sleep(ctx.probe_every)
 
 
 def default_convert_command(urdf: Path, sensors: Path, out: Path) -> list[str]:
@@ -264,6 +294,7 @@ def make_app(ctx: Ctx) -> web.Application:
             raise BadRequest("'scenario_id' must be one of: " + ", ".join(ctx.presets) + ".")
         data = {**defaults_from_preset(ctx.presets[sid]), **d, "id": ctx.projects.new_id()}
         project = chars.check_all(Project.model_validate(data), ctx.site, ctx.roles, ctx.moods)
+        check_robot_profile(ctx, project)
         ctx.projects.save(project)
         return j(project.model_dump(mode="json"), 201)
 
@@ -284,6 +315,7 @@ def make_app(ctx: Ctx) -> web.Application:
                 if k not in d:  # a new scenario brings its own cast, robot start and length
                     merged[k] = v
         project = chars.check_all(Project.model_validate(merged), ctx.site, ctx.roles, ctx.moods)
+        check_robot_profile(ctx, project)
         ctx.projects.save(project)
         return j(project.model_dump(mode="json"))
 
@@ -467,13 +499,9 @@ def make_app(ctx: Ctx) -> web.Application:
             profile = find_profile(ctx, request.query.get("robot", G1_NAME))
         except ApiError:
             profile = PROFILES[G1_NAME]
-        lights = {"controller_seen": False, "sensors_subscribed": False, "commands_seen": False}
-        ros = ros_available()
-        if ros:
-            seen = await ctx.probe(conn["robot_domain"], profile.ns)
-            if seen:
-                lights.update({k: bool(seen.get(k)) for k in lights})
-        return j({"ip": local_ip(), **conn, "ros": ros, "topics": topic_table(profile), "lights": lights})
+        ctx.probe_target = (conn["robot_domain"], profile.ns)  # the background probe looks here next
+        return j({"ip": local_ip(), **conn, "ros": ros_available(), "topics": topic_table(profile),
+                  "lights": dict(ctx.lights)})  # the last probe's result, never waited for
 
     @r.post("/api/connection")
     async def set_connection(request):
@@ -561,6 +589,18 @@ def make_app(ctx: Ctx) -> web.Application:
             await s.close()
         await asyncio.to_thread(ctx.runner.shutdown)
 
+    async def start_probe(app):
+        app[PROBE] = asyncio.create_task(refresh_lights(ctx))
+
+    async def stop_probe(app):
+        app[PROBE].cancel()
+        try:
+            await app[PROBE]
+        except asyncio.CancelledError:
+            pass
+
+    app.on_startup.append(start_probe)
+    app.on_cleanup.append(stop_probe)
     app.on_shutdown.append(on_shutdown)
     app.add_routes(r)
     if STATIC.is_dir():

@@ -20,7 +20,8 @@ from .project import Project
 
 TAIL_STREAMS = ("status", "says", "audio", "tokens", "robot_pose", "objects")
 SAYS_TAIL = 20
-RUN_FOLDER = re.compile(r"^Run folder: (.+)$", re.M)
+RUN_FOLDER = re.compile(r"^Run folder: (.+)$")
+STOP_GRACE_S = 10.0  # after the stop message the run must have left its running phase, else SIGINT
 AGENTS_ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -45,11 +46,15 @@ def default_command(project: Project, staged: Path, bot: str, robot_domain: Opti
 class Runner:
     def __init__(self, data: Path, config_root: Path, runs_dir: Path, *,
                  command: Callable[..., list[str]] = default_command,
-                 stop_publisher: Optional[Callable[[], bool]] = None,
+                 stop_publisher: Optional[Callable[[str], bool]] = None,
+                 stop_grace_s: float = STOP_GRACE_S,
                  key_present: Optional[Callable[[], bool]] = None):
         self.data, self.config_root, self.runs_dir = Path(data), Path(config_root), Path(runs_dir)
         self._command = command
         self._stop_publisher = stop_publisher or publish_stop
+        self._grace = stop_grace_s
+        self._timer: Optional[threading.Timer] = None
+        self._run_domain = os.environ.get("ROS_DOMAIN_ID", "0")
         self._key_present = key_present or _claude_key_present
         self._lock = threading.RLock()
         self._proc: Optional[subprocess.Popen] = None
@@ -57,6 +62,9 @@ class Runner:
         self._log_fh = None
         self._run_id: Optional[str] = None
         self._project: Optional[Project] = None
+        self._folder: Optional[str] = None
+        self._log_pos, self._log_partial, self._finished = 0, b"", False
+        self._log_lines: collections.deque = collections.deque(maxlen=8)
         self._reset_view()
 
     # ---- control ---------------------------------------------------------------------------
@@ -79,15 +87,20 @@ class Runner:
             log_dir = self.data / "studio" / "projects" / project.id
             self._log_path = log_dir / "last_run.log"
             self._close_log()
+            self._cancel_timer()
             self._log_fh = open(self._log_path, "wb")
             env = dict(os.environ, PYTHONUNBUFFERED="1", WARDZERO_RUNS_DIR=str(self.runs_dir),
                        WARDZERO_DATA_DIR=str(self.data))
             env["PYTHONPATH"] = os.pathsep.join(p for p in (str(AGENTS_ROOT), env.get("PYTHONPATH", "")) if p)
+            self._run_domain = env.get("ROS_DOMAIN_ID", "0")
             self._proc = subprocess.Popen(argv, stdout=self._log_fh, stderr=subprocess.STDOUT, env=env,
                                           stdin=subprocess.DEVNULL, start_new_session=True)
             self._run_id = "pending-" + uuid.uuid4().hex[:8]
             self._project = project
             self._reset_view()
+            self._folder = None
+            self._log_pos, self._log_partial, self._finished = 0, b"", False
+            self._log_lines = collections.deque(maxlen=8)
             return self._run_id
 
     def stop(self) -> dict:
@@ -103,14 +116,32 @@ class Runner:
                         "note": "The run is already over; the debrief and report are finishing."}
             sent = False
             try:
-                sent = bool(self._stop_publisher())
+                sent = bool(self._stop_publisher(self._run_domain))  # True only when a subscriber got it
             except Exception:
                 sent = False
             if not sent:
                 self._signal(signal.SIGINT)
-            return {"ok": True, "stopped": True, "via": "control" if sent else "sigint"}
+                return {"ok": True, "stopped": True, "via": "sigint"}
+            # the message went out; if the run has not left its running phase soon, interrupt it
+            self._cancel_timer()
+            self._timer = threading.Timer(self._grace, self._escalate)
+            self._timer.daemon = True
+            self._timer.start()
+            return {"ok": True, "stopped": True, "via": "control"}
+
+    def _escalate(self) -> None:
+        with self._lock:
+            self._read_log()
+            if self._alive() and self._phase() == "running":
+                self._signal(signal.SIGINT)
+
+    def _cancel_timer(self) -> None:
+        if self._timer is not None:
+            self._timer.cancel()
+            self._timer = None
 
     def shutdown(self) -> None:
+        self._cancel_timer()
         """The Studio is closing: do not leave a paid run behind, but never cut a debrief short."""
         with self._lock:
             if self._alive() and self._phase() == "running":
@@ -149,20 +180,40 @@ class Runner:
         self._objects: list = []
         self._t = 0.0
 
-    def _log_text(self) -> str:
+    def _read_log(self) -> None:
+        """Read what the run process printed since the last call: the run folder it names, whether the
+        run has finished, and the last lines (for an error message)."""
+        if self._log_path is None:
+            return
         try:
-            return self._log_path.read_text(errors="replace") if self._log_path else ""
+            with open(self._log_path, "rb") as f:
+                f.seek(self._log_pos)
+                data = f.read()
         except OSError:
-            return ""
+            return
+        self._log_pos += len(data)
+        data = self._log_partial + data
+        end = data.rfind(b"\n")
+        if end < 0:
+            self._log_partial = data
+            return
+        self._log_partial = data[end + 1:]
+        for raw in data[:end].splitlines():
+            line = raw.decode(errors="replace")
+            self._log_lines.append(line)
+            m = RUN_FOLDER.match(line)
+            if m:
+                self._folder, self._finished = m.group(1).strip(), False
+            elif line.startswith("Run finished"):
+                self._finished = True
 
-    def _follow(self, log: str) -> None:
+    def _follow(self) -> None:
         """Point the tail at the newest run folder named in the log and read what was appended."""
-        found = RUN_FOLDER.findall(log)
-        if found and Path(found[-1].strip()) != self._dir:
+        if self._folder and Path(self._folder) != self._dir:
             keep = self._project
             self._reset_view()
             self._project = keep
-            self._dir = Path(found[-1].strip())
+            self._dir = Path(self._folder)
             self._tail = RunTail(self._dir, TAIL_STREAMS)
         if self._tail is None:
             return
@@ -190,15 +241,12 @@ class Runner:
                 if isinstance(objs, (list, dict)):
                     self._objects = objs
 
-    def _phase(self, log: Optional[str] = None) -> str:
+    def _phase(self) -> str:
         if self._proc is None:
             return "idle"
-        log = self._log_text() if log is None else log
         if not self._alive():
             return "done"
-        m = list(RUN_FOLDER.finditer(log))
-        after = log[m[-1].end():] if m else log
-        if "Run finished" not in after:
+        if not self._finished:
             return "running"
         if self._dir is not None and (self._dir / "trust.jsonl").exists():
             return "report"
@@ -206,9 +254,9 @@ class Runner:
 
     def state(self) -> dict:
         with self._lock:
-            log = self._log_text()
-            self._follow(log)
-            phase = self._phase(log)
+            self._read_log()
+            self._follow()
+            phase = self._phase()
             rd = self._dir
             out = {
                 "running": self._alive(),
@@ -224,7 +272,7 @@ class Runner:
             if phase == "done" and self._proc is not None:
                 out["exit_code"] = self._proc.returncode
                 if self._proc.returncode not in (0, None) and rd is None:
-                    out["error"] = "\n".join(log.strip().splitlines()[-6:])[-800:]
+                    out["error"] = "\n".join(list(self._log_lines)[-6:])[-800:]
             return out
 
 
@@ -233,15 +281,17 @@ def _claude_key_present() -> bool:
     return present()
 
 
-def publish_stop() -> bool:
-    """Publish Control(stop) on the scenario control topic from a short ROS process. False when ROS is not
-    available or the call failed, so the caller falls back to SIGINT."""
+def publish_stop(domain: str = "0") -> bool:
+    """Publish Control(stop) on the scenario control topic, on the run's ROS domain, from a short ROS
+    process. True only when that process saw a subscriber and published; False when ROS is not available,
+    nobody listens or the call failed, so the caller falls back to SIGINT."""
     from ..cli import ros_available
     if not ros_available():
         return False
     try:
-        r = subprocess.run([sys.executable, "-m", "wardzero_agents.studio.ros_probe", "stop"], timeout=6,
-                           capture_output=True, env=dict(os.environ, PYTHONPATH=str(AGENTS_ROOT)))
+        r = subprocess.run([sys.executable, "-m", "wardzero_agents.studio.ros_probe", "stop"], timeout=8,
+                           capture_output=True,
+                           env=dict(os.environ, PYTHONPATH=str(AGENTS_ROOT), ROS_DOMAIN_ID=str(domain)))
     except (OSError, subprocess.SubprocessError):
         return False
     return r.returncode == 0

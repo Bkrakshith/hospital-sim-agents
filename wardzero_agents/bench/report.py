@@ -238,7 +238,7 @@ def build_facts(run_dir: Path, preset, narrative: Optional[dict] = None) -> dict
         "run": {"run_id": meta.get("run_id") or Path(run_dir).name, "scenario_id": meta.get("scenario_id"),
                 "title": getattr(preset, "title", None) or meta.get("scenario_id") or Path(run_dir).name,
                 "seed": meta.get("seed"), "run_index": meta.get("run_index"),
-                "word_of_mouth": bool(meta.get("word_of_mouth")), "duration_s": _r(d.end_t),
+                "word_of_mouth": bool(meta.get("word_of_mouth")), "stopped_early": bool(meta.get("stopped_early")), "duration_s": _r(d.end_t),
                 "models": meta.get("models") or {}, "started_at": meta.get("started_at")},
         "valid": valid, "fairness_violations": len(_fairness_rows(run_dir)),
         "verdict": verdict, "score": _r(res.score),
@@ -315,6 +315,10 @@ def render_html(facts: dict) -> str:
         banner = (f'<div class="banner {"pass" if ok else "fail"}">{verdict["label"]}: score {_fmt(facts["score"])} '
                   f'out of 100<small>{"Every must-pass criterion was met." if ok else "At least one must-pass criterion was missed."}'
                   "</small></div>")
+    if run.get("stopped_early"):
+        banner = (f'<div class="banner none">Stopped early at {clock(run["duration_s"] or 0)}'
+                  "<small>The run was stopped before the scenario finished; criteria that needed the rest "
+                  "of it are marked not measured or failed.</small></div>") + banner
     crit_rows = []
     for c in facts["criteria"]:
         tag = ('<span class="tag none">not measured</span>' if c["passed"] is None else

@@ -428,9 +428,29 @@ def cmd_run(args) -> int:
         return _cmd_batch(args, loaded)
     out: dict = {}
     code = _start_live(args, loaded, {}, {"mode": "live", "scenario_source": str(loaded.scenario_path)}, out=out)
-    if code == 0 and not args.no_report and "run_dir" in out and _ran_for_real(out["run_dir"]):
+    # 130 is a stop by the user (the Studio's Stop, Ctrl+C): the run is still debriefed and reported.
+    # Any other non-zero code is a crash and gets neither.
+    if code in (0, 130) and not args.no_report and "run_dir" in out and _ran_for_real(out["run_dir"]):
+        _mark_stopped_early(out["run_dir"], loaded, force=code == 130)
         _post_run(out["run_dir"])
     return code
+
+
+def _mark_stopped_early(run_dir: Path, loaded, force: bool = False) -> None:
+    """meta.json "stopped_early": true when the run ended before the scenario's length (or by SIGINT)."""
+    from .runlog import RunLog
+    try:
+        meta = json.loads((run_dir / "meta.json").read_text(encoding="utf-8"))
+        end = 0.0
+        try:
+            for line in (run_dir / "status.jsonl").read_text(encoding="utf-8").splitlines():
+                end = max(end, float(json.loads(line).get("t") or 0.0))
+        except (OSError, ValueError):
+            pass
+        if force or end < 0.95 * loaded.scenario.duration_min * 60:
+            RunLog(run_dir).write_meta({**meta, "stopped_early": True})
+    except (OSError, ValueError):
+        pass
 
 
 def cmd_debrief(args) -> int:
