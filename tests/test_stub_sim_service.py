@@ -222,3 +222,29 @@ def test_robot_reply_goes_to_the_person_it_heard_not_the_nearest(tmp_path):
     s.t += REPLY_WINDOW_S + 1
     s.on_robot_say("Hello")
     assert s.step(0.01).audio[0].addressee == "P5"
+
+
+def test_objects_stream_and_alarm_audio(tmp_path):
+    import shutil
+    import yaml
+    cfg = tmp_path / "config"
+    shutil.copytree(V1.parents[1], cfg)
+    q = cfg / "scenarios" / "waiting_area_v1.yaml"
+    data = yaml.safe_load(q.read_text())
+    data["cast"][0].pop("seat")
+    data["cast"][0]["start"] = {"bed": "B2"}
+    q.write_text(yaml.safe_dump(data, sort_keys=False))
+    run = tmp_path / "run"
+    s = StubSimService(load_scenario(q), RunLog(run), wait_for=())
+    s.on_world_event(WorldEvent(id="f", t=0, kind="fire_start", x=3.0, y=4.0))
+    s.world.objects.fires["fire_1"].size = 0.995
+    s.on_intent(Intent(id="b", person="P1", t=0, kind="call_bell"))
+    heard_kinds, t = [], 0
+    for _ in range(30):
+        out = s.step(0.1)
+        heard_kinds += [e.source_kind for e in out.audio]
+    assert "alarm" in heard_kinds
+    rows = lines(run, "objects")
+    kinds = {o["kind"] for r in rows for o in r["objects"]}
+    assert rows and {"fire", "call_bell"} <= kinds
+    assert any(r["source_kind"] == "alarm" for r in lines(run, "audio"))

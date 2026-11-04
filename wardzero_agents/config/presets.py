@@ -14,15 +14,18 @@ _BED = {"sit_up_in_bed", "lie_back", "call_bell"}
 _SURGEON = {"talk", "look_at", "gesture", "wait_standing", "fidget", "cough", "request_instrument",
             "accept_item", "reject_item", "take_instrument_self"}
 
+# The legacy roles (patient, companion, visitor, staff) keep exactly the basics, so the waiting-area
+# prompts and schema are unchanged. Only the newer role ids carry extras.
+_LEGACY = {r: frozenset(BASIC_INTENTS) for r in ("patient", "companion", "visitor", "staff")}
+
 ROLE_INTENTS: dict[str, frozenset[str]] = {
     "ward_nurse": frozenset(BASIC_INTENTS | _STAFF_EXTRA),
-    "staff": frozenset(BASIC_INTENTS | _STAFF_EXTRA),
     "receptionist": frozenset(BASIC_INTENTS | {"call_for_help"}),
-    "patient": frozenset(BASIC_INTENTS | _BED | {"accept_item", "refuse_item"}),
-    "visitor": frozenset(BASIC_INTENTS | {"escort", "call_for_help"}),
-    "companion": frozenset(BASIC_INTENTS | {"escort", "call_for_help"}),
+    "bed_patient": frozenset(BASIC_INTENTS | _BED | {"accept_item", "refuse_item"}),
+    "ward_visitor": frozenset(BASIC_INTENTS | {"escort", "call_for_help"}),
     "surgeon": frozenset(_SURGEON),
     "porter": frozenset(BASIC_INTENTS | {"take_item", "give_item", "accept_item", "refuse_item",
                                          "call_for_help"}),
     "custom": frozenset(BASIC_INTENTS),
+    **_LEGACY,
 }

@@ -40,10 +40,10 @@ _INTENT_HELP = {
     "leave": "leave the hospital (target defaults to the entrance)",
     "attend": "go to a person to attend to them (target: a person id)",
     "give_item": "hand an item you hold to a person (target: a person id; text: the item id)",
-    "take_item": "take an item from a person or the surface by you (target: a person id)",
+    "take_item": "take an item that a person next to you is holding (target: that person's id)",
     "call_for_help": "call out for help or for a nurse (text: what you say)",
-    "escort": "walk with a person (target: a person id)",
-    "evacuate": "get a person out of danger (target: a person id)",
+    "escort": "walk with a person to a place (target: a person id; text: the place id)",
+    "evacuate": "take a person to safety in the next fire compartment (target: a person id)",
     "call_bell": "press your call bell from your bed",
     "accept_item": "accept the item being handed to you",
     "refuse_item": "refuse the item being handed to you",
@@ -363,6 +363,9 @@ def render_situation(inst: PersonInstance, obs: Observation, status: Status, tri
             lines.append(_seen_line(s))
     else:
         lines.append("You see nothing of note.")
+    if obs.objects:
+        lines.append("You can also see:")
+        lines += [f"- {o.detail} ({o.distance:.1f} m away)" for o in sorted(obs.objects, key=lambda o: o.distance)]
     if obs.heard:
         lines.append("You hear:")
         lines += [_heard_line(h) for h in obs.heard]

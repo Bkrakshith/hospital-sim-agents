@@ -277,7 +277,8 @@ def test_check_decision_by_role():
         return check_decision(d, LOADED.area, LOADED.signs, ROSTER, "g1", role)
 
     assert c(decision("call_bell"), None)[0] is None  # not a basic intent
-    assert c(decision("call_bell"), "patient")[0] is not None
+    assert c(decision("call_bell"), "patient")[0] is None  # legacy role: basics only
+    assert c(decision("call_bell"), "bed_patient")[0] is not None
     assert c(decision("call_bell"), "surgeon")[0] is None
     assert c(decision("walk_to", "clinic_corridor"), "surgeon")[0] is None
     assert c(decision("leave"), "surgeon")[0] is None
@@ -292,7 +293,7 @@ def test_check_decision_by_role():
 def test_system_fixed_by_role():
     from wardzero_agents.mind.prompts import system_fixed
     assert system_fixed("custom") == SYSTEM_FIXED
-    assert "call_bell" in system_fixed("patient") and "call_bell" not in SYSTEM_FIXED
+    assert "call_bell" in system_fixed("bed_patient") and "call_bell" not in SYSTEM_FIXED
     assert "does not let you choose: " in system_fixed("surgeon")
 
 

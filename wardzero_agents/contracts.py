@@ -98,10 +98,20 @@ class Heard(_Envelope):
     addressed_to_me: bool
 
 
+class SeenObject(_Envelope):
+    """A world object a person can see: an item, a fire, or a lit call-bell light."""
+    kind: Literal["item", "fire", "call_light"]
+    id: str
+    distance: float
+    bearing_deg: float
+    detail: str
+
+
 class Observation(_Envelope):
     person: str
     t: float
     visible: list[Seen] = Field(default_factory=list)
+    objects: list[SeenObject] = Field(default_factory=list)
     heard: list[Heard] = Field(default_factory=list)
 
 

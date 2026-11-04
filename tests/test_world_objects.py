@@ -7,7 +7,7 @@ import yaml
 
 from wardzero_agents.config.loader import load_scenario
 from wardzero_agents.config.presets import BASIC_INTENTS, ROLE_INTENTS
-from wardzero_agents.contracts import Intent, WorldEvent
+from wardzero_agents.contracts import Intent, Observation, WorldEvent
 from wardzero_agents.mind.prompts import decision_schema
 from wardzero_agents.world.objects import Fire, Item, WorldObjects
 from wardzero_agents.world.oracle import Pose
@@ -194,11 +194,13 @@ def test_schema_mood_enum_widened():
 
 def test_role_intents_table():
     assert len(BASIC_INTENTS) == 14
-    assert {"call_bell", "sit_up_in_bed", "lie_back", "accept_item", "refuse_item"} <= ROLE_INTENTS["patient"]
+    assert {"call_bell", "sit_up_in_bed", "lie_back", "accept_item", "refuse_item"} <= ROLE_INTENTS["bed_patient"]
     assert {"attend", "give_item", "take_item", "call_for_help", "escort", "evacuate"} <= ROLE_INTENTS["ward_nurse"]
     assert ROLE_INTENTS["custom"] == frozenset(BASIC_INTENTS)
-    for r in ("staff", "visitor", "companion", "receptionist", "porter"):
-        assert BASIC_INTENTS <= ROLE_INTENTS[r] or r == "porter"
+    for r in ("staff", "visitor", "companion", "patient"):  # legacy roles: exactly the basics
+        assert ROLE_INTENTS[r] == BASIC_INTENTS
+    for r in ("receptionist", "ward_visitor", "bed_patient", "ward_nurse"):
+        assert BASIC_INTENTS < ROLE_INTENTS[r]
 
 
 def test_surgeon_speech_and_reject(tmp_path):
@@ -243,3 +245,125 @@ def test_objects_stream_logged(tmp_path):
     assert w.drain_log() == []
     from wardzero_agents.runlog import STREAMS
     assert "objects" in STREAMS
+
+
+# ---- escort and evacuate ---------------------------------------------------------------------
+def _stand(w, pid, x, y):
+    p = w.people[pid]
+    p.x, p.y, p.posture, p.seat, p.bed = x, y, "standing", None, None
+
+
+def test_escort_walks_both_to_the_place(tmp_path):
+    w = site_world(tmp_path)
+    ent = w.site.landmarks["entrance"]
+    _stand(w, "P2", ent.x, ent.y)
+    _stand(w, "P3", ent.x + 2.0, ent.y)
+    dest = w.site.landmarks["reception_front"]
+    w.apply_intent(I("escort", person="P2", target="P3", text="reception_front"))
+    assert w.people["P2"].state == "running"
+    gap = 0.0
+    for k in range(1, 3000):
+        w.step(k * 0.1)
+        if w.people["P2"].state != "running":
+            break
+        if k > 600 and w.people["P2"].plan and w.people["P2"].plan[0].carry:
+            gap = max(gap, math.hypot(w.people["P2"].x - w.people["P3"].x, w.people["P2"].y - w.people["P3"].y))
+    assert w.people["P2"].state == "done"
+    assert math.hypot(w.people["P2"].x - dest.x, w.people["P2"].y - dest.y) < 0.5
+    assert math.hypot(w.people["P3"].x - dest.x, w.people["P3"].y - dest.y) <= 1.3
+    assert gap <= 1.2
+
+
+def test_escort_failures(tmp_path):
+    w = site_world(tmp_path)
+    _stand(w, "P2", 0.0, 0.0)
+    w.apply_intent(I("escort", person="P2", target="P3", text="narnia"))
+    assert w.people["P2"].reason == "unknown target"
+    w.apply_intent(I("escort", person="P2", target="nobody", text="entrance", id="j"))
+    assert w.people["P2"].reason == "unknown target"
+    sealed = next((x, y) for x in range(-48, 40) for y in range(-24, 38)
+                  if not w.site.grid.blocked(x, y) and w.site.check_place(x, y) == "not reachable from the entrance")
+    ent = w.site.landmarks["entrance"]
+    _stand(w, "P2", ent.x, ent.y)
+    _stand(w, "P3", ent.x + 1.0, ent.y)
+    w.apply_intent(I("escort", person="P2", target="P3", point=tuple(map(float, sealed)), id="k"))
+    assert w.people["P2"].state == "failed" and w.people["P2"].reason == "no route"
+
+
+def test_evacuate_wheels_a_bed_patient_to_next_compartment(tmp_path):
+    w = site_world(tmp_path)
+    here = w._compartment_at(w.people["P1"].x, w.people["P1"].y)
+    assert here == "C3"
+    n = w.people["P2"]
+    n.x, n.y, n.posture = w.people["P1"].x + 1.0, w.people["P1"].y + 0.3, "standing"
+    n.seat = None
+    w.apply_intent(I("evacuate", person="P2", target="P1"))
+    assert n.state == "running"
+    for k in range(1, 6000):
+        w.step(k * 0.1)
+        if n.state != "running":
+            break
+    assert n.state == "done"
+    p1 = w.people["P1"]
+    assert p1.posture == "lying" and p1.bed == "B2"
+    there = w._compartment_at(p1.x, p1.y)
+    assert there in {"C2", "Wing"} and there != here
+
+
+def test_evacuate_no_safe_compartment(tmp_path):
+    w = site_world(tmp_path)
+    w.site.compartments = []
+    w.apply_intent(I("evacuate", person="P2", target="P1"))
+    assert w.people["P2"].state == "failed" and w.people["P2"].reason == "no safe compartment"
+
+
+# ---- what minds see --------------------------------------------------------------------------
+def test_objects_visible_to_minds(tmp_path):
+    from wardzero_agents.mind.prompts import render_situation
+    w = site_world(tmp_path)
+    b = w.site.beds["B2"]
+    w.apply_intent(I("call_bell", t=1.0))
+    w.apply_world_event(WorldEvent(id="f", t=1.0, kind="fire_start", x=b.x + 2.0, y=b.y - 1.0))
+    n = w.people["P2"]
+    sx, sy = b.side_point("right")
+    n.x, n.y = sx, sy
+    n.yaw = math.atan2(b.y - sy, b.x - sx)
+    w.objects.add_item(Item(id="T1", kind="tray", label="meal tray", holder="P2"))
+    obs = w.observation("P2", 2.0, [])
+    by_kind = {o.kind: o for o in obs.objects}
+    assert set(by_kind) == {"item", "call_light", "fire"} or set(by_kind) >= {"item", "call_light"}
+    assert by_kind["call_light"].detail == "call light on at bed B2"
+    assert "held by P2" in by_kind["item"].detail
+    text = render_situation(w.people["P2"].inst, obs, w.statuses()[0], [], [], 1.0)
+    assert "call light on at bed B2" in text and "meal tray" in text
+    # nobody in the lobby sees through the wall
+    assert w.observation("P3", 2.0, []).objects == [] or all(o.kind != "call_light" for o in w.observation("P3", 2.0, []).objects)
+    # old logs without the field still parse
+    old = '{"schema": "wz.v1", "person": "P1", "t": 1.0, "visible": [], "heard": []}'
+    from wardzero_agents.contracts import from_json
+    assert from_json(Observation, old).objects == []
+
+
+def test_fire_size_buckets(tmp_path):
+    w = site_world(tmp_path)
+    w.apply_world_event(WorldEvent(id="f", t=0.0, kind="fire_start", x=1.0, y=1.0))
+    f = w.objects.fires["fire_1"]
+    p = w.people["P2"]
+    p.x, p.y, p.yaw = 0.0, 1.0, 0.0
+    w.people["P2"].posture = "standing"
+    for size, word in ((0.2, "small"), (0.5, "medium"), (0.9, "large")):
+        f.size = size
+        objs = w.observation("P2", 1.0, []).objects
+        assert objs and word in objs[0].detail
+
+
+def test_legacy_prompt_unchanged_from_843145b():
+    import hashlib
+    from wardzero_agents.mind.prompts import SYSTEM_FIXED, system_fixed
+    old = "f8b5c291991770c8085cedf762b3ee5f3a4b9405669a0b066defc22ca926b12f"  # sha256 of SYSTEM_FIXED at 843145b
+    assert hashlib.sha256(SYSTEM_FIXED.encode()).hexdigest() == old
+    old_enum = ["sit_idle", "use_phone", "fidget", "look_at", "read_sign", "stand_up", "sit_down", "walk_to",
+                "approach", "wait_standing", "talk", "gesture", "cough", "leave"]
+    for role in ("patient", "companion", "visitor", "staff"):
+        assert system_fixed(role) == SYSTEM_FIXED
+        assert decision_schema(role)["properties"]["intent"]["properties"]["kind"]["enum"] == old_enum

@@ -197,6 +197,12 @@ class StubSimService:
     def on_world_event(self, ev: WorldEvent) -> None:
         self._emit(self.world.apply_world_event(ev.model_copy(update={"t": self.t})))
 
+    def _flush_world(self) -> None:
+        """Audio the world raised itself (fire alarm) goes out like any audio; object changes are logged."""
+        self._emit(self.world.drain_audio())
+        for stream, rec in self.world.drain_log():
+            self.runlog.write(stream, rec)
+
     # ---- stepping ------------------------------------------------------------------------
     def _observation(self, pid: str) -> Observation:
         obs = self.world.observation(pid, self.t, [])
@@ -210,6 +216,7 @@ class StubSimService:
         if not held and not self._stop:
             self.t = min(self.duration_s, self.t + self.time_scale * wall_dt)
             self.world.step(self.t)
+        self._flush_world()
         out = SimOutputs(clock=self.t)
 
         roster = self.world.roster(self.t)

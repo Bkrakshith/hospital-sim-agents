@@ -30,6 +30,7 @@ from wardzero_agents.contracts import (
     Intent,
     Observation,
     Roster,
+    SeenObject,
     RosterEntry,
     Status,
     WorldEvent,
@@ -37,7 +38,7 @@ from wardzero_agents.contracts import (
 from wardzero_agents.site import Router
 from wardzero_agents.world import audio
 from wardzero_agents.world.objects import (
-    ACCEPT_WINDOW_S, PERSON_EXTINGUISH_PER_S, ROBOT_EXTINGUISH_PER_S, SURGEON_WINDOW_S, WorldObjects,
+    ACCEPT_WINDOW_S, EXTINGUISH_RANGE_M, PERSON_EXTINGUISH_PER_S, ROBOT_EXTINGUISH_PER_S, SURGEON_WINDOW_S, WorldObjects,
 )
 from wardzero_agents.world.reach import giver_reach_ok, receiver_zone_ok
 from wardzero_agents.world.oracle import Entity, Pose, visible
@@ -62,7 +63,9 @@ GIVE_RANGE_M = 1.5
 TAKE_RANGE_M = 1.2
 BELL_DB = 55.0
 ALARM_DB = 100.0
-APPROACH_KINDS = ("approach", "attend", "escort", "evacuate")
+APPROACH_KINDS = ("approach", "attend")
+ESCORT_GAP_M = 1.0  # the escorted person trails this far behind the one leading
+ADJACENT_M = 0.6  # compartments whose boxes are this close count as neighbours
 ROLE_KINDS = ("give_item", "take_item", "call_for_help", "call_bell", "accept_item", "refuse_item",
               "request_instrument", "reject_item", "take_instrument_self", "use_extinguisher",
               "sit_up_in_bed", "lie_back")
@@ -98,6 +101,8 @@ class _Phase:
     path: list = field(default_factory=list)  # walk: waypoints from the Router
     i: int = 0  # index of the waypoint being walked to
     goal: Optional[tuple[float, float]] = None  # the point the path was routed to
+    lazy: bool = False  # walk: re-route from wherever the walker is when the phase starts
+    carry: Optional[str] = None  # walk: id of a person who is led (escorted) along
 
 
 @dataclass
@@ -325,6 +330,27 @@ class StubWorld:
                 return []
             self._begin(p, intent)
             self._start(p, self._stand_phase(p) + [walk])
+        elif kind in ("escort", "evacuate"):
+            q = self.people.get(intent.target or "")
+            if q is None or q is p or q.posture == "gone":
+                self._fail(p, intent, "unknown target")
+                return []
+            if kind == "escort":
+                dest = self._resolve_place(intent.text) or (tuple(intent.point) if intent.point else None)
+            else:
+                dest = self._safe_point(q)
+            if dest is None:
+                self._fail(p, intent, "unknown target" if kind == "escort" else "no safe compartment")
+                return []
+            lead_path = self.router.route((q.x, q.y), dest)
+            walk = self._route(p, self._walk_dest(p, _Phase("walk", follow=intent.target)), speed, follow=intent.target)
+            if lead_path is None or walk is None:
+                self._fail(p, intent, "no route")
+                return []
+            lead = _Phase("walk", dest=dest, speed=speed, path=lead_path, i=1, goal=dest, lazy=True,
+                          carry=intent.target)
+            self._begin(p, intent)
+            self._start(p, self._stand_phase(p) + [walk, lead])
         elif kind in APPROACH_KINDS:
             tgt = intent.target
             if tgt is None or tgt == intent.person or self._pos(tgt) is None:
@@ -382,6 +408,49 @@ class StubWorld:
             return p.x, p.y
         k = APPROACH_GAP_M / d
         return tp[0] + (p.x - tp[0]) * k, tp[1] + (p.y - tp[1]) * k
+
+    def _lead(self, p: _Person, ph: _Phase) -> None:
+        """The person being escorted (or wheeled, in a bed) trails the leader."""
+        q = self.people.get(ph.carry or "")
+        if q is not None:
+            q.x, q.y, q.yaw = p.x - math.cos(p.yaw) * ESCORT_GAP_M, p.y - math.sin(p.yaw) * ESCORT_GAP_M, p.yaw
+
+    def _compartment_at(self, x: float, y: float) -> Optional[str]:
+        rid = self.site.room_at(x, y)
+        if rid is not None and self.site.rooms[rid].compartment:
+            return self.site.rooms[rid].compartment
+        for c in self.site.compartments:
+            xs, ys = [q[0] for q in c["poly"]], [q[1] for q in c["poly"]]
+            if min(xs) <= x <= max(xs) and min(ys) <= y <= max(ys):
+                return c["id"]
+        return None
+
+    def _safe_point(self, q: _Person) -> Optional[tuple[float, float]]:
+        """The nearest reachable point (by route) in a compartment next to the one q is in."""
+        here = self._compartment_at(q.x, q.y)
+        boxes = {c["id"]: (min(a[0] for a in c["poly"]), max(a[0] for a in c["poly"]),
+                           min(a[1] for a in c["poly"]), max(a[1] for a in c["poly"]))
+                 for c in self.site.compartments}
+        if here not in boxes:
+            return None
+        h = boxes[here]
+        near = {cid for cid, b in boxes.items() if cid != here
+                and b[0] - ADJACENT_M <= h[1] and h[0] - ADJACENT_M <= b[1]
+                and b[2] - ADJACENT_M <= h[3] and h[2] - ADJACENT_M <= b[3]}
+        best, best_len = None, math.inf
+        for r in self.site.rooms.values():
+            if r.compartment not in near:
+                continue
+            c = r.centre
+            if self.site.grid.blocked(*c):
+                continue
+            path = self.router.route((q.x, q.y), c)
+            if path is None or math.hypot(path[-1][0] - c[0], path[-1][1] - c[1]) > ARRIVE_M * 4:
+                continue
+            ln = sum(math.hypot(b[0] - a[0], b[1] - a[1]) for a, b in zip(path, path[1:]))
+            if ln < best_len:
+                best, best_len = c, ln
+        return best
 
     def _remaining(self, p: _Person) -> float:
         total = 0.0
@@ -442,6 +511,20 @@ class StubWorld:
                         p.posture = "standing"
                         return
                     ph.path, ph.i, ph.goal = path, 1, dest
+            if ph.lazy:
+                ph.lazy = False
+                path = self.router.route((p.x, p.y), ph.goal)
+                if path is None:
+                    p.plan = []
+                    p.state, p.reason = "failed", "no route"
+                    p.posture = "standing"
+                    return
+                ph.path, ph.i = path, 1
+                q = self.people.get(ph.carry or "")
+                if q is not None:
+                    q.plan, q.claim = [], None
+                    if q.posture in ("seated", "walking"):
+                        q.posture, q.seat = "standing", None
             if ph.i >= len(ph.path):
                 wp = ph.goal if ph.goal is not None else (p.x, p.y)
                 last = True
@@ -454,6 +537,7 @@ class StubWorld:
             reach = ph.speed * rem
             if reach >= d:
                 p.x, p.y = wp
+                self._lead(p, ph)
                 rem -= d / max(ph.speed, 1e-6)
                 if not last:
                     ph.i += 1
@@ -476,6 +560,7 @@ class StubWorld:
             else:
                 p.x += (wp[0] - p.x) / d * reach
                 p.y += (wp[1] - p.y) / d * reach
+                self._lead(p, ph)
                 p.posture = "walking"
                 rem = 0.0
         if p.state == "running":
@@ -569,12 +654,37 @@ class StubWorld:
         beds = [Entity("person", pid, q.x, q.y, f"a patient lying in bed {q.bed}")
                 for pid, q in self.people.items() if q.kind == "static"]
         seen += visible(me, beds, [], los=self._los)
+        objs = self._seen_objects(me, person)
         heard = []
         for ev in recent_audio:
             h = audio.route(ev, me, person, p.inst.hearing_loss_db, self.rng)
             if h is not None:
                 heard.append(h)
-        return Observation(person=person, t=t, visible=seen, heard=heard)
+        return Observation(person=person, t=t, visible=seen, objects=objs, heard=heard)
+
+    def _seen_objects(self, me: Pose, viewer: str) -> list[SeenObject]:
+        """Items, fires and lit call-bell lights the viewer can see (same view and wall rules as people)."""
+        ents, text = [], {}
+        for it in self.objects.items.values():
+            pos = (it.x, it.y) if it.holder is None else self._pos(it.holder)
+            if pos is None:
+                continue
+            ents.append(Entity("seat", f"item:{it.id}", pos[0], pos[1]))
+            held = "" if it.holder is None else f", held by {it.holder}"
+            text[f"item:{it.id}"] = ("item", f"a {it.kind.replace('_', ' ')} (id {it.id}, {it.label or it.kind}){held}")
+        for f in self.objects.fires.values():
+            if not f.out:
+                ents.append(Entity("seat", f"fire:{f.id}", f.x, f.y))
+                size = "small" if f.size < 0.34 else "medium" if f.size < 0.67 else "large"
+                text[f"fire:{f.id}"] = ("fire", f"a {size} fire (id {f.id})")
+        for b in self.objects.bells.values():
+            bed = self.site.beds.get(b.bed_id)
+            if b.active and bed is not None:
+                ents.append(Entity("seat", f"bell:{b.bed_id}", bed.x, bed.y))
+                text[f"bell:{b.bed_id}"] = ("call_light", f"call light on at bed {b.bed_id}")
+        return [SeenObject(kind=text[s.id][0], id=s.id.split(":", 1)[1], distance=s.distance,
+                           bearing_deg=s.bearing_deg, detail=text[s.id][1])
+                for s in visible(me, ents, [], los=self._los)]
 
     # ---- world events and spawning -------------------------------------------------------
     def spawn(self, persona_id: str, t: float) -> str:
@@ -656,7 +766,7 @@ class StubWorld:
             elif f.out:
                 self._fighting.pop(pid)
                 p.state, p.progress = "done", 1.0
-            elif math.hypot(f.x - p.x, f.y - p.y) > 2.0:
+            elif math.hypot(f.x - p.x, f.y - p.y) > EXTINGUISH_RANGE_M:
                 self._fighting.pop(pid)
                 p.state, p.reason = "failed", "out of range"
             else:
