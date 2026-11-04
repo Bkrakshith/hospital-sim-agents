@@ -44,7 +44,7 @@ FOLLOW_AHEAD_M, FOLLOW_SIDE_M, FOLLOW_HEIGHT_M, FOLLOW_TARGET_Z, FOLLOW_FOCAL_MM
 # WARDZERO_FOLLOW_FRAMING=desk: a wider, higher camera well in front of a fixed robot, so the people at its desk are in
 # the frame too (the default follow camera is so close that they are cut off). (ahead, side, height, target z, focal mm)
 FRAMINGS = {"follow": (FOLLOW_AHEAD_M, FOLLOW_SIDE_M, FOLLOW_HEIGHT_M, FOLLOW_TARGET_Z, FOLLOW_FOCAL_MM),
-            "desk": (5.0, 1.2, 2.3, 1.0, 14.0)}
+            "desk": (5.4, 0.6, 2.4, 1.0, 14.0)}
 FOLLOW_DIR = "follow_frames"
 FOLLOW_JPEG_QUALITY = 92
 TIMING_FILE = "timing.json"
