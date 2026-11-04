@@ -57,10 +57,10 @@ def rotated_leaves(bodies: Mapping[str, bool]) -> list[str]:
 
 
 # ---- reading the source stage (pxr) -----------------------------------------------------------------
-def read_nav_volumes(stage_path: Path) -> dict[str, tuple[str, Box]]:
-    from pxr import Usd, UsdGeom
+def read_nav_volumes(st) -> dict[str, tuple[str, Box]]:
+    """The NavMeshVolume prims of an opened pxr stage: path -> (Include or Exclude, xy box)."""
+    from pxr import UsdGeom
 
-    st = Usd.Stage.Open(str(stage_path))
     root = st.GetPrimAtPath(NAV_PARENT)
     out: dict[str, tuple[str, Box]] = {}
     if not root:
@@ -77,11 +77,10 @@ def read_nav_volumes(stage_path: Path) -> dict[str, tuple[str, Box]]:
     return out
 
 
-def read_door_bodies(stage_path: Path) -> dict[str, bool]:
-    """Every rigid body under /World/Fixtures: does its xform stack have a rotate op?"""
+def read_door_bodies(st) -> dict[str, bool]:
+    """Every rigid body under /World/Fixtures of an opened pxr stage: does its xform stack have a rotate op?"""
     from pxr import Usd, UsdGeom, UsdPhysics
 
-    st = Usd.Stage.Open(str(stage_path))
     root = st.GetPrimAtPath(DOOR_ROOT)
     out: dict[str, bool] = {}
     if not root:
@@ -95,8 +94,11 @@ def read_door_bodies(stage_path: Path) -> dict[str, bool]:
 
 def stage_fixes(site: "Site", plan: CullPlan, stage_path: Path) -> tuple[list[str], dict[str, dict[str, object]]]:
     """(prims to deactivate, {prim: {attribute: value}} to author) for the wrapper layer."""
-    off = nav_volumes_off(read_nav_volumes(stage_path), site, plan)
-    authored = {p: {"physics:rigidBodyEnabled": False} for p in rotated_leaves(read_door_bodies(stage_path))}
+    from pxr import Usd
+
+    st = Usd.Stage.Open(str(stage_path))
+    off = nav_volumes_off(read_nav_volumes(st), site, plan)
+    authored = {p: {"physics:rigidBodyEnabled": False} for p in rotated_leaves(read_door_bodies(st))}
     log.info("stage fixes: %d NavMesh exclude volume(s) off (%s), %d door leaf body(ies) made static (%s)",
              len(off), ", ".join(Path(p).name for p in off) or "none", len(authored),
              ", ".join(Path(p).parent.name + "/" + Path(p).name for p in authored) or "none")
