@@ -17,12 +17,17 @@ import time
 from ..config.loader import ConfigError, load_scenario
 from ..runlog import RunLog
 from ..world.bodies import StubBodies
-from .sim_service import (  # noqa: F401  (re-exported: tests and older callers import them from here)
+from .sim_service import (  # re-exported: tests and older callers import them from here
     MAX_WALL_DT, OBS_PERIOD_S, OBS_WINDOW_S, ODOM_PERIOD_S, PENDING_SILENT_S, PERCEPTION_PERIOD_S,
     READY_TIMEOUT_S, REPLY_WINDOW_S, ROBOT_ADDRESS_M, STATUS_PERIOD_S, STATUS_RECORD_PERIOD_S, STEP_HZ,
     WAIT_TOKENS, SimOutputs, SimRos, SimService,
 )
 
+__all__ = [
+    "MAX_WALL_DT", "OBS_PERIOD_S", "OBS_WINDOW_S", "ODOM_PERIOD_S", "PENDING_SILENT_S", "PERCEPTION_PERIOD_S",
+    "READY_TIMEOUT_S", "REPLY_WINDOW_S", "ROBOT_ADDRESS_M", "STATUS_PERIOD_S", "STATUS_RECORD_PERIOD_S", "STEP_HZ",
+    "WAIT_TOKENS", "SimOutputs", "SimRos", "SimService", "StubSimService", "main",
+]
 log = logging.getLogger("wardzero.stub_sim")
 
 

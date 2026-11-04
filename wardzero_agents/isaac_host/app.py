@@ -31,7 +31,6 @@ import signal
 import sys
 import time
 from pathlib import Path
-from typing import Optional
 
 from ..ros.sim_service import READY_TIMEOUT_S, WAIT_TOKENS
 from . import stage as stage_mod
