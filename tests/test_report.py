@@ -341,8 +341,8 @@ def test_batch_headline_counts_invalid_runs(tmp_path):
 def test_number_words_and_multipliers_are_checked():
     rep = {"trays": {"correct": 5, "total": 9}, "metrics": {"contacts": 0.0}}
     out = check_numbers("Seven of nine trays were delivered. Five of nine trays were delivered. Twice the robot "
-                        "stopped. Half of them waited. No one complained. The third try failed.", rep)
-    assert "Seven" not in out and "Twice" not in out and "third" not in out and "Half" not in out
+                        "stopped. Half of them waited. No one complained. One of nine trays was late.", rep)
+    assert "Seven" not in out and "Twice" not in out and "One of nine" not in out and "Half" not in out
     assert "Five of nine trays were delivered." in out and "No one complained." in out
     assert "Twice the robot stopped." in check_numbers("Twice the robot stopped.", {"metrics": {"stops": 2}})
     assert "Half of them waited." in check_numbers("Half of them waited.", {"share": 0.5})
@@ -360,3 +360,18 @@ def test_narrative_text_cannot_trigger_a_placeholder(tmp_path):
     rd = debriefed_run(tmp_path)
     page = build_report(rd, AE, FakeGateway(report_policy("Look {{facts}} and {{title}} here [01:00]."))).read_text()
     assert "{{facts}}" in page and page.count('id="facts"') == 1
+
+
+@pytest.mark.parametrize("sentence", [
+    "At first the robot waited.", "The robot once stopped.", "The first thing it did was stop.",
+    "He was the only one there.", "Only one of the people spoke.", "Another one was left.", "One person waited."])
+def test_ordinary_narrative_is_kept(sentence):
+    assert check_numbers(sentence, {"trays": {"correct": 5, "total": 9}}) == sentence
+
+
+def test_fractions_with_one_and_number_words_are_still_checked():
+    rep = {"trays": {"correct": 5, "total": 9}}
+    assert check_numbers("Seven of nine trays were delivered.", rep) == ""
+    assert check_numbers("One of nine trays was late.", rep) == ""
+    assert check_numbers("One in five waited.", rep) == ""  # 1 is not a known value
+    assert check_numbers("One in five waited.", {"a": 1, "b": 5}) == "One in five waited."

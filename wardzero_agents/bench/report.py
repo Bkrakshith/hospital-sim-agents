@@ -35,7 +35,7 @@ REPORT_SYSTEM = (
     "that appear in the excerpts or the data.\n"
     "3. Write no figure that is not in the data: no counts, durations, percentages, scores or dates of "
     "your own, and do not calculate new ones. Write every figure you do use as digits, exactly as the data "
-    "gives it. Number words and multipliers (seven, twice, half, a dozen, third) count as figures too. "
+    "gives it. Number words and multipliers (seven, twice, half, a dozen) count as figures too. "
     "Any sentence holding a figure that is not in the data is deleted.\n"
     "4. Give concrete suggestions for improving the robot's behaviour, each tied to a failed criterion, a "
     "low rating or a moment in the excerpts: say what to change and why. No general advice.\n"
@@ -52,28 +52,26 @@ _STAMP = re.compile(r"\[\d{1,3}:\d{2}\]")
 _NUM = re.compile(r"(?<![A-Za-z_\d.])(\d{1,3}(?:,\d{3})+|\d+)(\.\d+)?")
 _UNITS = ("zero one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen "
           "sixteen seventeen eighteen nineteen twenty").split()
-_WORDS: dict[str, float] = {w: float(i) for i, w in enumerate(_UNITS)}
+_WORDS: dict[str, float] = {w: float(i) for i, w in enumerate(_UNITS) if w != "one"}  # "one" is handled below
 _WORDS.update({w: float(10 * (i + 3)) for i, w in enumerate("thirty forty fifty sixty seventy eighty ninety".split())})
-_WORDS.update({"hundred": 100.0, "half": 0.5, "twice": 2.0, "thrice": 3.0, "once": 1.0, "dozen": 12.0, "pair": 2.0,
-               "first": 1.0, "second": 2.0, "third": 3.0, "fourth": 4.0, "fifth": 5.0, "sixth": 6.0,
-               "seventh": 7.0, "eighth": 8.0, "ninth": 9.0, "tenth": 10.0})
-del _WORDS["second"]  # also a unit of time: "10 seconds", "a second later"
+_WORDS.update({"hundred": 100.0, "half": 0.5, "twice": 2.0, "thrice": 3.0, "dozen": 12.0, "pair": 2.0})
 _WORD = re.compile(r"(?<![A-Za-z])(" + "|".join(sorted(_WORDS, key=len, reverse=True)) + r")(?![A-Za-z])", re.I)
-_ONE_NOT_A_COUNT = re.compile(r"\b(no|any|every|each|which|the|this|that|what|some|every)\s+one\b|"
-                              r"\bone\s+(another|can|could|should|would|might|may|must|else|who)\b", re.I)
+# "one" is a figure only in a fraction: "one of nine trays", "one in five", "one out of 4".
+_ONE_FRACTION = re.compile(r"(?<![A-Za-z])one\s+(?:of|in|out\s+of)\s+(?:the\s+)?(?:\d|(?:" + "|".join(_UNITS + list(_WORDS)) +
+                           r")(?![A-Za-z]))", re.I)
 
 
 def _numbers(text: str) -> list[tuple[float, int]]:
     """(value, decimals shown) of each number in text: digits (not in [mm:ss] stamps or names such as P1)
-    and number words and multipliers (seven, twice, half, a dozen, third ...)."""
+    and number words and multipliers (seven, twice, half, a dozen ...; "one" only in a fraction such as one of nine)."""
     text = _STAMP.sub(" ", text)
     out = []
     for m in _NUM.finditer(text):
         whole = m.group(1).replace(",", "")
         frac = (m.group(2) or "")[1:]
         out.append((float(whole + ("." + frac if frac else "")), len(frac)))
-    masked = _ONE_NOT_A_COUNT.sub(" ", text)
-    for m in _WORD.finditer(masked):
+    out.extend((1.0, 0) for _ in _ONE_FRACTION.finditer(text))
+    for m in _WORD.finditer(text):
         v = _WORDS[m.group(1).lower()]
         out.append((v, 0 if v == int(v) else 1))
     return out
