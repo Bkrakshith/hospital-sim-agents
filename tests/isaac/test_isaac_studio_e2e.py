@@ -27,7 +27,7 @@ pytestmark = [
 ROOT = Path(__file__).resolve().parents[2]
 OUT = ROOT / "artifacts" / "screens" / "isaac_record"
 H = {"X-WardZero-Panel": "1", "Content-Type": "application/json"}
-ROBOT_DOMAIN, PRIVATE_DOMAIN = 43, 44
+PRIVATE_DOMAIN = 44
 PREVIEW_TIMEOUT_S, FINISH_TIMEOUT_S = 900, 1500
 RECORD = os.environ.get("WARDZERO_E2E_RECORD", "1") == "1"  # 0: to tell a recording problem from a run problem
 
@@ -90,9 +90,7 @@ def test_studio_runs_isaac_headless_with_recording_and_a_live_preview(tmp_path):
     if subprocess.run(["pgrep", "-x", "kit"], capture_output=True).returncode == 0:
         pytest.skip("another Isaac (kit) process is running")
     data, runs, port = tmp_path / "data", tmp_path / "runs", free_port()
-    (data / "studio").mkdir(parents=True)
-    (data / "studio" / "connection.yaml").write_text(f"robot_domain: {ROBOT_DOMAIN}\n")
-    runs.mkdir()
+    runs.mkdir()  # default Studio settings: no connection.yaml, so the robot gets its own default domain
     env = dict(os.environ, WARDZERO_TEST_FAKE_LLM="1", WARDZERO_DATA_DIR=str(data), WARDZERO_RUNS_DIR=str(runs),
                ROS_DOMAIN_ID=str(PRIVATE_DOMAIN), PYTHONPATH=str(ROOT))
     for k in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_AUTH_TOKEN", "WARDZERO_KEY_FILE", "WARDZERO_SIM",
@@ -107,6 +105,8 @@ def test_studio_runs_isaac_headless_with_recording_and_a_live_preview(tmp_path):
     try:
         wait(lambda: _up(base), 60, "the Studio")
         assert call(base, "GET", "/api/presets")["isaac_available"] is True
+        conn = call(base, "GET", "/api/connection")
+        assert conn["explicit"] is False and conn["robot_domain"] == PRIVATE_DOMAIN + 1
         p = call(base, "POST", "/api/projects", {"name": "E2E", "scenario_id": "reception_guide"})
         p = call(base, "PUT", f"/api/projects/{p['id']}", {"sim": "isaac", "headed": False, "record": RECORD,
                                                            "record_res": "1280x720", "duration_min": 0.25})
@@ -124,6 +124,9 @@ def test_studio_runs_isaac_headless_with_recording_and_a_live_preview(tmp_path):
         run = runs / final["run_id"]
         for f in (("video/overhead.mp4", "video/follow.mp4", "robot_bag/metadata.yaml") if RECORD else ()) + ("report.html",):
             assert (run / f).is_file() and (run / f).stat().st_size > 0, f
+        counts = bag_counts(run / "robot_bag")
+        print("bag messages:", json.dumps(counts))
+        assert counts.get("/clock", 0) > 0 and counts.get("/tf", 0) > 0, counts  # recorded with no user setting
         assert "preview_url" not in call(base, "GET", "/api/run/state")  # the stream ended with the run
         assert (OUT / "studio_run.png").stat().st_size > 20_000
     finally:
@@ -137,6 +140,16 @@ def test_studio_runs_isaac_headless_with_recording_and_a_live_preview(tmp_path):
         except subprocess.TimeoutExpired:
             os.killpg(studio.pid, signal.SIGKILL)
         log.close()
+
+
+def bag_counts(bag: Path) -> dict:
+    import sqlite3
+    db = next(iter(sorted(bag.glob("*.db3"))))
+    con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+    try:
+        return dict(con.execute("select t.name, count(*) from messages m join topics t on t.id = m.topic_id group by t.id"))
+    finally:
+        con.close()
 
 
 def _up(base):

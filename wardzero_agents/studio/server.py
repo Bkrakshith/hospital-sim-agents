@@ -164,17 +164,51 @@ def _connection_file(data: Path) -> Path:
     return Path(data) / "studio" / "connection.yaml"
 
 
+DOMAIN_WRAP = 102  # default robot domains stay in 0-101, where every DDS vendor agrees
+
+
+def private_domain() -> int:
+    """The ROS domain of the people's side of a run: the Studio's own ROS_DOMAIN_ID (0 when unset)."""
+    try:
+        return int(os.environ.get("ROS_DOMAIN_ID", "0") or 0)
+    except ValueError:
+        return 0
+
+
+def default_robot_domain(private: int, avoid=()) -> int:
+    """Deterministic: private+1, wrapping within 0-101, skipping the private domain and any in ``avoid``."""
+    d = private
+    for _ in range(DOMAIN_WRAP):
+        d = (d + 1) % DOMAIN_WRAP
+        if d != private and d not in avoid:
+            return d
+    return (private + 1) % DOMAIN_WRAP
+
+
 def read_connection(data: Path) -> dict:
+    """``robot_domain`` is the one the user set, else a default of its own (never the private domain): the robot's
+    topics and the rosbag live there, away from the people's minds. ``explicit`` says which."""
     try:
         d = yaml.safe_load(_connection_file(data).read_text()) or {}
     except (OSError, yaml.YAMLError):
         d = {}
-    dom = d.get("robot_domain", os.environ.get("ROS_DOMAIN_ID", "0"))
+    private = private_domain()
+    explicit = "robot_domain" in d
     try:
-        dom = int(dom)
+        dom = int(d["robot_domain"]) if explicit else None
     except (TypeError, ValueError):
-        dom = 0
-    return {"robot_domain": dom, "rmw": d.get("rmw") or os.environ.get("RMW_IMPLEMENTATION") or "default"}
+        dom, explicit = None, False
+    if dom is None:
+        dom = default_robot_domain(private)
+    return {"robot_domain": dom, "explicit": explicit, "private_domain": private,
+            "rmw": d.get("rmw") or os.environ.get("RMW_IMPLEMENTATION") or "default"}
+
+
+def domain_conflict(dom: int) -> Optional[str]:
+    if dom == private_domain():
+        return (f"ROS domain {dom} is the one the people and the director use (the Studio's ROS_DOMAIN_ID). The robot "
+                f"needs a domain of its own so it cannot see them; pick another number.")
+    return None
 
 
 def local_ip() -> str:
@@ -543,6 +577,8 @@ def make_app(ctx: Ctx) -> web.Application:
         dom = d.get("robot_domain")
         if isinstance(dom, bool) or not isinstance(dom, int) or not 0 <= dom <= 232:
             raise BadRequest("'robot_domain' must be a whole number from 0 to 232.")
+        if domain_conflict(dom):
+            raise BadRequest(domain_conflict(dom))
         rmw = d.get("rmw")
         if rmw is not None and (not isinstance(rmw, str) or not re.fullmatch(r"[A-Za-z0-9_]{1,60}", rmw)):
             raise BadRequest("'rmw' must be an RMW implementation name.")
@@ -561,6 +597,8 @@ def make_app(ctx: Ctx) -> web.Application:
         project = ctx.projects.get(pid)
         check_sim(ctx, project)
         conn = read_connection(ctx.data)
+        if domain_conflict(conn["robot_domain"]):
+            raise ApiError(400, domain_conflict(conn["robot_domain"]))
         try:
             run_id = await asyncio.to_thread(ctx.runner.start, project, conn["robot_domain"])
         except RunnerBusy as e:

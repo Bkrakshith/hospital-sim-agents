@@ -370,7 +370,7 @@
     // ---- connection ----
     function connectSection(r) {
       const c = S.conn;
-      const dom = h("input.text", { type: "number", min: 0, max: 232, id: "conn-domain", value: c ? c.robot_domain : 0, "aria-label": "ROS domain id", onchange: async (e) => {
+      const dom = h("input.text", { type: "number", min: 0, max: 232, id: "conn-domain", value: c ? c.robot_domain : 0, disabled: !!(c && !c.explicit && !S.editDomain), "aria-label": "ROS domain id", onchange: async (e) => {
         try { S.conn = Object.assign({}, S.conn, await API.post("/api/connection", Object.assign({ robot_domain: parseInt(e.target.value, 10) }, S.conn && S.conn.rmw && S.conn.rmw !== "default" ? { rmw: S.conn.rmw } : {}))); WZ.toast("Domain saved"); render(); }
         catch (err) { WZ.toast(err.message, "bad"); }
       } });
@@ -382,7 +382,9 @@
       return h("section.rsec", h("h3.sub", "Connect your robot"),
         h("p.muted.small", "Your robot and this computer talk over ROS 2. Use the same domain on both, then publish and subscribe to the topics below."),
         h("div.kv", h("div.kvrow", h("span.k", "This computer"), h("span.v.mono", ip), copyBtn(ip, "the address")),
-          h("div.kvrow", h("span.k", "ROS domain"), dom),
+          h("div.kvrow", h("span.k", "Robot ROS domain"), dom,
+            c && !c.explicit && !S.editDomain ? h("small.muted", "chosen for you (the people use " + c.private_domain + ")") : null,
+            c && !c.explicit && !S.editDomain ? h("button.btn.small", { type: "button", onclick: () => { S.editDomain = true; render(); } }, "Change") : null),
           h("div.kvrow", h("span.k", "RMW"), h("span.v.mono", c ? c.rmw : "…"), env ? copyBtn(env, "the environment lines") : null),
           h("div.kvrow", h("span.k", "ROS 2"), h("span.v", c ? (c.ros ? "available on this computer" : "not installed on this computer; the topics below are for the robot side") : "…"))),
         h("ul.lights", { "aria-label": "Connection status" },
