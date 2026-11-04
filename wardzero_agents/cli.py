@@ -1,6 +1,7 @@
 """hhumans: run, rerun and replay persona simulations; manage memory, the knowledge base and keys.
 
-    hhumans run SCENARIO [--sim stub] [--time-scale F] [--lockstep] [--no-robot] [--no-panel]
+    hhumans run SCENARIO [--sim isaac|stub] [--headed|--headless] [--record] [--full-site]
+                [--time-scale F] [--lockstep] [--no-robot] [--no-panel]
                 [--panel-port 8765] [--bot claude|reception|none] [--ready-timeout 600]
                 [--repeat N] [--carry-memory] [--baseline] [--no-report]
     hhumans rerun RUN_DIR [same flags]
@@ -16,10 +17,12 @@
 
 `run` checks the key in this process, copies the scenario and its configs into a new run folder
 (the copy is self-contained) and starts the ROS 2 nodes as child processes, each in its own
-process group, all loading that copy: the stub sim, the agent service, the director and, unless
+process group, all loading that copy: the sim (the Isaac host with --sim isaac, the default when
+Isaac Sim is installed at ~/isaacsim; the kinematic stub sim with --sim stub), the agent service,
+the director and, unless
 --bot none, the robot: the built-in Claude robot when a Claude key is set, else the placeholder
-reception robot. The run ends when any child exits (normally the stub
-sim, at the scenario's duration); the rest then get SIGINT, SIGTERM after 10 s, SIGKILL after a
+reception robot. The run ends when any child exits (normally the sim,
+at the scenario's duration); the rest then get SIGINT, SIGTERM after 10 s, SIGKILL after a
 further grace (longer for the agent node, which drains its minds and saves the memory snapshot).
 Ctrl+C does the same; press it again to hurry. Run folders go to $WARDZERO_RUNS_DIR, default
 <hospital-sim-agents>/runs.
@@ -52,7 +55,10 @@ from . import keys
 
 AGENTS_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_SCENARIO = AGENTS_ROOT / "config" / "scenarios" / "waiting_area_v1.yaml"
-ISAAC_MSG = "The Isaac sim host arrives in Plan 2. Use --sim stub."
+ISAAC_ROOT = Path(os.environ.get("ISAAC_SIM_ROOT") or "~/isaacsim").expanduser()
+ISAAC_HOST_SH = AGENTS_ROOT / "scripts" / "isaac_host.sh"
+ISAAC_KILL_AFTER_S = 30.0  # Kit can take a while to shut down
+SIMS = ("isaac", "stub")
 FASTEMBED_ADVICE = ("The fastembed embedder needs the optional extra. Install it with:\n"
                     f"  pip install -e '{AGENTS_ROOT}[embed]'")
 DEFAULT_PANEL_PORT = 8765
@@ -84,6 +90,27 @@ def runs_dir() -> Path:
 
 def ros_available() -> bool:
     return bool(os.environ.get("ROS_DISTRO")) and importlib.util.find_spec("rclpy") is not None
+
+
+def default_sim() -> str:
+    """$WARDZERO_SIM when set, else isaac when Isaac Sim is installed, else the stub."""
+    env = os.environ.get("WARDZERO_SIM", "").strip()
+    if env in SIMS:
+        return env
+    return "isaac" if ISAAC_ROOT.is_dir() else "stub"
+
+
+def _resolve_sim(args) -> None:
+    """Pick the backend and check the flags that only the Isaac host takes."""
+    args.sim = getattr(args, "sim", None) or default_sim()
+    if args.sim == "isaac":
+        if not ISAAC_ROOT.is_dir():
+            raise CliError(f"Isaac Sim was not found at {ISAAC_ROOT} (set ISAAC_SIM_ROOT), or use --sim stub.")
+        return
+    only = [f for f, on in (("--headed", getattr(args, "headed", None)), ("--record", getattr(args, "record", False)),
+                            ("--full-site", getattr(args, "full_site", False))) if on]
+    if only:
+        raise CliError(f"{', '.join(only)} need{'s' if len(only) == 1 else ''} the Isaac host (--sim isaac).")
 
 
 def _need_ros() -> None:
@@ -339,20 +366,20 @@ def _start_live(args, loaded, overrides: dict, meta: dict, out: Optional[dict] =
     _need_ros()
     _refuse_if_active()
     overrides = {**overrides, **_robot_override(loaded, args)}
-    meta = {**meta, "sim": "stub", "time_scale": ts, "lockstep": bool(args.lockstep or loaded.scenario.lockstep),
+    sim = getattr(args, "sim", None) or "stub"
+    meta = {**meta, "sim": sim, "time_scale": ts, "lockstep": bool(args.lockstep or loaded.scenario.lockstep),
             "panel": not args.no_panel}
+    if sim == "isaac":
+        meta.update(headed=bool(args.headed), record=bool(args.record), full_site=bool(args.full_site))
     for key, val in (("robot_domain", getattr(args, "robot_domain", None)),
                      ("project_id", getattr(args, "project_id", None))):
-        if val is not None:  # recorded only; the Isaac wiring reads robot_domain later, the Studio lists runs by project_id
+        if val is not None:  # the Isaac host also gets robot_domain; the Studio lists runs by project_id
             meta[key] = val
     run_dir, staged = _stage(loaded, runs_dir(), loaded.scenario.id, overrides, meta)
     bot = _bot(args, staged)
     rd, sp = str(run_dir), str(staged.scenario_path)
     children = [
-        Child("stub_sim", _module("wardzero_agents.ros.stub_sim_node", "--run-dir", rd, "--scenario", sp,
-                                  "--time-scale", str(ts), "--ready-timeout", str(ready),
-                                  "--wait-for", "agents,director", *(["--lockstep"] if args.lockstep else [])),
-              ends_run=True),
+        _sim_child(args, rd, sp, ts, ready),
         Child("agents", _module("wardzero_agents.ros.agent_node", "--run-dir", rd, "--scenario", sp),
               kill_after_s=AGENT_KILL_AFTER_S, env=_child_env(with_keys=True)),
         Child("director", _module("wardzero_agents.ros.director_node", "--run-dir", rd, "--scenario", sp,
@@ -363,12 +390,37 @@ def _start_live(args, loaded, overrides: dict, meta: dict, out: Optional[dict] =
         out["run_dir"] = run_dir
     print(f"Run folder: {run_dir}", flush=True)
     print(f"Scenario {staged.scenario.id}: {staged.scenario.duration_min:g} min of sim time at x{ts:g}, "
-          f"ROS_DOMAIN_ID={os.environ.get('ROS_DOMAIN_ID', '0')}, robot: {bot}", flush=True)
+          f"ROS_DOMAIN_ID={os.environ.get('ROS_DOMAIN_ID', '0')}, robot: {bot}, sim: {_sim_label(args)}", flush=True)
     if not args.no_panel:
         print(f"Control panel: http://127.0.0.1:{args.panel_port}/", flush=True)
     code = supervise(children, env=_child_env())
     print(f"Run finished (exit code {code}). Run folder: {run_dir}", flush=True)
     return code
+
+
+def _sim_child(args, rd: str, sp: str, ts: float, ready: float) -> Child:
+    """The process that owns the world and ends the run: the Isaac host or the stub sim."""
+    lock = ["--lockstep"] if args.lockstep else []
+    if getattr(args, "sim", None) == "isaac":
+        argv = [str(ISAAC_HOST_SH), "--run-dir", rd, "--scenario", sp, "--time-scale", str(ts),
+                "--ready-timeout", str(ready), "--wait-for", "agents,director",
+                "--private-domain", os.environ.get("ROS_DOMAIN_ID", "").strip() or "0",
+                *lock, "--headed" if args.headed else "--headless"]
+        argv += ["--record"] if args.record else []
+        argv += ["--full-site"] if args.full_site else []
+        if getattr(args, "robot_domain", None) is not None:
+            argv += ["--robot-domain", str(args.robot_domain)]
+        return Child("isaac_host", argv, kill_after_s=ISAAC_KILL_AFTER_S, ends_run=True)  # no key in its env
+    return Child("stub_sim", _module("wardzero_agents.ros.stub_sim_node", "--run-dir", rd, "--scenario", sp,
+                                     "--time-scale", str(ts), "--ready-timeout", str(ready),
+                                     "--wait-for", "agents,director", *lock), ends_run=True)
+
+
+def _sim_label(args) -> str:
+    if getattr(args, "sim", None) != "isaac":
+        return "stub"
+    extra = [w for w, on in (("record", args.record), ("full site", args.full_site)) if on]
+    return "isaac (" + ", ".join(["headed" if args.headed else "headless", *extra]) + ")"
 
 
 def _post_run(run_dir: Path, report: bool = True) -> Optional[Path]:
@@ -424,8 +476,7 @@ def _cmd_batch(args, loaded) -> int:
 
 
 def cmd_run(args) -> int:
-    if args.sim == "isaac":
-        raise CliError(ISAAC_MSG)
+    _resolve_sim(args)
     loaded = _load(args.scenario)
     if args.repeat > 1 or args.baseline:
         return _cmd_batch(args, loaded)
@@ -537,8 +588,7 @@ def _load_recorded(run_dir: Path, meta: dict, tmp: Path):
 
 def cmd_rerun(args) -> int:
     from .memory import data_dir
-    if args.sim == "isaac":
-        raise CliError(ISAAC_MSG)
+    _resolve_sim(args)
     src = Path(args.run_dir).resolve()
     meta = _recorded_meta(src)
     snap = meta.get("snapshot_in")
@@ -823,7 +873,16 @@ def cmd_audit(args) -> int:
 # ---- parser --------------------------------------------------------------------------------
 def _live_flags() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(add_help=False)
-    p.add_argument("--sim", choices=("stub", "isaac"), default="stub")
+    p.add_argument("--sim", choices=SIMS, default=None,
+                   help="isaac (the Isaac Sim host; the default when Isaac Sim is installed) or stub "
+                        "(the kinematic stand-in, for tests)")
+    mode = p.add_mutually_exclusive_group()
+    mode.add_argument("--headed", dest="headed", action="store_true", default=None,
+                      help="Isaac: show the Kit window to watch the run")
+    mode.add_argument("--headless", dest="headed", action="store_false", help="Isaac: no window (the default)")
+    p.add_argument("--record", action="store_true", help="Isaac: record the run to <run>/video")
+    p.add_argument("--full-site", action="store_true",
+                   help="Isaac: load the whole hospital instead of the scenario's areas (needs a large GPU)")
     p.add_argument("--time-scale", type=float, default=1.0, help="sim seconds per wall second")
     p.add_argument("--lockstep", action="store_true", help="hold the sim clock while a decision is pending")
     p.add_argument("--no-robot", action="store_true", help="run the scenario without the robot")
@@ -833,7 +892,8 @@ def _live_flags() -> argparse.ArgumentParser:
                    help="the robot to run: claude (the built-in Claude robot; the default when a Claude key is "
                         "set), reception (the placeholder) or none")
     p.add_argument("--robot-domain", type=int, default=None, metavar="N",
-                   help="ROS_DOMAIN_ID of the developer's robot (recorded in meta.json; Isaac wiring comes later)")
+                   help="ROS_DOMAIN_ID of the developer's robot (Isaac: /clock is published there too; "
+                        "the robot graph follows)")
     p.add_argument("--project-id", default=None, help=argparse.SUPPRESS)  # set by the Studio
     p.add_argument("--ready-timeout", type=float, default=DEFAULT_READY_TIMEOUT_S,
                    help="wall seconds the sim waits for the agents and director to come up")

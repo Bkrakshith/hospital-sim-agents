@@ -89,9 +89,10 @@ def opt(argv, flag):
 
 
 # ---- the brief's tests -------------------------------------------------------------------
-def test_isaac_not_yet(capsys):
+def test_isaac_needs_isaac_sim_installed(capsys, monkeypatch, tmp_path):
+    monkeypatch.setattr(cli, "ISAAC_ROOT", tmp_path / "no-isaacsim")
     assert main(["run", V1, "--sim", "isaac"]) == 2
-    assert "Plan 2" in capsys.readouterr().err
+    assert "Isaac Sim" in capsys.readouterr().err
 
 
 def test_run_without_key_refuses(monkeypatch, capsys, memkeyring, launched):

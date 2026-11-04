@@ -44,4 +44,7 @@ asyncio_default_fixture_loop_scope = "function"
 # ROS 2 Humble ships pytest plugins that break pytest 8+; they are not needed here
 addopts = "-p no:launch_ros -p no:launch_testing"
 testpaths = ["tests"]
-markers = ["ros: needs a sourced ROS 2 Humble environment"]
+markers = [
+    "ros: needs a sourced ROS 2 Humble environment",
+    "isaac: boots Isaac Sim (skipped unless WARDZERO_ISAAC=1)",
+]
