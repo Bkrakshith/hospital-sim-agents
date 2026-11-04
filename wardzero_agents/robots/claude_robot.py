@@ -23,7 +23,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Literal, Optional
 
 from ..llm.gateway import PERMANENT_ERRORS, LLMRequest, LLMResult
-from .profile import G1_CLAUDE, RobotProfile, get_profile
+from .profile import G1_CLAUDE, G1_NAME, RobotProfile, get_profile
 
 log = logging.getLogger("robot_claude")
 
@@ -44,7 +44,7 @@ MOVING_ACTIONS = ("go_to", "guide")
 NEEDS = {"hand_over": ("item", "target"), "take": ("item",), "extinguish": ("target",),
          "guide": ("target", "destination"), "go_to": ("destination",)}
 
-SYSTEM_RULES = """You are the robot in a UK hospital: a Unitree G1 humanoid doing the job in your task brief. People around you are real people with their own worries. You act through a few simple actions and by speaking.
+SYSTEM_RULES = """You are the robot described under YOUR BODY, working in a UK hospital and doing the job in your task brief. People around you are real people with their own worries. You act through a few simple actions and by speaking.
 
 How you work
 - Each turn you are shown what you can perceive right now: your position, who your camera sees (as anonymous tracks such as t1, t2 with a distance, a direction and a posture), objects in view, what your microphone heard, the results of your recent actions and your own last events. You know nothing else about the people. Never guess a name, an age or how someone feels; you can only see what the camera shows and hear what is said.
@@ -73,7 +73,7 @@ WALK_RULE = ("You can walk. To take someone somewhere, use guide with their trac
 
 
 def system_prompt(profile: RobotProfile) -> str:
-    return SYSTEM_RULES + "\n\nYour mobility\n" + (WALK_RULE if profile.can_move else NO_WALK_RULE)
+    return SYSTEM_RULES + ("\n\nYou are a Unitree G1 humanoid." if profile.name == G1_NAME else "") + "\n\nYour mobility\n" + (WALK_RULE if profile.can_move else NO_WALK_RULE)
 
 
 def actions_for(profile: RobotProfile) -> tuple[str, ...]:

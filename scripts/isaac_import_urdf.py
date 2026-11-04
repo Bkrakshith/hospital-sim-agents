@@ -43,6 +43,7 @@ def finish(result: dict) -> None:
 def check_inputs(urdf: Path, sensors_yaml: Path, out: Path, link_names=None):
     """Shared by dry-run and the real import: (errors, warnings, sensors, joint_count)."""
     errors, warnings, sensors, joints = [], [], [], 0
+    name = None
     if not urdf.is_file():
         errors.append(f"URDF not found: {urdf}")
     else:
@@ -53,6 +54,7 @@ def check_inputs(urdf: Path, sensors_yaml: Path, out: Path, link_names=None):
             joints = sum(1 for j in info.joints if j["type"] in ("revolute", "continuous", "prismatic"))
             warnings += [i for i in info.issues if not i.startswith("no Gazebo sensors")]
             link_names = set(info.links)
+            name = info.robot_name
             if not info.links:
                 errors.append(f"URDF unusable: {info.issues[0] if info.issues else 'no links'}")
         except ImportError:  # no wardzero deps in this python: fall back to a plain read
@@ -87,7 +89,7 @@ def check_inputs(urdf: Path, sensors_yaml: Path, out: Path, link_names=None):
             errors.append(f"output folder not writable: {out.parent}")
     except OSError as e:
         errors.append(f"output folder not usable: {e}")
-    return errors, warnings, sensors, joints
+    return errors, warnings, sensors, joints, name
 
 
 # ------------------------------------------------------------------ the Isaac part
@@ -234,12 +236,13 @@ def main(argv=None) -> int:
     ap.add_argument("--stiffness", type=float, default=150.0)
     ap.add_argument("--damping", type=float, default=8.0)
     args = ap.parse_args(argv)
-    errors, warnings, sensors, joints = check_inputs(Path(args.urdf), args.sensors, Path(args.out))
+    errors, warnings, sensors, joints, robot_name = check_inputs(Path(args.urdf), args.sensors, Path(args.out))
     if errors:
         finish({"ok": False, "usd": None, "joints": joints, "warnings": warnings, "errors": errors,
-                "dry_run": args.dry_run})
+                "dry_run": args.dry_run, "robot_name": robot_name})
     if args.dry_run:
-        finish({"ok": True, "usd": str(Path(args.out)), "joints": joints, "warnings": warnings, "dry_run": True})
+        finish({"ok": True, "usd": str(Path(args.out)), "joints": joints, "warnings": warnings, "dry_run": True,
+            "robot_name": robot_name})
     try:
         res = import_robot(args, sensors, warnings)
     except Exception as e:

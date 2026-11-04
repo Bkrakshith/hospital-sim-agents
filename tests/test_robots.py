@@ -186,4 +186,12 @@ def test_dry_run_parses_requested_urdf_in_place(tmp_path):
         '<robot name="b"><link name="b0"><visual><geometry><mesh filename="meshes/m.stl"/></geometry></visual></link>'
         '<link name="b1"/><joint name="j" type="continuous"><parent link="b0"/><child link="b1"/></joint></robot>')
     rc, out = _dry(tmp_path, tmp_path / "second.urdf")
-    assert rc == 0 and out["joints"] == 1 and not any("mesh" in w for w in out["warnings"])
+    assert rc == 0 and out["robot_name"] == "b" and out["joints"] == 1 and not any("mesh" in w for w in out["warnings"])
+
+
+def test_system_prompt_names_g1_only_for_g1():
+    from wardzero_agents.robots.claude_robot import system_prompt
+    arm = RobotProfile(name="ward_arm", can_move=True, base="wheeled", radius=0.4, reach=(0.3, 1.0), max_speed=0.5,
+                       ns="arm", sensors=(), controller="builtin_claude")
+    assert "G1" not in system_prompt(arm) and "Unitree" not in system_prompt(arm)
+    assert system_prompt(G1_CLAUDE).count("G1") == 1
