@@ -18,7 +18,8 @@ import yaml
 AGE_BANDS = ("young_adult", "adult", "older")
 OLDER_FROM = 60
 YOUNG_BELOW = 30
-OUTFITS = ("civilian", "scrubs")
+OUTFITS = ("civilian", "scrubs", "uniform")
+STAFF_OUTFITS = ("scrubs", "uniform")
 STAFF_ROLES = frozenset({"staff", "ward_nurse", "surgeon", "porter", "receptionist"})
 BANNED_WORDS = ("construction", "police", "hardhat", "hard_hat", "helmet", "hivis", "hi_vis", "hi-vis", "workwear",
                 "safety", "vest")
@@ -49,8 +50,8 @@ class AllowList:
         self.characters = characters
 
     def _pool(self, role: str, sex: str, age: int) -> list[Character]:
-        outfit = "scrubs" if role in STAFF_ROLES else "civilian"
-        pool = [c for c in self.characters if c.outfit == outfit] or list(self.characters)
+        staff = role in STAFF_ROLES
+        pool = [c for c in self.characters if (c.outfit in STAFF_OUTFITS) == staff] or list(self.characters)
         if sex in ("female", "male") and any(c.sex == sex for c in pool):
             pool = [c for c in pool if c.sex == sex]
         want = AGE_BANDS.index(age_band(age))

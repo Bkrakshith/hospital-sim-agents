@@ -1,16 +1,9 @@
 # Allow-list of Isaac People characters for the Isaac host (I2). Built by scripts/curate_characters.py.
 # Excluded on purpose: hi-vis, hard hats and workwear (construction, police, the DH WORKWEAR outfits).
 # usd is relative to the Isaac assets root; hide lists prims under the SkelRoot that are deactivated at spawn.
-# outfit: civilian (casual clothes), scrubs (medical). age: young_adult, adult or older (60+).
+# outfit: civilian (casual clothes), scrubs (medical), uniform (doctor's white coat). age: young_adult, adult or older (60+).
 version: 1
 characters:
-- id: M_Medical_01
-  usd: Isaac/People/Characters/M_Medical_01/M_Medical_01.usd
-  sex: male
-  age: adult
-  age_years: 35
-  outfit: scrubs
-  hide: []
 - id: F_Medical_01
   usd: Isaac/People/Characters/F_Medical_01/F_Medical_01.usd
   sex: female
@@ -23,7 +16,7 @@ characters:
   sex: male
   age: adult
   age_years: 35
-  outfit: scrubs
+  outfit: uniform
   hide: []
 - id: original_female_adult_medical_01
   usd: Isaac/People/Characters/original_female_adult_medical_01/female_adult_medical_01.usd

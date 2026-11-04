@@ -38,4 +38,4 @@ exec "${CAP[@]}" "${PIN[@]}" env \
   LD_LIBRARY_PATH="$ISAAC/exts/isaacsim.ros2.core/humble/lib" \
   PYTHONPATH="$AGENTS_ROOT" PYTHONUNBUFFERED=1 \
   PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
-  "$ISAAC/python.sh" -m wardzero_agents.isaac_host.app "${PRIVATE[@]}" "$@"
+  "$ISAAC/python.sh" -m "${WARDZERO_ISAAC_MODULE:-wardzero_agents.isaac_host.app}" "${PRIVATE[@]}" "$@"

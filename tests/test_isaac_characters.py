@@ -27,14 +27,14 @@ def test_no_banned_clothing_anywhere_in_the_list(allow):
 
 def test_every_entry_is_tagged(allow):
     for c in allow.characters:
-        assert c.sex in ("female", "male") and c.age in ch.AGE_BANDS and c.outfit in ("civilian", "scrubs")
+        assert c.sex in ("female", "male") and c.age in ch.AGE_BANDS and c.outfit in ch.OUTFITS
         assert c.usd.endswith(".usd") and not c.usd.startswith("/")
     assert len({c.id for c in allow.characters}) == len(allow.characters)
 
 
 def test_the_list_covers_both_sexes_and_both_outfits(allow):
     for sex in ("female", "male"):
-        assert any(c.sex == sex and c.outfit == "scrubs" for c in allow.characters)
+        assert any(c.sex == sex and c.outfit in ch.STAFF_OUTFITS for c in allow.characters)
         assert sum(c.sex == sex and c.outfit == "civilian" for c in allow.characters) >= 4
     assert any(c.age == "older" for c in allow.characters)
 
@@ -68,10 +68,10 @@ def test_every_listed_usd_exists(allow):
 
 
 @pytest.mark.parametrize("role", STAFF)
-def test_staff_get_scrubs(allow, role):
+def test_staff_get_scrubs_or_a_uniform(allow, role):
     for sex in ("female", "male"):
         c = allow.choose("N1", role, sex, 40)
-        assert c.outfit == "scrubs" and c.sex == sex
+        assert c.outfit in ch.STAFF_OUTFITS and c.sex == sex
 
 
 @pytest.mark.parametrize("role", PUBLIC)
@@ -123,5 +123,5 @@ def test_cast_assignment_keeps_one_character_per_person(allow):
               ("N2", "ward_nurse", "female", 31), ("P3", "visitor", "male", 33)]
     got = allow.assign(people)
     assert set(got) == {"P1", "P2", "N1", "N2", "P3"}
-    assert got["N1"].id != got["N2"].id
+    assert got["N1"].id != got["N2"].id  # two female nurses, two different characters
     assert allow.assign(people) == got

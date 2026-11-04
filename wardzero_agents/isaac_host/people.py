@@ -61,6 +61,9 @@ class BehaviorApi(Protocol):
     def hide(self) -> None: ...
 
 
+PENDING = object()  # a spawner's answer: the character is being made, ask again next frame
+
+
 def seat_prim_path(seat_id: str) -> str:
     return f"/World/Seats/{seat_id}"
 

@@ -411,3 +411,40 @@ def test_without_a_spawner_a_joiner_stays_kinematic(tmp_path):
     pid = svc.world.spawn("coughing_adult", svc.t)
     svc.step(DT)
     assert pid not in svc.world.body_driven
+
+
+# ---- the pure parts of people_isaac (the module imports without Isaac)
+def test_lying_matrix_is_a_proper_rotation_with_the_head_towards_the_bed_head():
+    from types import SimpleNamespace
+
+    from wardzero_agents.isaac_host import people_isaac as pi
+
+    for yaw in (1.571, -1.571, 3.142, 0.3):
+        for front in ((0.0, 1.0, 0.0), (1.0, 0.0, 0.0), (0.0, -1.0, 0.0)):
+            bed = SimpleNamespace(x=10.0, y=5.0, yaw=yaw)
+            m = pi.lying_matrix(bed, top_z=0.86, front_local=front)
+            x, y, z, t = m[0:3], m[4:7], m[8:11], m[12:15]
+            dot = lambda a, b: sum(p * q for p, q in zip(a, b))
+            cross = lambda a, b: (a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0])
+            assert dot(x, x) == pytest.approx(1) and dot(x, y) == pytest.approx(0, abs=1e-9)
+            assert cross(x, y) == pytest.approx(z, abs=1e-9)  # proper rotation, not a mirror
+            assert z == pytest.approx((math.cos(yaw), math.sin(yaw), 0.0))  # the body's length runs along the bed
+            f = tuple(front[0] * a + front[1] * b for a, b in zip(x, y))
+            assert f == pytest.approx((0.0, 0.0, 1.0), abs=1e-9)  # the face looks up
+            mid = tuple(t[i] + z[i] * pi.BODY_LENGTH_M / 2 for i in range(2))
+            assert mid == pytest.approx((10.0, 5.0), abs=1e-9)  # centred on the bed
+            assert t[2] == pytest.approx(0.86 + pi.LYING_THICKNESS_M)
+
+
+def test_people_who_start_on_the_same_spot_are_spread_apart():
+    from wardzero_agents.isaac_host import people_isaac as pi
+
+    out = pi.spread([(1.0, 1.0, 0.0)] * 4 + [(9.0, 9.0, 0.0)])
+    for i, a in enumerate(out):
+        for b in out[i + 1:]:
+            assert math.hypot(a[0] - b[0], a[1] - b[1]) >= pi.OVERLAP_M
+    assert out[-1] == (9.0, 9.0, 0.0)
+
+
+def test_the_isaac_modules_import_without_kit():
+    import wardzero_agents.isaac_host.people_isaac  # noqa: F401

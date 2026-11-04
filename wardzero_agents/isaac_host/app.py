@@ -10,10 +10,10 @@ Behavior System's people):
 2. open the stage through the culling wrapper layer (``<run>/stage.usda``);
 3. a CPU PhysX scene (``enableGPUDynamics=False``, MBP broadphase);
 4. the baked collision USD;
-5. the people (I2);
+5. the people (I2): the characters, the seat effectors and the lying patients are authored here;
 6. bake the NavMesh;
 7. one robot obstacle cylinder, collisions off;
-8. ``timeline.play()``;
+8. ``timeline.play()``, then the characters' Behavior agents are bound to their controllers (I2);
 9. the robots, in one authoring pass (I4).
 Then the timeline is never stopped (only paused while the run is held) and the NavMesh is never
 re-baked while robots are present.
@@ -101,6 +101,10 @@ class IsaacHost:
         self.timeline = None
         self.stage = None
         self.bridges: list = []
+        self.runlog = None
+        self.bodies = None
+        self.svc = None  # the SimService (made before the people, which need its StubWorld)
+        self.people = None  # IsaacPeople
         self.startup: dict = {}
         self._stop = False
         self._t0 = time.monotonic()
@@ -154,8 +158,30 @@ class IsaacHost:
         self._updates(2)
         self._mark("physics")
 
-    def spawn_people(self) -> None:  # 5: I2 spawns the IRA characters here (before the NavMesh bake)
-        pass
+    def make_service(self) -> None:
+        """The sim service and its StubWorld are made first: the people are spawned where the world puts them."""
+        from ..ros.sim_service import SimService
+        from ..runlog import RunLog
+        from .bodies import IsaacBodies
+
+        a = self.args
+        self.runlog = RunLog(self.run_dir)
+        self.bodies = IsaacBodies()
+        self.svc = SimService(self.loaded, self.runlog, 1.0, a.lockstep or self.loaded.scenario.lockstep, a.wait_for,
+                              bodies=self.bodies)
+
+    def spawn_people(self) -> None:  # 5: the IRA characters, before the NavMesh bake and before play
+        from .people_isaac import IsaacPeople
+
+        self.people = IsaacPeople(self.stage, self.loaded)
+        self.people.spawn(self.svc.world, self.app)
+        self.bodies.spawner = self.people.spawn_runtime
+        self._updates(5)
+        self._mark("people")
+
+    def bind_people(self) -> None:  # 8b: after play the Behavior System has the agents; they get their controllers
+        self.people.bind(self.app, self.bodies, self.svc.world, fps=self.args.fps)
+        self._mark("people_bound")
 
     def bake_navmesh(self) -> None:  # 6
         import omni.anim.navigation.core as nav
@@ -205,10 +231,12 @@ class IsaacHost:
             self.enable_extensions()
             self.open_stage()
             self.physics()
+            self.make_service()
             self.spawn_people()
             self.bake_navmesh()
             self.robot_proxy()
             self.play()
+            self.bind_people()
             self.add_robots()
             self.frame_view()
             if self.args.record:
@@ -220,15 +248,11 @@ class IsaacHost:
 
     def loop(self) -> int:
         from ..ros.rosutil import RosBridge
-        from ..ros.sim_service import SimRos, SimService
-        from ..runlog import RunLog
-        from .bodies import IsaacBodies
+        from ..ros.sim_service import SimRos
         from .service import HostLoop, VramSampler
 
         a = self.args
-        runlog = RunLog(self.run_dir)
-        svc = SimService(self.loaded, runlog, 1.0, a.lockstep or self.loaded.scenario.lockstep, a.wait_for,
-                         bodies=IsaacBodies())
+        runlog, svc = self.runlog, self.svc
         private = RosBridge("wardzero_isaac_host", None, use_sim_time=False, domain_id=a.private_domain)
         self.bridges = [private]
         clocks = []

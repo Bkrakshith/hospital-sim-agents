@@ -14,6 +14,7 @@ import math
 from typing import TYPE_CHECKING, Callable, Optional
 
 from ..world.bodies import Bodies
+from .people import PENDING
 
 if TYPE_CHECKING:
     from ..world.stub_world import StubWorld
@@ -72,6 +73,8 @@ class IsaacBodies(Bodies):
             if pid in self.controllers or pid in self._unserved or pid in self.people:
                 continue
             ctrl = self.spawner(world, pid) if self.spawner is not None else None
+            if ctrl is PENDING:
+                continue  # being made: ask again next frame
             if ctrl is None:
                 self._unserved.add(pid)  # no body for them: the StubWorld keeps moving them
             else:

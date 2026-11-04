@@ -5,7 +5,8 @@
 
 Plain Python (no Isaac). Rules, from the brief: no hi-vis, hard hats or workwear.
 
-- Characters/: only the scrubs (Medical) and the business suit are kept (police and construction are out).
+- Characters/: only the scrubs and doctor's coat (Medical) and the business clothes are kept (police and
+  construction are out).
 - DH_Characters(_Extended): the metadata json names the outfit. WORKWEAR is out. A CASUAL outfit stays, and the
   character's whole ``Accessories`` prim (safety helmet, ear defenders, gloves, glasses, mask) is hidden at spawn.
   Per body, the base character and up to ``--variants`` Extended re-skins are kept.
@@ -20,14 +21,15 @@ from pathlib import Path
 import yaml
 
 PEOPLE = "Isaac/People"
-SCRUBS = {"M_Medical_01": "male", "F_Medical_01": "female", "original_male_adult_medical_01": "male",
-          "original_female_adult_medical_01": "female"}
+# staff clothes: scrubs, or the doctor's white coat (M_Medical_01 is out: a brown coat, not hospital clothing)
+STAFF = {"F_Medical_01": ("female", "scrubs"), "original_male_adult_medical_01": ("male", "uniform"),
+         "original_female_adult_medical_01": ("female", "scrubs")}
 CIVILIAN_GENERIC = {"F_Business_02": "female", "original_female_adult_business_02": "female"}
 OLDER_FROM = 60
 HEADER = """# Allow-list of Isaac People characters for the Isaac host (I2). Built by scripts/curate_characters.py.
 # Excluded on purpose: hi-vis, hard hats and workwear (construction, police, the DH WORKWEAR outfits).
 # usd is relative to the Isaac assets root; hide lists prims under the SkelRoot that are deactivated at spawn.
-# outfit: civilian (casual clothes), scrubs (medical). age: young_adult, adult or older (60+).
+# outfit: civilian (casual clothes), scrubs (medical), uniform (doctor's white coat). age: young_adult, adult or older (60+).
 """
 
 
@@ -38,13 +40,13 @@ def band(age: int) -> str:
 def build(assets: Path, variants: int) -> dict:
     people = assets / PEOPLE
     chars: list[dict] = []
-    for name, sex in {**SCRUBS, **CIVILIAN_GENERIC}.items():
+    generic = {**{n: v for n, v in STAFF.items()}, **{n: (sx, "civilian") for n, sx in CIVILIAN_GENERIC.items()}}
+    for name, (sex, outfit) in generic.items():
         found = sorted((people / "Characters" / name).glob("*.usd"))  # the original_* folders name the file differently
         usd = found[0] if found else None
         if usd is not None:
-            scrubs = name in SCRUBS
             chars.append({"id": name, "usd": usd.relative_to(assets).as_posix(), "sex": sex, "age": "adult",
-                          "age_years": 35, "outfit": "scrubs" if scrubs else "civilian", "hide": []})
+                          "age_years": 35, "outfit": outfit, "hide": []})
     kept: dict[str, int] = {}
     for folder in ("DH_Characters", "DH_Characters_Extended"):
         for js in sorted((people / folder).glob("*/*.json")):
