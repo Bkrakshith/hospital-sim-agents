@@ -5,14 +5,15 @@
 run has one). ``--preview`` (headless only) writes ``<run>/preview/latest.jpg`` 5 times a second, which the Studio
 streams as MJPEG.
 
-Rendering a frame for a writer costs about 300 ms on the RTX 3070 (spike S1: 3.3 fps at 2 x 720p), so a recorded run is
-in lockstep: sim time per frame is fixed at 1/fps and wall time is whatever recording costs. ``Recorder.step`` replaces
-``app.update`` in the host loop: it renders through ``rep.orchestrator.step`` (which advances the timeline one fixed
-frame and fires the writers) and does nothing extra while the timeline is held, so video time is sim time.
+Recording renders through plain ``app.update()`` and reads the render products' ``rgb`` annotators (they fill as the
+timeline plays): 40 ms a frame at 720p on the RTX 3070, against 300 ms through ``rep.orchestrator.step`` (which also
+crashed the Behavior System once real people were moving). A recorded run is still in lockstep, so the sim time per
+frame is fixed at 1/fps whatever the cost. ``Recorder.step`` replaces ``app.update`` in the host loop and does nothing
+extra while the timeline is held, so video time is sim time.
 
-The overhead camera streams from the render product's ``rgb`` annotator straight into the encoder; the encoder takes
-one session at a time, so the follow camera goes through a Replicator writer (JPEG files) and is encoded in a second
-pass when the run ends. Everything here that needs Kit imports it inside the function that uses it.
+The overhead camera streams into the encoder; the encoder takes one session at a time, so the follow camera is written
+as JPEG files and encoded to ``follow.mp4`` when the run ends (the files are then deleted). Everything here that needs
+Kit imports it inside the function that uses it.
 """
 from __future__ import annotations
 
@@ -41,6 +42,7 @@ OVERHEAD_FOCAL_MM = 12.0
 OVERHEAD_MARGIN = 1.06
 FOLLOW_AHEAD_M, FOLLOW_SIDE_M, FOLLOW_HEIGHT_M, FOLLOW_TARGET_Z, FOLLOW_FOCAL_MM = 2.8, 1.0, 1.7, 1.0, 16.0
 FOLLOW_DIR = "follow_frames"
+FOLLOW_JPEG_QUALITY = 92
 
 
 def parse_res(text: str) -> tuple[int, int]:
@@ -99,24 +101,6 @@ class RecordConfig:
 
     def frames_to_seconds(self, frames: int) -> float:
         return frames / float(self.fps)
-
-
-def wait_until_stable(count, update, stable_s: float = 1.0, timeout_s: float = 60.0, expect: int = 0,
-                      clock=time.monotonic) -> bool:
-    """Call ``update`` until ``count()`` (files written so far) has not grown for ``stable_s`` and reached ``expect``.
-    True when it settled, False at the timeout. (Replicator's ``wait_until_complete`` also waits for the robot's camera
-    writers and took as long as the recording itself.)"""
-    start = last_change = clock()
-    seen = -1
-    while True:
-        update()
-        n, now = count(), clock()
-        if n != seen:
-            seen, last_change = n, now
-        if n >= expect and now - last_change >= stable_s:
-            return True
-        if now - start >= timeout_s:
-            return False
 
 
 def encoder_args(cfg: RecordConfig) -> dict:
@@ -217,10 +201,13 @@ class Recorder:
         self.render_s = 0.0
         self.encoded = 0
         self.follow_frames = 0
-        self._rep = self._enc = self._an_top = self._an_prev = self._follow_xf = self._follow_writer = None
+        self._rep = self._enc = self._an_top = self._an_follow = self._follow_xf = None
+        self.follow_dir: Optional[Path] = None
+        self._last_follow = None
         self._sink: Optional[JpegSink] = None
         self._stride = preview_stride(cfg.fps, cfg.preview_hz)
         self._last_rgba = None
+        self._held = False
 
     # ---- set up ----
     def start(self) -> None:
@@ -256,19 +243,29 @@ class Recorder:
         from pxr import UsdGeom
 
         self._follow_xf = UsdGeom.Xformable(self.stage.GetPrimAtPath(cam))
-        frames = cfg.video_dir / FOLLOW_DIR
-        shutil.rmtree(frames, ignore_errors=True)
-        self._follow_writer = rep.WriterRegistry.get("BasicWriter")
-        self._follow_writer.initialize(output_dir=str(frames), rgb=True, image_output_format="jpeg")
-        self._follow_writer.attach([rep.create.render_product(cam, cfg.res, name="wz_follow")])
+        self.follow_dir = cfg.video_dir / FOLLOW_DIR
+        shutil.rmtree(self.follow_dir, ignore_errors=True)
+        self.follow_dir.mkdir(parents=True)
+        self._an_follow = rep.AnnotatorRegistry.get_annotator("rgb")
+        self._an_follow.attach([rep.create.render_product(cam, cfg.res, name="wz_follow")])
 
     # ---- one frame ----
     def step(self) -> None:
         """Instead of ``app.update()``: one fixed frame, rendered for the writers when the timeline is running."""
         if not self.timeline.is_playing():
+            self._held = True
             self.app.update()  # held: nothing moves, so nothing is recorded
             return
         self.sim_frames += 1
+        if self._held:
+            # the first frame after a hold renders nothing new; the clip repeats its last frame
+            self._held = False
+            self.app.update()
+            if self.cfg.record:
+                import numpy as np
+
+                self._emit(np)
+            return
         if not self.cfg.record:
             # preview alone: plain updates (the robot's camera writers fire on them; an orchestrator step only now and
             # then would never line up with its 5 Hz tick), and the overhead annotator is read every few frames
@@ -281,20 +278,33 @@ class Recorder:
             if pose is not None:
                 self._follow_xf.GetOrderedXformOps()[0].Set(look_at(*follow_view(pose)))
         t0 = time.monotonic()
-        self._rep.orchestrator.step(rt_subframes=1, pause_timeline=False)
+        self.app.update()  # one fixed frame; the annotators fill as the timeline plays (capture on play)
         import numpy as np
 
         img = np.asarray(self._an_top.get_data())
-        self.render_s += time.monotonic() - t0
-        self.frames += 1
         if img.size:
             self._last_rgba = img
-        if self.cfg.record and self._last_rgba is not None:  # a frame the renderer was late with repeats the last one
+        if self._an_follow is not None:
+            fimg = np.asarray(self._an_follow.get_data())
+            if fimg.size:
+                self._last_follow = fimg
+        self.render_s += time.monotonic() - t0
+        self.frames += 1
+        self._emit(np)
+        if self._sink is not None and self._last_rgba is not None and self.sim_frames % self._stride == 0:
+            self._sink.write(self._last_rgba[::preview_scale(self.cfg.res), ::preview_scale(self.cfg.res)])
+
+    def _emit(self, np) -> None:
+        """One video frame for this sim frame: a renderer that is late repeats the last image."""
+        if self._last_rgba is not None:
             self._enc.encode_next_frame_from_buffer(np.ascontiguousarray(self._last_rgba), *self.cfg.res)
             self.encoded += 1
-        if self._sink is not None and self._last_rgba is not None and self.sim_frames % self._stride == 0:
-            s = preview_scale(self.cfg.res) if self.cfg.record else 1
-            self._sink.write(self._last_rgba[::s, ::s])
+        if self._last_follow is not None:
+            from PIL import Image
+
+            Image.fromarray(self._last_follow[..., :3]).save(self.follow_dir / f"f_{self.follow_frames:06d}.jpg",
+                                                             format="JPEG", quality=FOLLOW_JPEG_QUALITY)
+            self.follow_frames += 1
 
     def _preview_only_frame(self) -> None:
         import numpy as np
@@ -317,16 +327,10 @@ class Recorder:
             self._sink.clear()
         if not cfg.record:
             return stats
-        t0 = time.monotonic()
-        folder = cfg.video_dir / FOLLOW_DIR
-        if self._follow_writer is not None and not wait_until_stable(
-                lambda: sum(1 for _ in folder.glob("rgb_*.jp*g")), self.app.update, expect=self.frames):
-            log.warning("the follow-camera frames were still arriving after the wait; the clip may be short")
-        stats["writers_wait_s"] = round(time.monotonic() - t0, 1)
         self._enc.finalize_encoding()
         self._fix_header(cfg.overhead_mp4, self.encoded)  # the encoder was told no length at the start
         stats["overhead_frames"] = self.encoded
-        if self._follow_writer is not None:
+        if self._an_follow is not None:
             t0 = time.monotonic()
             stats["follow_frames"] = self._encode_follow()
             stats["follow_encode_s"] = round(time.monotonic() - t0, 1)
@@ -339,8 +343,8 @@ class Recorder:
 
     def _encode_follow(self) -> int:
         cfg = self.cfg
-        folder = cfg.video_dir / FOLLOW_DIR
-        files = sorted(p for p in folder.glob("rgb_*.jp*g"))
+        folder = self.follow_dir
+        files = sorted(folder.glob("f_*.jpg"))
         if not files:
             log.warning("no follow-camera frames were written")
             return 0

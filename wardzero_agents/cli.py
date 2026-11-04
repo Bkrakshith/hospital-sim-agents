@@ -66,6 +66,7 @@ DEFAULT_READY_TIMEOUT_S = 600.0
 TERM_AFTER_S = 10.0  # SIGINT, then SIGTERM after this long
 STOP_MARKER = "Stopping the run"  # printed when the orderly stop of all children begins
 KILL_AFTER_S = 5.0  # SIGTERM, then SIGKILL after this long
+ISAAC_EARLY_EXIT_GRACE_S = 90.0  # the agents and director stop on the host's stop message; Kit then takes a while to exit
 AGENT_KILL_AFTER_S = 80.0  # the agent node drains its minds for up to 60 s, then saves the snapshot
 EARLY_EXIT_GRACE_S = 5.0  # a clean exit of another child this long before the run's end is an early exit
 KEY_LABELS = ("stored in keyring", "from key file", "from ant profile or environment", "not set")
@@ -400,7 +401,8 @@ def _start_live(args, loaded, overrides: dict, meta: dict, out: Optional[dict] =
           f"ROS_DOMAIN_ID={os.environ.get('ROS_DOMAIN_ID', '0')}, robot: {bot}, sim: {_sim_label(args)}", flush=True)
     if not args.no_panel:
         print(f"Control panel: http://127.0.0.1:{args.panel_port}/", flush=True)
-    code = supervise(children, env=_child_env())
+    grace = ISAAC_EARLY_EXIT_GRACE_S if sim == "isaac" else EARLY_EXIT_GRACE_S
+    code = supervise(children, env=_child_env(), early_exit_grace_s=grace)
     print(f"Run finished (exit code {code}). Run folder: {run_dir}", flush=True)
     return code
 

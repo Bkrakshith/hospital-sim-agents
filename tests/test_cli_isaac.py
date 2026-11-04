@@ -138,3 +138,13 @@ def test_record_res_defaults_and_is_checked(launched, capsys):
 def test_preview_needs_the_isaac_host(launched, capsys):
     assert main(["run", V1, "--sim", "stub", "--preview"]) == 2
     assert "--preview" in capsys.readouterr().err
+
+
+def test_an_isaac_run_waits_for_kit_to_exit_before_calling_the_agents_exit_early(launched):
+    """The agents and director leave on the host's stop message; Kit takes longer than 5 s to follow."""
+    assert main(["run", V1, "--sim", "isaac", "--no-report"]) == 0
+    (_, kw), = launched
+    assert kw["early_exit_grace_s"] >= 60
+    launched.clear()
+    assert main(["run", V1, "--sim", "stub", "--no-report"]) == 0
+    assert launched[0][1]["early_exit_grace_s"] == cli.EARLY_EXIT_GRACE_S

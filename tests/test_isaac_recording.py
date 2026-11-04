@@ -118,9 +118,8 @@ class FakeKit:
     def update(self):
         self.log.append("update")
 
-    def step(self, **kw):
-        assert kw == {"rt_subframes": 1, "pause_timeline": False}
-        self.log.append("render")
+    def step(self, **kw):  # an orchestrator step: recording must not use it (it crashed the Behavior System)
+        raise AssertionError("the recorder stepped the Replicator orchestrator")
 
     def get_data(self):
         np = pytest.importorskip("numpy")
@@ -148,8 +147,23 @@ def test_recorded_frames_render_and_encode_only_while_the_timeline_runs(tmp_path
     rec.step()
     kit.playing = False  # held (waiting for the agents, a decision pending): nothing moves, nothing is recorded
     rec.step()
-    assert kit.log == ["render", "encode", "render", "encode", "update"]
+    assert kit.log == ["update", "encode", "update", "encode", "update"]
     assert (rec.frames, rec.encoded, rec.sim_frames) == (2, 2, 2)
+
+
+def test_the_frame_after_a_hold_is_a_plain_update_that_repeats_the_last_video_frame(tmp_path):
+    """An orchestrator step on the frame the timeline resumes crashed the Behavior System in a lockstep run."""
+    pytest.importorskip("numpy")
+    kit = FakeKit()
+    rec = recorder(kit, tmp_path, record=True)
+    rec.step()
+    kit.playing = False
+    rec.step()
+    kit.playing = True
+    rec.step()  # resumed
+    rec.step()
+    assert kit.log == ["update", "encode", "update", "update", "encode", "update", "encode"]
+    assert rec.encoded == 3 and rec.frames == 2  # the clip has a frame for every sim frame
 
 
 def test_preview_alone_never_steps_the_orchestrator_and_reads_one_frame_in_six(tmp_path):
@@ -161,7 +175,7 @@ def test_preview_alone_never_steps_the_orchestrator_and_reads_one_frame_in_six(t
     rec._an_top = type("A", (), {"get_data": staticmethod(lambda: __import__("numpy").full((360, 640, 4), 9, "uint8"))})()
     for _ in range(12):
         rec.step()
-    assert kit.log.count("render") == 0 and kit.log.count("update") == 12 and "encode" not in kit.log
+    assert kit.log.count("update") == 12 and "encode" not in kit.log
     assert rec.frames == 2 and (tmp_path / "preview" / "latest.jpg").stat().st_size > 0
 
 
@@ -242,21 +256,18 @@ def test_a_header_that_cannot_be_patched_is_warned_about(tmp_path, caplog):
     assert "header duration" in caplog.text
 
 
-def test_wait_until_stable_returns_once_the_files_stop_arriving():
-    ticks = {"n": 0, "t": 0.0}
-    seq = [1, 2, 3, 3, 3, 3, 3, 3]
-
-    def update():
-        ticks["t"] += 0.5
-        ticks["n"] = seq[min(int(ticks["t"] / 0.5) - 1, len(seq) - 1)]
-    assert R.wait_until_stable(lambda: ticks["n"], update, stable_s=1.0, expect=3, clock=lambda: ticks["t"]) is True
-    assert ticks["t"] <= 3.5  # 3 reached at 1.5 s, stable 1 s later
-
-
-def test_wait_until_stable_waits_for_the_expected_count_and_gives_up():
-    t = {"t": 0.0}
-
-    def update():
-        t["t"] += 1.0
-    assert R.wait_until_stable(lambda: 5, update, stable_s=1.0, timeout_s=10, expect=9, clock=lambda: t["t"]) is False
-    assert t["t"] == 10.0
+def test_the_follow_camera_writes_one_jpeg_per_sim_frame_and_repeats_when_late(tmp_path):
+    pytest.importorskip("numpy")
+    pytest.importorskip("PIL")
+    kit = FakeKit()
+    rec = recorder(kit, tmp_path, record=True)
+    rec._an_follow, rec.follow_dir = kit, tmp_path / "video" / "follow_frames"
+    rec.follow_dir.mkdir(parents=True)
+    for _ in range(4):
+        rec.step()
+    kit.playing = False
+    rec.step()
+    kit.playing = True
+    rec.step()  # the resume frame repeats the last image: the follow clip is as long as the overhead one
+    assert sorted(p.name for p in rec.follow_dir.iterdir()) == [f"f_{i:06d}.jpg" for i in range(5)]
+    assert rec.follow_frames == rec.encoded == 5

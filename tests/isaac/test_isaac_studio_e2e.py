@@ -29,6 +29,7 @@ OUT = ROOT / "artifacts" / "screens" / "isaac_record"
 H = {"X-WardZero-Panel": "1", "Content-Type": "application/json"}
 ROBOT_DOMAIN, PRIVATE_DOMAIN = 43, 44
 PREVIEW_TIMEOUT_S, FINISH_TIMEOUT_S = 900, 1500
+RECORD = os.environ.get("WARDZERO_E2E_RECORD", "1") == "1"  # 0: to tell a recording problem from a run problem
 
 
 def free_port() -> int:
@@ -107,7 +108,7 @@ def test_studio_runs_isaac_headless_with_recording_and_a_live_preview(tmp_path):
         wait(lambda: _up(base), 60, "the Studio")
         assert call(base, "GET", "/api/presets")["isaac_available"] is True
         p = call(base, "POST", "/api/projects", {"name": "E2E", "scenario_id": "reception_guide"})
-        p = call(base, "PUT", f"/api/projects/{p['id']}", {"sim": "isaac", "headed": False, "record": True,
+        p = call(base, "PUT", f"/api/projects/{p['id']}", {"sim": "isaac", "headed": False, "record": RECORD,
                                                            "record_res": "1280x720", "duration_min": 0.25})
         call(base, "POST", "/api/run/start", {"project_id": p["id"]})
         state = wait(lambda: (lambda s: s if s.get("preview_url") else None)(call(base, "GET", "/api/run/state")),
@@ -121,7 +122,7 @@ def test_studio_runs_isaac_headless_with_recording_and_a_live_preview(tmp_path):
                      FINISH_TIMEOUT_S, "the run to finish")
         assert final["exit_code"] == 0 and final["has_report"], final
         run = runs / final["run_id"]
-        for f in ("video/overhead.mp4", "video/follow.mp4", "robot_bag/metadata.yaml", "report.html"):
+        for f in (("video/overhead.mp4", "video/follow.mp4", "robot_bag/metadata.yaml") if RECORD else ()) + ("report.html",):
             assert (run / f).is_file() and (run / f).stat().st_size > 0, f
         assert "preview_url" not in call(base, "GET", "/api/run/state")  # the stream ended with the run
         assert (OUT / "studio_run.png").stat().st_size > 20_000

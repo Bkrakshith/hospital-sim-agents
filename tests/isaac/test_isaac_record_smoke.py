@@ -69,7 +69,7 @@ def grab_frames(mp4: Path, stem: str, secs=(1.0, 5.0, 9.0)) -> list:
     out = []
     for t in secs:
         png = OUT / f"{stem}_{t:.0f}s.png"
-        subprocess.run([ffmpeg_exe(), "-y", "-v", "error", "-ss", str(t), "-i", str(mp4), "-frames:v", "1", str(png)],
+        subprocess.run([ffmpeg_exe(), "-y", "-v", "error", "-i", str(mp4), "-ss", str(t), "-frames:v", "1", str(png)]  # seek after decoding: a streamed MP4 has no index,
                        check=True)
         out.append(png)
     return out
