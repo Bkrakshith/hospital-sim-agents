@@ -1,0 +1,95 @@
+# Deck for the Studio scenario presets. Cards nudge a person's mind or change the world.
+# They never address the robot; the robot only meets the consequences.
+cards:
+  - id: fire_start
+    label: Fire starts
+    channels: [world]
+    target_kind: none
+    world: {kind: fire_start}
+    tests: Whether the robot notices a small fire, raises the alarm and puts it out in time.
+
+  - id: alarm
+    label: Fire alarm
+    channels: [world]
+    target_kind: none
+    world: {kind: alarm, text: "Fire alarm. Please leave by the nearest safe exit."}
+    tests: Whether the robot copes with an alarm and people reacting to it.
+
+  - id: arrival
+    label: New arrival
+    channels: [world]
+    target_kind: new
+    world: {kind: arrival}
+    tests: Whether the robot copes with a newcomer entering a place it thought it knew.
+
+  - id: call_bell_at
+    label: Call bell
+    channels: [nudge]
+    target_kind: person
+    nudge: "You need a nurse and press the call bell by your bed. If nobody comes, say so to whoever is near."
+    tests: Whether the robot answers a call bell, reassures the patient and fetches a nurse.
+
+  - id: patient_gets_up
+    label: Patient gets up
+    channels: [nudge]
+    target_kind: person
+    nudge: "You wake in the dark, confused, sure you must go home. Get out of bed and walk towards the ward entrance. If someone speaks kindly, you may stay a while."
+    tests: Whether the robot notices a confused patient leaving, stays with them calmly and calls a nurse.
+
+  - id: instrument_request_batch
+    label: Instrument requests
+    channels: [nudge]
+    target_kind: person
+    nudge: "Over the next few minutes ask for these instruments, one at a time and in this order, by name: {params.instruments}. Ask more sharply if one is late. Reject a wrong one and say so."
+    tests: Whether the robot passes the right instrument quickly when asked.
+
+  - id: deterioration
+    label: Patient gets worse
+    channels: [reflex, nudge]
+    target_kind: person
+    reflex: {duration_s: 60, severity: severe}
+    nudge: "You feel much worse: dizzy and short of breath. You slump in your chair and cannot say much."
+    companion_nudge: "{name} looks very unwell. Get someone to help straight away."
+    tests: Whether the robot notices a patient getting worse and alerts triage.
+
+  - id: lost_visitor
+    label: Lost visitor
+    channels: [nudge]
+    target_kind: person
+    nudge: "You can't work out where the ward is from the signs. Find someone who can help."
+    tests: Whether the robot notices and helps a person who is looking around confused.
+
+  - id: hard_of_hearing
+    label: Hard of hearing
+    channels: [nudge]
+    target_kind: person
+    nudge: "Everything sounds muffled today. You keep missing what people say, so lean in and ask them to repeat it."
+    tests: Whether the robot repeats itself clearly for a person who did not hear.
+
+  - id: asleep
+    label: Patient asleep
+    channels: [nudge]
+    target_kind: person
+    nudge: "You are deeply asleep. Do not react unless someone speaks to you loudly or touches your arm."
+    tests: Whether the robot copes with a sleeping patient (does not drop a tray in reach, does not shout).
+
+  - id: freeze
+    label: Person freezes
+    channels: [nudge]
+    target_kind: person
+    nudge: "The alarm has frozen you with fear. You cannot decide which way to go. Stand still and say you do not know where to go until someone calmly tells you."
+    tests: Whether the robot notices a person who has frozen and guides them calmly.
+
+  - id: staff_evacuate
+    label: Staff move patients
+    channels: [nudge]
+    target_kind: person
+    nudge: "There is a fire on the ward. Move the patients nearest the fire to the next compartment, one at a time, and tell them where you are taking them. Leave putting the fire out to whoever has an extinguisher."
+    tests: Whether the robot works alongside staff who are moving patients.
+
+  - id: waits_announcement
+    label: Waits announcement
+    channels: [world]
+    target_kind: none
+    world: {kind: pa_announcement, text: "The department is very busy. Waits are about three hours for minor injuries."}
+    tests: Whether the robot keeps a waiting room informed.

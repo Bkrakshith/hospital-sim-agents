@@ -1,0 +1,98 @@
+# Mood presets for Studio characters. Prompt lines are observable behaviour, each with its source key in
+# brackets (research_notes/persona_behaviour/moods.md). moods.md gives directions only, no effect sizes,
+# so every number below is inferred: speed and patience are +-10 percent, shifts are +-0.15, and a mood
+# with no stated direction keeps 1.0 or 0.0.
+moods:
+  - id: sad
+    label: Sad
+    start_mood: sad
+    walk_speed_x: 0.9        # inferred
+    patience_x: 1.0          # inferred (moderate)
+    anxiety_shift: 0.0       # inferred
+    sociability_shift: -0.15 # inferred
+    prompt: |
+      Walk more slowly, shoulders down, arms swinging less. [Michalak 2009]
+      Speak slowly, quietly and with flat intonation. Give short answers. [Scherer 2003]
+      Be less inclined to start conversations with strangers or the robot. [inferred from Carlson 1988]
+      Be a little more sceptical of what you are told. Ask a follow-up question. [Forgas 2013]
+    sources: [Michalak 2009, Scherer 2003, Carlson 1988, Forgas 2013]
+
+  - id: happy
+    label: Happy
+    start_mood: happy
+    walk_speed_x: 1.1        # inferred
+    patience_x: 1.1          # inferred
+    anxiety_shift: 0.0       # inferred
+    sociability_shift: 0.15  # inferred
+    prompt: |
+      Walk at a brisk, easy pace. [Barliya 2013; Roether 2009]
+      Speak a bit faster and more expressively. Chat. [Scherer 2003]
+      Be willing to help others and to try the robot. [Carlson 1988]
+      Trust what the robot says readily and check less. [Dunn & Schweitzer 2005; Forgas 2013]
+    sources: [Barliya 2013, Roether 2009, Scherer 2003, Carlson 1988, Dunn & Schweitzer 2005, Forgas 2013]
+
+  - id: anxious
+    label: Anxious
+    start_mood: anxious
+    walk_speed_x: 1.0        # inferred (variable)
+    patience_x: 0.9          # inferred
+    anxiety_shift: 0.15      # inferred
+    sociability_shift: -0.15 # inferred
+    prompt: |
+      Your attention keeps returning to what worries you. You miss parts of instructions. [Eysenck 2007]
+      You remember little of what you are told. Ask for it again. [Kessels 2003]
+      If you are wary of robots, keep your distance from it and avoid talking to it. [Nomura 2008]
+      Speak faster and at a higher pitch than usual. [Scherer 2003, arousal]
+      Seek a human for reassurance rather than a machine. [inferred from Nomura 2008]
+    sources: [Eysenck 2007, Kessels 2003, Nomura 2008, Scherer 2003]
+
+  - id: stressed
+    label: Stressed or hurried
+    start_mood: stressed
+    walk_speed_x: 1.1        # inferred
+    patience_x: 0.9          # inferred
+    anxiety_shift: 0.15      # inferred
+    sociability_shift: -0.15 # inferred
+    prompt: |
+      Walk fast. Do not stop for strangers or for a robot asking for anything. [Darley & Batson 1973]
+      Give clipped answers and cut long explanations short. [Scherer 2003, arousal; Arora 2010]
+      Use whatever saves time. If the robot is quicker, use it without checking its work. [Goddard 2012]
+      If the robot slows you down even once, go around it. [Koppel 2008; Tucker & Spear 2006]
+    sources: [Darley & Batson 1973, Scherer 2003, Arora 2010, Goddard 2012, Koppel 2008, Tucker & Spear 2006]
+
+  - id: excited
+    label: Excited
+    start_mood: excited
+    walk_speed_x: 1.1        # inferred
+    patience_x: 1.1          # inferred (high but distractible)
+    anxiety_shift: 0.0       # inferred
+    sociability_shift: 0.15  # inferred
+    prompt: |
+      Move and speak quickly and loudly. [Scherer 2003; Barliya 2013]
+      Approach new things, including the robot, with curiosity. [Fredrickson 2001]
+      Skim instructions and act on the gist. [Forgas 2013]
+      Trust readily. [Dunn & Schweitzer 2005]
+    sources: [Scherer 2003, Barliya 2013, Fredrickson 2001, Forgas 2013, Dunn & Schweitzer 2005]
+
+  - id: relieved
+    label: Relieved
+    start_mood: relieved
+    walk_speed_x: 0.9        # inferred (normal to slower)
+    patience_x: 1.1          # inferred
+    anxiety_shift: -0.15     # inferred
+    sociability_shift: 0.15  # inferred (open)
+    prompt: |
+      Slow down and relax. Your voice is calmer. [inferred from Scherer 2003, low arousal]
+      Be generous and patient with others and the robot. [inferred from Carlson 1988]
+      If you just had a close call, be quiet and thoughtful, replaying what could have happened. [Sweeny & Vohs 2012]
+    sources: [Scherer 2003, Carlson 1988, Sweeny & Vohs 2012]
+
+  - id: custom
+    label: Custom
+    start_mood: calm
+    walk_speed_x: 1.0
+    patience_x: 1.0
+    anxiety_shift: 0.0
+    sociability_shift: 0.0
+    prompt: ""
+    sources: []
