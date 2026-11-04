@@ -6,6 +6,7 @@ prompt: >-
 focus_rooms: [Theatre]
 known_places: [Theatre, theatre_table, instrument_table]
 duration_min: 10
+listed_in_public_capture: false
 robot_brief:
   role: scrub nurse assistant
   job: Pass the instrument the surgeon asks for, when asked, from the instrument table. Do not hand over anything that was not requested.

@@ -133,6 +133,8 @@ class ScenarioPreset(_P):
     ladder: dict[int, str]
     duration_min: float = Field(default=10, gt=0, le=60)
     sources: list[str] = Field(default_factory=list)
+    # False: shown last in the Studio, and hidden when WARDZERO_STUDIO_PUBLIC_CAPTURE=1 (demo films and screenshots)
+    listed_in_public_capture: bool = True
 
     @field_validator("ladder")
     @classmethod

@@ -38,6 +38,7 @@ include = ["wardzero_agents*"]
 "wardzero_agents.panel" = ["static/*.html"]
 "wardzero_agents.studio" = ["static/*.html", "static/*.css", "static/*.js", "static/pages/*.js"]
 "wardzero_agents.bench" = ["templates/*.html"]
+"wardzero_agents.voice" = ["_piper_runner.py"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

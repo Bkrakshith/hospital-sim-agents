@@ -19,6 +19,10 @@ def isolated(tmp_path, monkeypatch):
     monkeypatch.setattr(cli, "ros_available", lambda: True)
     isaac = tmp_path / "isaacsim"
     isaac.mkdir()
+    (isaac / "python.sh").write_text("#!/bin/sh\n")  # an install has python.sh
+    for name, env in (("stage.usd", "WARDZERO_STAGE_USD"), ("collision.usd", "WARDZERO_COLLISION_USD")):
+        (tmp_path / name).write_text("x")
+        monkeypatch.setenv(env, str(tmp_path / name))
     monkeypatch.setattr(cli, "ISAAC_ROOT", isaac)
 
 

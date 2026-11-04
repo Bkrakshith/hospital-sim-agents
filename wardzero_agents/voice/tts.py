@@ -1,6 +1,6 @@
 """Piper text-to-speech, offline and on the CPU, in its own process.
 
-Piper is GPL-3 and this package is Apache-2.0, so nothing here imports it: ``scripts/piper_batch.py`` (the only code
+Piper is GPL-3 and this package is Apache-2.0, so nothing here imports it: ``voice/_piper_runner.py`` (the only code
 that does) is run with the venv's python, given every line of a run in one JSON job file, and writes one WAV per line.
 Models load once per call.
 """
@@ -19,7 +19,7 @@ import numpy as np
 from .catalogue import MODELS, Voice, voices_dir
 from .mix import read_wav
 
-RUNNER = Path(__file__).resolve().parents[2] / "scripts" / "piper_batch.py"
+RUNNER = Path(__file__).resolve().parent / "_piper_runner.py"  # package data, run by path, never imported
 TIMEOUT_S = 900
 ROBOT_BUZZ_HZ, ROBOT_BUZZ_DEPTH = 55.0, 0.3
 

@@ -78,6 +78,8 @@ def _scripted_lines() -> list:
     path = os.environ.get("WARDZERO_TEST_SCRIPTED_SAY")
     if not path:
         return []
+    log.warning("TEST HOOK ACTIVE: WARDZERO_TEST_SCRIPTED_SAY injects scripted speech into this run. "
+                "It is not a real run of any robot or person.")
     return sorted(json.loads(Path(path).read_text(encoding="utf-8")), key=lambda d: float(d["t"]))
 
 

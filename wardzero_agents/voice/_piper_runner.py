@@ -2,7 +2,7 @@
 """Piper batch runner: the only code of WardZero that imports Piper (GPL-3), run as its own process so the Apache-2.0
 package never links it. Reads a JSON job file, writes one WAV per line, prints a one-line JSON summary.
 
-    python scripts/piper_batch.py JOBS.json
+    python wardzero_agents/voice/_piper_runner.py JOBS.json
 
 JOBS.json: {"jobs": [{"model": "/path/en_GB-x-medium.onnx", "speaker": "p225" | null, "length_scale": 1.0,
                       "text": "...", "out": "/path/line.wav"}, ...]}

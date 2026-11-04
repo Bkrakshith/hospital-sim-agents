@@ -422,6 +422,19 @@
       }
     }
 
+    // While a run is going (its debrief and report too) the characters, memories and project are the run's:
+    // the server answers 409, and these controls are disabled so nobody meets that.
+    function lockUi() {
+      if (S.dead) return;
+      const on = !!(WZ.state && WZ.state.running);
+      for (const b of body.querySelectorAll(".cacts button, .sec-head .btn.primary, .card-detail .btn.primary")) {
+        b.disabled = on;
+        if (on) b.setAttribute("title", "Not while a run is going"); else b.removeAttribute("title");
+      }
+    }
+    WZ.on("state", () => lockUi());
+    new MutationObserver(lockUi).observe(body, { childList: true });
+
     // ---- wiring ----
     const onProject = () => { if (S.dead) return; renderSide(); drawMap(); loadMemory(); };
     S.onProject = onProject;

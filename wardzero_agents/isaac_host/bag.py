@@ -21,7 +21,9 @@ log = logging.getLogger("wardzero.isaac.bag")
 BAG_DIR = "robot_bag"
 STOP_WAIT_S = 20.0  # after SIGINT, before SIGTERM
 TERM_WAIT_S = 5.0  # after SIGTERM, before SIGKILL
-DEFAULT_ENV_SH = Path(__file__).resolve().parents[3] / "env.sh"
+from ..isaac_assets import ros_env_sh
+
+DEFAULT_ENV_SH = ros_env_sh()
 # nothing of the host's (Isaac libraries, conda, other ROS settings, keys) may reach the system's ROS
 DROP_ENV_PREFIXES = ("CONDA", "ROS_", "RMW_", "AMENT_", "COLCON_")
 DROP_ENV = ("LD_LIBRARY_PATH", "PYTHONPATH", "PYTHONHOME", "VIRTUAL_ENV", "ANTHROPIC_API_KEY", "OPENAI_API_KEY",
@@ -89,7 +91,8 @@ class BagRecorder:
                       "live; give the robot a domain of its own (--robot-domain)", self.domain)
             return False
         if not self.env_sh.is_file():
-            log.warning("no rosbag: %s is missing", self.env_sh)
+            log.warning("WARNING: no rosbag will be recorded: %s is missing. Source of the system's ROS 2 Humble; "
+                        "set WARDZERO_ROS_ENV_SH to your own env file.", self.env_sh)
             return False
         try:
             self.proc = self._popen(bag_argv(self.env_sh, self.out_dir, self.topics), env=bag_env(self.domain),

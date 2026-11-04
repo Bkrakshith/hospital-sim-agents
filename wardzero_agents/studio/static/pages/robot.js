@@ -380,7 +380,7 @@
       const light = (key, label, hint) => h("li.light" + (lights[key] ? ".on" : ""), { title: hint }, h("i.lamp"), h("span", label), h("small", lights[key] ? "yes" : "waiting"));
       const topics = c ? c.topics : [];
       return h("section.rsec", h("h3.sub", "Connect your robot"),
-        h("p.muted.small", "Your robot and this computer talk over ROS 2. Use the same domain on both, then publish and subscribe to the topics below."),
+        h("p.muted.small", "Your robot and this computer talk over ROS 2. Use the same domain on both, then publish and subscribe to the topics below. Quick 2D and Isaac Sim both put only the robot's topics and the clock on that domain; the people live on another one you cannot see."),
         h("div.kv", h("div.kvrow", h("span.k", "This computer"), h("span.v.mono", ip), copyBtn(ip, "the address")),
           h("div.kvrow", h("span.k", "Robot ROS domain"), dom,
             c && !c.explicit && !S.editDomain ? h("small.muted", "chosen for you (the people use " + c.private_domain + ")") : null,

@@ -50,7 +50,8 @@
         if (o.int) v = Math.round(v);
         save({ [key]: v }, input, P()[key]);
       });
-      return h("div.field.inline", h("label.flabel", { for: "s-" + key }, label), h("div.numwrap", input, unit ? h("em", unit) : null));
+      return h("div.field.inline", h("label.flabel", { for: "s-" + key }, label), h("div.numwrap", input, unit ? h("em", unit) : null),
+        o.hint ? h("small.muted.hint", o.hint) : null);
     }
     function switchRow(key, title, sub) {
       const input = set[key] = h("input", { type: "checkbox", id: "s-" + key, role: "switch", checked: !!P()[key], onchange: (e) => save({ [key]: e.target.checked }, null).then(() => {}) });
@@ -72,12 +73,17 @@
       input.addEventListener("change", () => save({ [key]: bool ? input.value === "true" : input.value }, input, cur()).then(drawSettings));
       return h("div.field", h("label.flabel", { for: "s-" + key }, label), input, hint ? h("small.muted", hint) : null);
     }
+    function isaacWhy() {
+      const pr = WZ.presets || {};
+      if (pr.isaac_installed && (pr.isaac_missing || []).length) return "Isaac Sim is installed but cannot run yet: " + pr.isaac_missing.join(" ") + " Only Quick 2D is available meanwhile.";
+      return "Isaac Sim is not installed on this computer (no python.sh; set ISAAC_SIM_ROOT), so only Quick 2D is available.";
+    }
     function simulator() {
       const isaac = !!(WZ.presets && WZ.presets.isaac_available), p = P(), onIsaac = p.sim === "isaac";
       return h("fieldset.sim-group", { "aria-label": "Simulator" },
         h("legend.flabel", "Simulator"),
-        selectField("sim", "Simulator", [["isaac", isaac ? "Isaac Sim" : "Isaac Sim (not installed)", !isaac], ["stub", "Quick 2D"]],
-          isaac ? "Isaac Sim is the 3D hospital. Quick 2D is a fast stand-in without rendering." : "Isaac Sim is not installed on this computer (set ISAAC_SIM_ROOT), so only Quick 2D is available."),
+        selectField("sim", "Simulator", [["isaac", isaac ? "Isaac Sim" : ((WZ.presets && WZ.presets.isaac_installed) ? "Isaac Sim (needs files)" : "Isaac Sim (not installed)"), !isaac], ["stub", "Quick 2D"]],
+          isaac ? "Isaac Sim is the 3D hospital. Quick 2D is a fast stand-in without rendering." : isaacWhy()),
         onIsaac ? selectField("headed", "Window", [["false", "Headless (preview here)"], ["true", "Headed (Isaac window)"]], null, true) : null,
         onIsaac ? switchRow("record", "Record the run", "Saves overhead and robot-view videos and a rosbag of the robot. The run may be slower than real time.") : null,
         onIsaac && p.record ? selectField("record_res", "Video size", [["1280x720", "1280 x 720"], ["1920x1080", "1920 x 1080"]]) : null,
@@ -101,7 +107,7 @@
           h("p.muted.lead", scenarioTitle() + ". " + p.characters.length + " " + (p.characters.length === 1 ? "person" : "people") + ", robot " + (p.robot_profile === "g1_claude" ? "built-in G1 (Claude)" : p.robot_profile) + ". Nobody steers the run: once it starts you can only stop it."),
           h("fieldset.settings", { id: "settings" },
             numField("duration_min", "Length", 1, 60, 1, "min"),
-            numField("budget_usd", "Spending limit", 0.5, 1000, 0.5, "USD"),
+            numField("budget_usd", "Spending limit (whole start)", 0.5, 1000, 0.5, "USD", { hint: "The most one Start may spend in all: the people, the robot, and the debrief and report, across every repeat and the baseline run." }),
             numField("repeat", "Repeats", 1, 20, 1, "runs", { int: true }),
             wom(),
             simulator(),
@@ -145,7 +151,7 @@
       phases.hidden = !show;
       phases.replaceChildren(...PHASES.map(([id, label], i) => h("li.phase" + (i < idx ? ".past" : i === idx ? ".now" : ""), { "aria-current": i === idx ? "step" : false }, h("i"), label)));
       stateBox.textContent = running ? (ph === "debrief" ? "The people are being asked how it went." : ph === "report" ? "Writing the report. This takes a moment." : "Time " + clock(s.t) + " of " + clock(P().duration_min * 60))
-        : ph === "done" && s.run_id ? (s.error ? "The run ended with a problem." : "The run is finished.") : "";
+        : ph === "done" && s.run_id ? (s.error ? "The run ended with a problem (exit code " + s.exit_code + ")." : "The run is finished.") : "";
       if (!running && ph === "done" && s.error) errBox.textContent = s.error;
       reportBtn.hidden = !(!running && s.has_report);
       chip.textContent = running ? (ph === "running" || !ph ? "Live · " + clock(s.t) : "Run ending") : (ph === "done" && s.run_id ? "Run finished" : "Start layout");

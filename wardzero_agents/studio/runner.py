@@ -17,7 +17,7 @@ from typing import Callable, Optional
 
 from ..runlog import RunTail
 from .compile import compile_project, robot_profile_for
-from .project import Project
+from .project import Project, ProjectError
 
 TAIL_STREAMS = ("status", "says", "audio", "tokens", "robot_pose", "objects")
 SAYS_TAIL = 20
@@ -26,6 +26,7 @@ STOP_GRACE_S = 10.0  # after the stop message the run must have begun its orderl
 STOP_HARD_S = 120.0  # once it has begun, it gets this long in all (agents drain for up to 60 s) before SIGINT
 STOP_MARKER = "Stopping the run"  # the line the CLI prints when its orderly stop begins
 AGENTS_ROOT = Path(__file__).resolve().parents[2]
+KEY_ENV = ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_AUTH_TOKEN", "WARDZERO_KEY_FILE")
 
 
 class RunnerBusy(Exception):
@@ -88,6 +89,7 @@ class Runner:
         self._folder: Optional[str] = None
         self._log_pos, self._log_partial, self._finished, self._stopping = 0, b"", False, False
         self._log_lines: collections.deque = collections.deque(maxlen=8)
+        self._cost_before = 0.0  # what earlier run folders of this Start spent
         self._reset_view()
 
     # ---- control ---------------------------------------------------------------------------
@@ -99,7 +101,10 @@ class Runner:
             other = active_run(self.data)
             if other is not None:
                 raise RunnerBusy(f"Run {other} is active; stop it first.")
-            profile = robot_profile_for(project.robot_profile, self.data)
+            try:
+                profile = robot_profile_for(project.robot_profile, self.data)
+            except (KeyError, ValueError, OSError):
+                raise ProjectError(f"Unknown robot '{project.robot_profile}'. Save it under Robots first.") from None
             staged = compile_project(project, self.config_root, self.data / "studio" / "projects" / project.id
                                      / "staged", self.data)
             if profile.controller == "builtin_claude":
@@ -122,6 +127,7 @@ class Runner:
             self._run_id = "pending-" + uuid.uuid4().hex[:8]
             self._project = project
             self._reset_view()
+            self._cost_before = 0.0
             self._folder = None
             self._log_pos, self._log_partial, self._finished, self._stopping = 0, b"", False, False
             self._log_lines = collections.deque(maxlen=8)
@@ -218,7 +224,7 @@ class Runner:
         self._people: dict[str, dict] = {}
         self._says: collections.deque = collections.deque(maxlen=SAYS_TAIL)
         self._tokens = {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0}
-        self._cost = 0.0
+        self._cost = 0.0  # this run folder's
         self._robot: dict = {}
         self._objects: list = []
         self._t = 0.0
@@ -256,6 +262,9 @@ class Runner:
         """Point the tail at the newest run folder named in the log and read what was appended."""
         if self._folder and Path(self._folder) != self._dir:
             keep = self._project
+            if self._tail is not None:  # the last of this folder (its debrief and report) counts before the next
+                self._consume(self._tail.poll())
+            self._cost_before += self._cost  # one Start can be many runs: the cost bar and the cap are for all
             self._reset_view()
             self._project = keep
             self._dir = Path(self._folder)
@@ -263,7 +272,10 @@ class Runner:
             self._preview_token = secrets.token_urlsafe(PREVIEW_TOKEN_BYTES)
         if self._tail is None:
             return
-        for stream, rec in self._tail.poll():
+        self._consume(self._tail.poll())
+
+    def _consume(self, records) -> None:
+        for stream, rec in records:
             if stream == "status" and isinstance(rec.get("person"), str):
                 self._people[rec["person"]] = {k: rec.get(k) for k in ("x", "y", "yaw", "posture", "state")}
                 self._people[rec["person"]]["id"] = rec["person"]
@@ -324,7 +336,7 @@ class Runner:
                 "running": self._alive(),
                 "run_id": rd.name if rd is not None else self._run_id,
                 "project_id": self._project.id if self._project else None,
-                "t": round(self._t, 2), "cost_usd": round(self._cost, 6),
+                "t": round(self._t, 2), "cost_usd": round(self._cost_before + self._cost, 6),
                 "budget_usd": self._project.budget_usd if self._project else None,
                 "tokens": dict(self._tokens), "people": list(self._people.values()),
                 "robot": dict(self._robot), "objects": self._objects, "says_tail": list(self._says),
@@ -335,9 +347,18 @@ class Runner:
                 out["preview_url"] = f"/preview/{self._preview_token}.mjpg"
             if phase == "done" and self._proc is not None:
                 out["exit_code"] = self._proc.returncode
-                if self._proc.returncode not in (0, None) and rd is None:
-                    out["error"] = "\n".join(list(self._log_lines)[-6:])[-800:]
+                if self._proc.returncode not in (0, None, 130):  # 130 is a stop by the user; anything else failed
+                    from ..keys import redact
+                    tail = redact("\n".join(list(self._log_lines)[-6:]))[-800:]
+                    out["error"] = f"The run stopped with exit code {self._proc.returncode}." + (f"\n{tail}" if tail else "")
             return out
+
+    def busy(self) -> bool:
+        """A run is going: starting, running, in its debrief, voice step or report. Resets, project deletes and
+        character edits wait until it is over."""
+        with self._lock:
+            self._read_log()
+            return self._phase() not in ("idle", "done")
 
 
 def _claude_key_present() -> bool:
@@ -355,7 +376,8 @@ def publish_stop(domain: str = "0") -> bool:
     try:
         r = subprocess.run([sys.executable, "-m", "wardzero_agents.studio.ros_probe", "stop"], timeout=8,
                            capture_output=True,
-                           env=dict(os.environ, PYTHONPATH=str(AGENTS_ROOT), ROS_DOMAIN_ID=str(domain)))
+                           env={**{k: v for k, v in os.environ.items() if k not in KEY_ENV},
+                                "PYTHONPATH": str(AGENTS_ROOT), "ROS_DOMAIN_ID": str(domain)})
     except (OSError, subprocess.SubprocessError):
         return False
     return r.returncode == 0

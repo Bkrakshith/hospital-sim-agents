@@ -96,7 +96,8 @@ def ros_available() -> bool:
 
 
 def isaac_installed() -> bool:
-    return ISAAC_ROOT.is_dir()
+    """Isaac Sim 6.0 is there: its python.sh runs the host (a bare folder is not an install)."""
+    return (ISAAC_ROOT / "python.sh").is_file()
 
 
 def default_sim() -> str:
@@ -113,6 +114,13 @@ def _resolve_sim(args) -> None:
     if args.sim == "isaac":
         if not ISAAC_ROOT.is_dir():
             raise CliError(f"Isaac Sim was not found at {ISAAC_ROOT} (set ISAAC_SIM_ROOT), or use --sim stub.")
+        from .isaac_assets import missing_for_isaac, ros_env_sh
+        missing = missing_for_isaac(ISAAC_ROOT)
+        if missing:
+            raise CliError("The Isaac run cannot start:\n  - " + "\n  - ".join(missing) + "\nOr use --sim stub.")
+        if getattr(args, "record", False) and not ros_env_sh().is_file():
+            print(f"WARNING: no rosbag will be recorded: {ros_env_sh()} is missing (set WARDZERO_ROS_ENV_SH).",
+                  flush=True)
         return
     only = [f for f, on in (("--headed", getattr(args, "headed", None)), ("--record", getattr(args, "record", False)),
                             ("--preview", getattr(args, "preview", False)),
@@ -435,6 +443,9 @@ def _start_live(args, loaded, overrides: dict, meta: dict, out: Optional[dict] =
                      ("project_id", getattr(args, "project_id", None))):
         if val is not None:  # the Isaac host also gets robot_domain; the Studio lists runs by project_id
             meta[key] = val
+    if os.environ.get("WARDZERO_TEST_SCRIPTED_SAY"):
+        err("WARNING: WARDZERO_TEST_SCRIPTED_SAY is set. Scripted lines are injected into this run, so it is a "
+            "test of the pipeline and not a real run of any robot or person.")
     run_dir, staged = _stage(loaded, runs_dir(), loaded.scenario.id, overrides, meta)
     bot = _baseline_bot(args, staged) if baseline else _bot(args, staged)
     rd, sp = str(run_dir), str(staged.scenario_path)

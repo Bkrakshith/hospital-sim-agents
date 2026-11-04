@@ -8,7 +8,7 @@ namespace (default `robot`, set per robot in the Studio); the built-in `g1` name
 ## Fairness boundary
 
 The robot runs on its own ROS 2 domain (`--robot-domain N`, or the Studio's robot page). The
-sim host publishes only the robot topics below and `/clock` on that domain. The people's
+sim host (the Isaac host and the 2D stub alike) publishes only the robot topics below and `/clock` on that domain. The people's
 topics (`/humans/...`, `/scenario/...`, `/sim/audio/events`, `/sim/world_event`,
 `/agents/pending`) stay on the private domain, where the robot cannot see them. The robot
 never learns who a person is: detections are anonymous tracks (`t1`, `t2`), and the microphone

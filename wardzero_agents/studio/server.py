@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import errno
 import json
 import logging
 import os
@@ -38,11 +39,18 @@ PROBE_TIMEOUT_S = 8.0  # the probe runs in the background; requests never wait f
 PROBE_EVERY_S = 3.0
 NO_LIGHTS = {"controller_seen": False, "sensors_subscribed": False, "commands_seen": False}
 JOB_LOG_MAX = 40000
+KEY_ENV = ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_AUTH_TOKEN", "WARDZERO_KEY_FILE")
+
+
+def keyless_env(**extra) -> dict:
+    """This process's environment without any API key: for children that never call a model."""
+    return {**{k: v for k, v in os.environ.items() if k not in KEY_ENV}, **extra}
 
 CTX = web.AppKey("ctx", object)
 SOCKETS = web.AppKey("sockets", set)
 PROBE = web.AppKey("probe", object)
 CLOSING = web.AppKey("closing", asyncio.Event)
+VIDEO_NAMES = ("overhead.mp4", "follow.mp4")
 PREVIEW_TOKEN = re.compile(r"^[A-Za-z0-9_-]{32,64}$")
 PREVIEW_POLL_S = 0.1
 PREVIEW_BOUNDARY = "wzframe"
@@ -58,7 +66,8 @@ class Ctx:
     """What the handlers share: where things live, and the long-lived pieces."""
 
     def __init__(self, data: Path, config_root: Path, runs_dir: Path, runner: Runner,
-                 convert_command=None, probe=None, probe_every: float = PROBE_EVERY_S, isaac_installed=None):
+                 convert_command=None, probe=None, probe_every: float = PROBE_EVERY_S, isaac_installed=None,
+                 isaac_missing=None):
         self.data, self.config_root, self.runs_dir, self.runner = data, config_root, runs_dir, runner
         self.projects = ProjectStore(data)
         self.roles, self.moods = load_roles(config_root), load_moods(config_root)
@@ -72,6 +81,8 @@ class Ctx:
         self.probe_target = (0, "robot")  # robot domain and namespace the last /api/connection asked about
         self.lights = dict(NO_LIGHTS)
         self.isaac_installed = isaac_installed or _isaac_installed
+        # what an Isaac run still needs (stage, collision USD): checked for real unless a test injects the install
+        self.isaac_missing = isaac_missing or ((lambda: []) if isaac_installed else _isaac_missing)
 
 
 # ---- helpers ----------------------------------------------------------------------------------
@@ -103,9 +114,20 @@ def _isaac_installed() -> bool:
     return isaac_installed()
 
 
+def _isaac_missing() -> list[str]:
+    from .. import cli
+    from ..isaac_assets import missing_for_isaac
+    return missing_for_isaac(cli.ISAAC_ROOT)
+
+
 def check_sim(ctx: Ctx, project: Project) -> None:
-    if studio_sim(project) == "isaac" and not ctx.isaac_installed():
-        raise ProjectError("Isaac Sim is not installed on this computer. Pick Quick 2D, or set ISAAC_SIM_ROOT.")
+    if studio_sim(project) != "isaac":
+        return
+    if not ctx.isaac_installed():
+        raise ProjectError("Isaac Sim is not installed on this computer (no python.sh). Pick Quick 2D, or set ISAAC_SIM_ROOT.")
+    missing = ctx.isaac_missing()
+    if missing:
+        raise ProjectError("Isaac cannot run yet: " + " ".join(missing) + " Pick Quick 2D meanwhile.")
 
 
 def check_robot_profile(ctx: Ctx, project: Project) -> None:
@@ -115,6 +137,21 @@ def check_robot_profile(ctx: Ctx, project: Project) -> None:
         load_profile(project.robot_profile, ctx.data)
     except (KeyError, ValueError):
         raise ProjectError(f"Unknown robot '{project.robot_profile}'. Save it under Robots first.") from None
+
+
+async def _not_while_running(ctx: Ctx, what: str) -> None:
+    """409 while a run is going, from its start to the end of its debrief and report: the run is reading these
+    characters, memories and files, and the debrief writes trust from the states it read at the start."""
+    if await asyncio.to_thread(ctx.runner.busy):
+        raise ApiError(409, f"Refused: a run is going. {what} when it has finished.")
+
+
+def listed_presets(ctx: Ctx) -> list:
+    """The scenario cards, in order. A preset that is not listed in public capture goes last, and
+    WARDZERO_STUDIO_PUBLIC_CAPTURE=1 (the demo film, committed screenshots) leaves it out."""
+    capture = os.environ.get("WARDZERO_STUDIO_PUBLIC_CAPTURE") == "1"
+    rest = sorted(ctx.presets.values(), key=lambda p: not p.listed_in_public_capture)  # stable: others keep their order
+    return [p for p in rest if p.listed_in_public_capture or not capture]
 
 
 def _project(ctx: Ctx, request) -> Project:
@@ -262,8 +299,7 @@ async def probe_graph(domain: int, ns: str, argv: Optional[list] = None) -> Opti
     try:
         proc = await asyncio.create_subprocess_exec(
             *argv, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
-            env=dict(os.environ, ROS_DOMAIN_ID=str(domain),
-                     PYTHONPATH=str(Path(__file__).resolve().parents[2])))
+            env=keyless_env(ROS_DOMAIN_ID=str(domain), PYTHONPATH=str(Path(__file__).resolve().parents[2])))
     except OSError:
         return None
     try:
@@ -344,8 +380,10 @@ def make_app(ctx: Ctx) -> web.Application:
     async def presets(request):
         return j({"roles": [x.model_dump(mode="json") for x in ctx.roles.values()],
                   "moods": [x.model_dump(mode="json") for x in ctx.moods.values()],
-                  "scenarios": [x.model_dump(mode="json") for x in ctx.presets.values()],
-                  "isaac_available": bool(ctx.isaac_installed())})
+                  "scenarios": [x.model_dump(mode="json") for x in listed_presets(ctx)],
+                  "isaac_available": bool(ctx.isaac_installed()) and not ctx.isaac_missing(),
+                  "isaac_missing": ([] if not ctx.isaac_installed() else list(ctx.isaac_missing())),
+                  "isaac_installed": bool(ctx.isaac_installed())})
 
     # projects
     @r.get("/api/projects")
@@ -374,6 +412,8 @@ def make_app(ctx: Ctx) -> web.Application:
         old = _project(ctx, request)
         d = await _body(request)
         d.pop("id", None)
+        if "characters" in d:
+            await _not_while_running(ctx, "Edit the characters")
         merged = {**old.model_dump(mode="json"), **d, "id": old.id}
         if d.get("scenario_id") not in (None, old.scenario_id):
             if d["scenario_id"] not in ctx.presets:
@@ -389,12 +429,14 @@ def make_app(ctx: Ctx) -> web.Application:
 
     @r.delete("/api/projects/{id}")
     async def delete_project(request):
+        await _not_while_running(ctx, "Delete the project")
         ctx.projects.delete(request.match_info["id"])
         return j({"ok": True})
 
     # characters
     @r.post("/api/projects/{id}/characters")
     async def add_character(request):
+        await _not_while_running(ctx, "Edit the characters")
         p = _project(ctx, request)
         d = await _body(request)
         d.setdefault("id", chars.new_character_id(p.characters))
@@ -407,6 +449,7 @@ def make_app(ctx: Ctx) -> web.Application:
 
     @r.put("/api/projects/{id}/characters/{cid}")
     async def edit_character(request):
+        await _not_while_running(ctx, "Edit the characters")
         p = _project(ctx, request)
         cid = request.match_info["cid"]
         old = next((c for c in p.characters if c.id == cid), None)
@@ -425,6 +468,7 @@ def make_app(ctx: Ctx) -> web.Application:
 
     @r.delete("/api/projects/{id}/characters/{cid}")
     async def delete_character(request):
+        await _not_while_running(ctx, "Edit the characters")
         p = _project(ctx, request)
         cid = request.match_info["cid"]
         if not any(c.id == cid for c in p.characters):
@@ -445,6 +489,7 @@ def make_app(ctx: Ctx) -> web.Application:
     async def reset_memory(request):
         from ..memory.runlock import RunActive
         p = _project(ctx, request)
+        await _not_while_running(ctx, "Reset the memory")
         d = await _body(request)
         if "characters" not in d:
             raise BadRequest("'characters' is required: a list of character ids, or \"all\".")
@@ -635,9 +680,20 @@ def make_app(ctx: Ctx) -> web.Application:
             raise ApiError(404, "no report for that run")
         resp = web.Response(body=f.read_bytes(), content_type="text/html", charset="utf-8")
         resp.headers["Content-Security-Policy"] = ("default-src 'none'; style-src 'unsafe-inline'; "
-                                                   "img-src data:; base-uri 'none'; form-action 'none'")
+                                                   "img-src data:; media-src 'self'; base-uri 'none'; form-action 'none'")
         resp.headers["X-Content-Type-Options"] = "nosniff"
         return resp
+
+    @r.get("/runs/{run_id}/video/{name}")
+    async def run_video(request):
+        """The recording the report embeds (<video src="video/overhead.mp4">). Only the two clips the run writes,
+        by name; aiohttp's FileResponse answers range requests, which a video element needs to seek."""
+        rid, name = request.match_info["run_id"], request.match_info["name"]
+        f = ctx.runs_dir / rid / "video" / name
+        if not RUN_ID.match(rid) or name not in VIDEO_NAMES or not f.is_file():
+            raise ApiError(404, "no such recording")
+        return web.FileResponse(f, headers={"Content-Type": "video/mp4", "X-Content-Type-Options": "nosniff",
+                                            "Cache-Control": "no-store"})
 
     @r.get("/preview/{token}.mjpg")
     async def preview(request):
@@ -726,7 +782,7 @@ def make_app(ctx: Ctx) -> web.Application:
 async def _run_job(job: dict, argv: list[str]) -> None:
     try:
         proc = await asyncio.create_subprocess_exec(*argv, stdout=asyncio.subprocess.PIPE,
-                                                    stderr=asyncio.subprocess.STDOUT)
+                                                    stderr=asyncio.subprocess.STDOUT, env=keyless_env())
     except OSError as e:
         job["log"] = f"Could not start the converter: {e}. Set WARDZERO_ISAAC_PYTHON to Isaac Sim's python.sh."
         job["status"] = "failed"
@@ -819,4 +875,10 @@ def serve(port: int = 8770, open_browser: bool = True) -> int:
         asyncio.run(main())
     except KeyboardInterrupt:
         pass
+    except OSError as e:
+        if e.errno != errno.EADDRINUSE:
+            raise
+        print(f"Port {port} is already in use (is another Studio running?). "
+              f"Close it, or start this one on another port with --port.", file=sys.stderr, flush=True)
+        return 2
     return 0

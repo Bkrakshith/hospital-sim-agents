@@ -265,12 +265,21 @@ AGENTS = Path(__file__).resolve().parents[1]
 CONFIG = AGENTS / "config"
 
 
-def test_the_package_never_imports_piper():
+def test_only_the_piper_runner_imports_piper():
     import re
     pat = re.compile(r"^\s*(import piper|from piper)\b", re.M)
-    bad = [str(p) for p in (AGENTS / "wardzero_agents").rglob("*.py") if pat.search(p.read_text(encoding="utf-8"))]
-    assert bad == []  # Piper is GPL-3: only scripts/piper_batch.py imports it, in its own process
-    assert "from piper" in (AGENTS / "scripts" / "piper_batch.py").read_text()
+    runner = AGENTS / "wardzero_agents" / "voice" / "_piper_runner.py"
+    bad = [str(p) for p in (AGENTS / "wardzero_agents").rglob("*.py") if p != runner and pat.search(p.read_text(encoding="utf-8"))]
+    bad += [str(p) for p in (AGENTS / "scripts").rglob("*.py") if pat.search(p.read_text(encoding="utf-8"))]
+    assert bad == []  # Piper is GPL-3: only voice/_piper_runner.py imports it, in its own process
+    assert "from piper" in runner.read_text()
+    from wardzero_agents.voice import tts
+    assert tts.RUNNER == runner and runner.is_file()  # run by path, never imported by the package
+
+
+def test_the_runner_ships_in_the_wheel():
+    text = (AGENTS / "pyproject.toml").read_text()
+    assert '"wardzero_agents.voice" = ["_piper_runner.py"]' in text
 
 
 def stage_run(tmp_path, scenario_dir: Path, scenario_file: str) -> Path:

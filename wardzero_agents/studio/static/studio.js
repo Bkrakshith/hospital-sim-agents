@@ -148,10 +148,12 @@
     const box = document.getElementById("cost");
     const show = !!s.running || (!!s.run_id && s.phase === "done");
     box.hidden = !show;
+    const del = document.querySelector('[data-act="delete"]');
+    if (del) { del.disabled = !!s.running; del.title = s.running ? "Not while a run is going" : ""; }
     box.classList.toggle("final", show && !s.running);
     if (show) {
       const c = Number(s.cost_usd || 0), b = Number(s.budget_usd || 0), t = s.tokens || {};
-      document.getElementById("cost-text").textContent = (s.running ? "" : "Final ") + "$" + c.toFixed(2) + (b ? " of $" + b.toFixed(2) : "");
+      document.getElementById("cost-text").textContent = (s.running ? "" : "Final ") + "$" + c.toFixed(2) + (b ? " of $" + b.toFixed(2) + " limit" : "");
       document.getElementById("cost-tokens").textContent = kfmt(t.input) + " in · " + kfmt(t.output) + " out · " + kfmt(t.cache_read) + " cached";
       document.getElementById("cost-bar").style.width = (b ? Math.min(100, (c / b) * 100) : 0) + "%";
       box.classList.toggle("warn", b > 0 && c / b > 0.85);

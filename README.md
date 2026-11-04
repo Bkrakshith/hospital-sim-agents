@@ -174,11 +174,47 @@ more discovery time.
 Topic names, types and rates are in `docs/interfaces.md` ("Persona agents"). The robot's
 own topics are in `docs/robot-topics.md`.
 
-### Isaac Sim mode (in progress)
+### Isaac Sim mode
 
-`hhumans run SCENARIO --sim isaac` runs the same people and robot contract in Isaac Sim, with
-`--headed` to watch in a window or `--headless` (the default) with `--record` to save a video.
-This mode is still being built; `--sim stub` is the dependable one today.
+`hhumans run SCENARIO --sim isaac` runs the same people and robot contract in Isaac Sim 6.0, with
+`--headed` to watch in a window or `--headless` (the default, with a live preview in the Studio) and
+`--record` to save the videos and a rosbag. `--sim stub` is the fast 2D stand-in without rendering.
+In both, only the robot's topics and `/clock` are on the robot's domain (`--robot-domain N`, shown on the
+Studio's Robot page); the people are on a private domain the robot never joins.
+
+**What you need.**
+
+- Isaac Sim 6.0 installed, with its `python.sh` (set `ISAAC_SIM_ROOT` if it is not in `~/isaacsim`) and a GPU
+  with enough memory for the hospital.
+- ROS 2 Humble sourced for the lab's own nodes (`env.sh`; set `WARDZERO_ROS_ENV_SH` to your own file). Without
+  it the run goes ahead with no rosbag, and the run log says so.
+- Two USD files, which are not part of this repository:
+  - the hospital stage, from the `hospital-sim-env` checkout (`WARDZERO_STAGE_USD` overrides the path);
+  - the collision USD that keeps people and robots inside the walls. Make it once with
+    `hospital-sim-humans/sim/build_collision_usd.py`, run with Isaac Sim's `python.sh`
+    (`WARDZERO_COLLISION_USD` overrides the path).
+
+  If either file is missing, `hhumans run --sim isaac` stops with exit code 2 and says which one, and the
+  Studio's Isaac option says what is missing instead of starting a run that would fail.
+
+**Voices.** Recorded runs can have spoken voices (a separate Piper process; the voice models are downloaded,
+not shipped):
+
+```bash
+pip install '.[voice]'
+python scripts/fetch_voices.py
+hhumans voice RUN_FOLDER      # add or redo the voices of an existing recording
+```
+
+The voice step runs after the simulator has exited and never fails a run; `--no-voice` skips it.
+
+**From the Studio.** The Run page's Simulator group chooses Isaac Sim or Quick 2D, a window or headless with a
+preview, recording and its video size, and voices. Settings are saved per project. The robot domain is on the
+Robot page.
+
+**Spending limit.** The limit on the Run page is for the whole Start: the people, the robot, and the debrief and
+report, over every repeat and the baseline run. Each run is given what remains divided by the runs left, and a
+repeat batch stops, with its report, when the limit is reached.
 
 ## Control panel
 

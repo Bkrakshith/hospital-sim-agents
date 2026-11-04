@@ -32,8 +32,11 @@ if TYPE_CHECKING:
 log = logging.getLogger("wardzero.isaac.stage")
 
 HG1 = Path(__file__).resolve().parents[3]
-STAGE_USD = HG1 / "hospital-sim-env" / "isaac" / "usd" / "hospital_g1.usd"
-COLLISION_USD = HG1 / "hospital-sim-humans" / "sim" / "assets" / "hospital_collision.usd"
+from ..isaac_assets import collision_usd as _collision_usd, stage_usd as _stage_usd
+
+# WARDZERO_STAGE_USD and WARDZERO_COLLISION_USD override where the two files are (see isaac_assets)
+STAGE_USD = _stage_usd()
+COLLISION_USD = _collision_usd()
 
 Rect = tuple[float, float, float, float]  # x0, y0, x1, y1 in the site frame (the stage's world frame)
 Box = tuple[tuple[float, float], tuple[float, float]]  # ((xmin, ymin), (xmax, ymax))
@@ -369,7 +372,9 @@ def add_collision(stage, collision_path: Path = COLLISION_USD) -> Optional[str]:
     from pxr import UsdGeom
 
     if not Path(collision_path).exists():
-        log.warning("collision USD %s is missing; the people and robots get no walls", collision_path)
+        # `hhumans run` refuses to start without it (exit 2); this is for a host started by hand
+        log.error("collision USD %s is missing; the people and robots get no walls. Build it with "
+                  "hospital-sim-humans/sim/build_collision_usd.py", collision_path)
         return None
     col = UsdGeom.Xform.Define(stage, COLLIDERS_PATH)
     col.GetPrim().GetReferences().AddReference(str(collision_path))
