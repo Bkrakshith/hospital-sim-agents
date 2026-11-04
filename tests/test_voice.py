@@ -513,3 +513,19 @@ def test_the_scripted_say_hook_is_off_by_default_and_speaks_at_its_times(tmp_pat
     rows = [json.loads(l) for l in (tmp_path / "b" / "audio.jsonl").read_text().splitlines()] if (tmp_path / "b" / "audio.jsonl").exists() else []
     texts = {r["text"]: r["t"] for r in rows if r.get("text")}
     assert texts.get("Hello there.", 0) >= 1.0 and texts.get("Good morning.", 0) >= 2.0
+
+
+def test_a_scripted_robot_line_can_name_nobody_so_the_fake_people_do_not_answer(tmp_path, monkeypatch):
+    from wardzero_agents.config.loader import load_scenario
+    from wardzero_agents.ros.sim_service import SimService
+    from wardzero_agents.runlog import RunLog
+    script = tmp_path / "s.json"
+    script.write_text(json.dumps([{"t": 0.5, "who": "robot", "text": "Quiet line.", "to": None},
+                                  {"t": 1.5, "who": "robot", "text": "Addressed line."}]))
+    monkeypatch.setenv("WARDZERO_TEST_SCRIPTED_SAY", str(script))
+    svc = SimService(load_scenario(CONFIG / "scenarios" / "waiting_area_v1.yaml"), RunLog(tmp_path / "r"), wait_for=())
+    for _ in range(40 * 3):
+        svc.step(1 / 40)
+    rows = [json.loads(l) for l in (tmp_path / "r" / "audio.jsonl").read_text().splitlines()]
+    quiet = next(r for r in rows if r.get("text") == "Quiet line.")
+    assert quiet["addressee"] is None and quiet["source_kind"] == "robot"

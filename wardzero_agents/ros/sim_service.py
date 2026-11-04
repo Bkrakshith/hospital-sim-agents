@@ -72,6 +72,9 @@ class SimOutputs:
     stop: bool = False
 
 
+_AUTO = object()  # on_robot_say: work the addressee out
+
+
 def _scripted_lines() -> list:
     """WARDZERO_TEST_SCRIPTED_SAY=<json file>: [{"t": 3.0, "who": "robot" | person id, "text": "...", "to": id}].
     Unset in every real run; never read by the default fake LLM."""
@@ -211,7 +214,9 @@ class SimService:
             return
         self._emit([self.world.say(say.person, say.text, say.addressee, self.t)])
 
-    def on_robot_say(self, text: str) -> None:
+    def on_robot_say(self, text: str, addressee: "Optional[str]" = _AUTO) -> None:
+        """``addressee``: left out, the robot's reply goes to who it last heard, or the nearest person; a person id, or
+        None for nobody (test hook only: nobody then answers)."""
         text = (text or "").strip()
         if not text:
             return
@@ -219,6 +224,10 @@ class SimService:
             log.warning("robot speech ignored: this scenario has no robot")
             return
         ev = self.world.robot_say(text, self.t)
+        if addressee is not _AUTO:
+            self._last_robot_listener = None
+            self._emit([ev.model_copy(update={"addressee": addressee})])
+            return
         r = self.world.robot_pose
         # The reply goes to the person the robot just heard, not to whoever stands nearest.
         last, self._last_robot_listener = self._last_robot_listener, None
@@ -298,7 +307,10 @@ class SimService:
             line = self._scripted[0]
             who = str(line.get("who", ""))
             if who == "robot":
-                self.on_robot_say(str(line["text"]))
+                if "to" in line:  # "to": null (or "") has the line heard by nobody in particular, so nobody answers it
+                    self.on_robot_say(str(line["text"]), line["to"] or None)
+                else:
+                    self.on_robot_say(str(line["text"]))
             elif who in self.world.people and self.world.people[who].posture != "gone":
                 self.on_say(Say(person=who, t=self.t, text=str(line["text"]), addressee=line.get("to")))
             elif self.t - line["t"] < 20.0:

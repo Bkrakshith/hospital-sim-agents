@@ -41,6 +41,10 @@ APERTURE_MM = 20.955  # Kit's default horizontal aperture
 OVERHEAD_FOCAL_MM = 12.0
 OVERHEAD_MARGIN = 1.06
 FOLLOW_AHEAD_M, FOLLOW_SIDE_M, FOLLOW_HEIGHT_M, FOLLOW_TARGET_Z, FOLLOW_FOCAL_MM = 2.8, 1.0, 1.7, 1.0, 16.0
+# WARDZERO_FOLLOW_FRAMING=desk: a wider, higher camera well in front of a fixed robot, so the people at its desk are in
+# the frame too (the default follow camera is so close that they are cut off). (ahead, side, height, target z, focal mm)
+FRAMINGS = {"follow": (FOLLOW_AHEAD_M, FOLLOW_SIDE_M, FOLLOW_HEIGHT_M, FOLLOW_TARGET_Z, FOLLOW_FOCAL_MM),
+            "desk": (5.0, 1.2, 2.3, 1.0, 14.0)}
 FOLLOW_DIR = "follow_frames"
 FOLLOW_JPEG_QUALITY = 92
 TIMING_FILE = "timing.json"
@@ -134,15 +138,22 @@ def overhead_view(rects: Sequence[tuple], aspect: float) -> OverheadView:
                         height - CEILING_CUT_M, height + 50.0)
 
 
-def follow_view(pose: tuple) -> tuple[tuple, tuple]:
+def follow_framing(env=None) -> str:
+    """The framing named by WARDZERO_FOLLOW_FRAMING; anything unknown (or unset) is the default ``follow``."""
+    name = (os.environ if env is None else env).get("WARDZERO_FOLLOW_FRAMING", "follow").strip().lower()
+    return name if name in FRAMINGS else "follow"
+
+
+def follow_view(pose: tuple, framing: str = "follow") -> tuple[tuple, tuple]:
     """(eye, target) of the third-person camera: in front of the robot and a little to its right, above its head,
     looking back at it. (Behind it, a reception robot stands behind its desk and the desk hides it; in front, the people
     it serves are in the frame.) It follows the robot's pose every frame."""
+    ahead, side, height, target_z, _ = FRAMINGS.get(framing, FRAMINGS["follow"])
     x, y, yaw = pose
     c, s = math.cos(yaw), math.sin(yaw)
-    ex = x + FOLLOW_AHEAD_M * c + FOLLOW_SIDE_M * s
-    ey = y + FOLLOW_AHEAD_M * s - FOLLOW_SIDE_M * c
-    return (ex, ey, FOLLOW_HEIGHT_M), (x, y, FOLLOW_TARGET_Z)
+    ex = x + ahead * c + side * s
+    ey = y + ahead * s - side * c
+    return (ex, ey, height), (x, y, target_z)
 
 
 # ---- the preview file -------------------------------------------------------------------------
@@ -204,6 +215,7 @@ class Recorder:
         self.render_s = 0.0
         self.encoded = 0
         self.follow_frames = 0
+        self._framing = "follow"
         self._rep = self._enc = self._an_top = self._an_follow = self._follow_xf = None
         self.follow_dir: Optional[Path] = None
         self._last_follow = None
@@ -241,8 +253,9 @@ class Recorder:
             log.info("recording: no robot, so no follow camera")
             return
         rep, cfg = self._rep, self.cfg
-        eye, target = follow_view(pose)
-        cam = define_camera(self.stage, f"{CAMERAS_PATH}/follow", eye, target, FOLLOW_FOCAL_MM, cfg.res)
+        self._framing = follow_framing()
+        eye, target = follow_view(pose, self._framing)
+        cam = define_camera(self.stage, f"{CAMERAS_PATH}/follow", eye, target, FRAMINGS[self._framing][4], cfg.res)
         from pxr import UsdGeom
 
         self._follow_xf = UsdGeom.Xformable(self.stage.GetPrimAtPath(cam))
@@ -279,7 +292,7 @@ class Recorder:
         if self._follow_xf is not None:
             pose = self.robot_pose()
             if pose is not None:
-                self._follow_xf.GetOrderedXformOps()[0].Set(look_at(*follow_view(pose)))
+                self._follow_xf.GetOrderedXformOps()[0].Set(look_at(*follow_view(pose, self._framing)))
         t0 = time.monotonic()
         self.app.update()  # one fixed frame; the annotators fill as the timeline plays (capture on play)
         import numpy as np

@@ -83,6 +83,20 @@ def test_follow_view_sits_in_front_and_above_the_robot_looking_at_it():
     assert eye3[1] < 3.0
 
 
+def test_desk_framing_is_wider_and_higher_and_unknown_names_fall_back(monkeypatch):
+    base_eye, _ = R.follow_view((2.0, 3.0, -math.pi / 2))
+    eye, target = R.follow_view((2.0, 3.0, -math.pi / 2), "desk")
+    assert target == pytest.approx((2.0, 3.0, R.FRAMINGS["desk"][3]))
+    assert eye[1] < base_eye[1] < 3.0 and eye[2] > base_eye[2]  # further in front of the reception G1, and higher
+    assert R.follow_view((2.0, 3.0, 0.0), "nonsense") == R.follow_view((2.0, 3.0, 0.0))
+    monkeypatch.delenv("WARDZERO_FOLLOW_FRAMING", raising=False)
+    assert R.follow_framing() == "follow"
+    monkeypatch.setenv("WARDZERO_FOLLOW_FRAMING", "Desk")
+    assert R.follow_framing() == "desk"
+    monkeypatch.setenv("WARDZERO_FOLLOW_FRAMING", "bogus")
+    assert R.follow_framing() == "follow"
+
+
 def test_jpeg_sink_writes_atomically_and_replaces(tmp_path):
     np = pytest.importorskip("numpy")
     PIL = pytest.importorskip("PIL.Image")
