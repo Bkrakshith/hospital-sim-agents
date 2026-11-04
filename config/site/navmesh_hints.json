@@ -1,0 +1,115 @@
+{
+ "reception_guide": {
+  "focus_rooms": [
+   "Lobby"
+  ],
+  "route_rooms": [
+   "AE_Waiting",
+   "Main_Corridor"
+  ]
+ },
+ "scrub_nurse": {
+  "focus_rooms": [
+   "Theatre"
+  ],
+  "route_rooms": [
+   "Scrub"
+  ]
+ },
+ "meal_round": {
+  "focus_rooms": [
+   "B1",
+   "B2",
+   "B3",
+   "B4",
+   "B5",
+   "B6"
+  ],
+  "route_rooms": [
+   "Ward_Corridor",
+   "Ward_Entrance"
+  ]
+ },
+ "ward_fire": {
+  "focus_rooms": [
+   "Ward_Corridor",
+   "B1",
+   "B2",
+   "B3",
+   "B4",
+   "B5",
+   "B6"
+  ],
+  "route_rooms": [
+   "Ward_Entrance",
+   "Main_Corridor"
+  ]
+ },
+ "evacuation_guide": {
+  "focus_rooms": [
+   "Lobby",
+   "Main_Corridor",
+   "AE_Waiting"
+  ],
+  "route_rooms": []
+ },
+ "specimen_run": {
+  "focus_rooms": [
+   "Ward_Corridor",
+   "Main_LiftLobby"
+  ],
+  "route_rooms": [
+   "Ward_Entrance",
+   "Main_Corridor"
+  ]
+ },
+ "visiting_rush": {
+  "focus_rooms": [
+   "Ward_Corridor"
+  ],
+  "route_rooms": [
+   "Lobby",
+   "Main_Corridor",
+   "Ward_Entrance"
+  ]
+ },
+ "wandering_patient": {
+  "focus_rooms": [
+   "Ward_Corridor",
+   "B1",
+   "B2",
+   "B3",
+   "B4",
+   "B5",
+   "B6"
+  ],
+  "route_rooms": [
+   "Ward_Entrance"
+  ]
+ },
+ "night_call_bell": {
+  "focus_rooms": [
+   "B1",
+   "B2",
+   "B3",
+   "B4",
+   "B5",
+   "B6",
+   "Ward_WS1",
+   "Ward_WS2"
+  ],
+  "route_rooms": [
+   "Ward_Corridor"
+  ]
+ },
+ "ae_waiting": {
+  "focus_rooms": [
+   "AE_Waiting",
+   "AE_Triage"
+  ],
+  "route_rooms": [
+   "Lobby",
+   "Main_Corridor"
+  ]
+ }
+}
