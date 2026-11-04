@@ -1,4 +1,4 @@
-"""Names of the benchmark metrics scenario criteria may use. Task 10 implements them in bench/metrics.py."""
+"""Names of the benchmark metrics scenario criteria may use; bench/metrics.py implements each."""
 METRIC_NAMES: tuple[str, ...] = (
     "min_distance_m", "time_within_0_5m_s", "max_speed_near_people_mps", "contacts", "forbidden_area_entries",
     "unanswered_requests", "mean_response_s", "trays_correct_in_reach", "trays_total", "instruments_correct_rate",

@@ -248,3 +248,26 @@ def test_objects_stream_and_alarm_audio(tmp_path):
     kinds = {o["kind"] for r in rows for o in r["objects"]}
     assert rows and {"fire", "call_bell"} <= kinds
     assert any(r["source_kind"] == "alarm" for r in lines(run, "audio"))
+
+
+def test_robot_pose_recorded_at_status_rate_with_a_robot_only(tmp_path):
+    s = svc(tmp_path)
+    for _ in range(12):
+        s.step(0.1)
+    rows = lines(tmp_path, "robot_pose")
+    if s.robot:
+        assert rows and set(rows[0]) >= {"t", "x", "y", "yaw", "speed"}
+        assert [r["t"] for r in rows] == sorted({r["t"] for r in rows})
+        assert len(rows) == len({r["t"] for r in lines(tmp_path, "status")})
+    else:
+        assert rows == []
+
+
+def test_no_robot_pose_without_a_robot(tmp_path):
+    loaded = load_scenario(V1)
+    loaded.scenario = loaded.scenario.model_copy(update={"robot": loaded.scenario.robot.model_copy(
+        update={"enabled": False})})
+    s = StubSimService(loaded, RunLog(tmp_path), wait_for=())
+    for _ in range(12):
+        s.step(0.1)
+    assert lines(tmp_path, "robot_pose") == [] and lines(tmp_path, "status")

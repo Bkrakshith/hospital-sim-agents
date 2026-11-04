@@ -291,6 +291,11 @@ class StubSimService:
             if self.t >= self._next_status_record:
                 for st in out.statuses:
                     self.runlog.write("status", st.model_dump(mode="json", by_alias=True))
+                if self.robot:  # the robot's pose at the same instants, for the benchmark metrics
+                    x, y, yaw = self.world.robot.pose
+                    self.runlog.write("robot_pose", {"t": self.t, "x": round(x, 3), "y": round(y, 3),
+                                                     "yaw": round(yaw, 4),
+                                                     "speed": round(self.world.robot.speed, 3)})
                 self._next_status_record = self.t + STATUS_RECORD_PERIOD_S
 
         while self._recent and self._recent[0][0] < self.t - OBS_WINDOW_S:
