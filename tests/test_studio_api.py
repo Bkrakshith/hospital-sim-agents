@@ -49,7 +49,7 @@ FAKE = textwrap.dedent('''
             (d / "got_sigint").write_text(str(time.time())); sys.exit(0)
         signal.signal(signal.SIGINT, got)
         if mode == "marker":
-            time.sleep(0.3); print("Stopping the run (orderly stop).", flush=True)  # drains, deaf to a stop message
+            time.sleep(0.9); print("Stopping the run (orderly stop).", flush=True)  # drains, deaf to a stop message
         time.sleep(30)
     signal.signal(signal.SIGINT, done)
     if mode == "debrief":
@@ -529,7 +529,7 @@ async def _stop_with_mode(env, monkeypatch, mode, hard):
     monkeypatch.setenv("FAKE_MODE", mode)
     runner = Runner(env["data"], ROOT, env["runs"], command=lambda p, s, b, d: [
         sys.executable, str(env["data"].parent / "fake_cli.py"), "--project-id", p.id],
-        stop_publisher=lambda domain: True, stop_grace_s=0.5, stop_hard_s=hard, key_present=lambda: False)
+        stop_publisher=lambda domain: True, stop_grace_s=1.5, stop_hard_s=hard, key_present=lambda: False)
     c = TestClient(TestServer(make_app(Ctx(env["data"], ROOT, env["runs"], runner))))
     await c.start_server()
     p = await (await c.post("/api/projects", json={"name": "T", "scenario_id": "ae_waiting"}, headers=H)).json()
@@ -538,15 +538,15 @@ async def _stop_with_mode(env, monkeypatch, mode, hard):
     async def up():
         return (await (await c.get("/api/run/state")).json())["robot"]
     await wait_for(up)
-    await asyncio.sleep(0.8 if mode == "marker" else 0.3)  # the marker (if any) is out
+    await asyncio.sleep(0.3)  # stop before the marker (if any) is out
     await c.post("/api/run/stop", headers=H)
     return c, runner, env["runs"] / "20261104-000000_fake" / "got_sigint"
 
 
 async def test_marker_seen_means_no_sigint_during_the_drain(env, monkeypatch):
-    c, runner, flag = await _stop_with_mode(env, monkeypatch, "marker", hard=3.0)
+    c, runner, flag = await _stop_with_mode(env, monkeypatch, "marker", hard=3.5)
     try:
-        await asyncio.sleep(2.0)  # well past the grace (0.5 s): the CLI said it is stopping
+        await asyncio.sleep(2.2)  # past the grace (1.5 s): the CLI has said it is stopping
         assert not flag.exists() and runner._alive()
         await wait_for(lambda: asyncio.sleep(0, flag.exists()), timeout=6)  # only the hard limit interrupts
     finally:
@@ -590,3 +590,41 @@ async def test_refresh_lights_survives_a_failing_probe(env, monkeypatch):
     t = asyncio.create_task(refresh_lights(ctx))
     await wait_for(lambda: asyncio.sleep(0, ctx.lights["controller_seen"]))
     t.cancel()
+
+
+async def test_second_stop_never_signals_or_publishes_again(env, monkeypatch):
+    # with the marker present: two stops, no SIGINT before the hard limit
+    c, runner, flag = await _stop_with_mode(env, monkeypatch, "marker", hard=3.5)
+    try:
+        r = await (await c.post("/api/run/stop", headers=H)).json()
+        assert r["note"] == "already stopping" and r["via"] == "control"
+        await asyncio.sleep(1.5)
+        assert not flag.exists() and runner._alive()
+    finally:
+        await asyncio.to_thread(runner.shutdown)
+        await c.close()
+
+
+async def test_two_stops_before_the_marker_publish_once(env, monkeypatch):
+    monkeypatch.setenv("FAKE_MODE", "nomarker")
+    sent = []
+    runner = Runner(env["data"], ROOT, env["runs"], command=lambda p, s, b, d: [
+        sys.executable, str(env["data"].parent / "fake_cli.py"), "--project-id", p.id],
+        stop_publisher=lambda domain: sent.append(1) or True, stop_grace_s=30, key_present=lambda: False)
+    c = TestClient(TestServer(make_app(Ctx(env["data"], ROOT, env["runs"], runner))))
+    await c.start_server()
+    try:
+        p = await (await c.post("/api/projects", json={"name": "T", "scenario_id": "ae_waiting"}, headers=H)).json()
+        await c.post("/api/run/start", json={"project_id": p["id"]}, headers=H)
+
+        async def up():
+            return (await (await c.get("/api/run/state")).json())["robot"]
+        await wait_for(up)
+        await asyncio.sleep(0.2)
+        a = await (await c.post("/api/run/stop", headers=H)).json()
+        b = await (await c.post("/api/run/stop", headers=H)).json()
+        assert a["via"] == "control" and "note" not in a and b["note"] == "already stopping"
+        assert len(sent) == 1
+    finally:
+        await asyncio.to_thread(runner.shutdown)
+        await c.close()

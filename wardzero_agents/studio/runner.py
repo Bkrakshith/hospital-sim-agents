@@ -56,6 +56,7 @@ class Runner:
         self._stop_publisher = stop_publisher or publish_stop
         self._grace, self._hard = stop_grace_s, stop_hard_s
         self._hard_timer_armed = False
+        self._stop_requested = False
         self._timer: Optional[threading.Timer] = None
         self._run_domain = os.environ.get("ROS_DOMAIN_ID", "0")
         self._key_present = key_present or _claude_key_present
@@ -91,6 +92,7 @@ class Runner:
             self._log_path = log_dir / "last_run.log"
             self._close_log()
             self._cancel_timer()
+            self._stop_requested = False
             self._log_fh = open(self._log_path, "wb")
             env = dict(os.environ, PYTHONUNBUFFERED="1", WARDZERO_RUNS_DIR=str(self.runs_dir),
                        WARDZERO_DATA_DIR=str(self.data))
@@ -122,6 +124,9 @@ class Runner:
             if self._phase() in ("debrief", "report"):
                 return {"ok": True, "stopped": False,
                         "note": "The run is already over; the debrief and report are finishing."}
+            if self._stop_requested or self._stopping:  # a double click or retry: never signal a draining run
+                return {"ok": True, "stopped": True, "via": "control", "note": "already stopping"}
+            self._stop_requested = True
             domain = self._run_domain
         sent = False
         try:
