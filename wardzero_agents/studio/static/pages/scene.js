@@ -235,7 +235,7 @@
       S.scen = sc ? sc.id : null;
       renderScenarios();
       S.map.setFocus(sc ? sc.focus_rooms : []);
-      if (sc) S.map.frame(sc.focus_rooms, sc.characters, 0.2, 30); else S.map.fit();
+      if (sc) S.map.frame(sc.focus_rooms, sc.characters, 0.12, 16); else S.map.fit();
       if (sc) { const el = body.querySelector(".card.open"); if (el) el.scrollIntoView({ block: "start", behavior: "smooth" }); }
     }
 
@@ -247,7 +247,7 @@
         await WZ.saveProject(patch);
         S.sel = null; S.scen = null; S.tab = "characters";
         renderSide(); drawMap(); loadMemory();
-        S.map.setFocus([]); S.map.frame(sc.focus_rooms, sc.characters.concat([sc.robot_start]), 0.2, 30);
+        S.map.setFocus([]); S.map.frame(sc.focus_rooms, sc.characters.concat([sc.robot_start]), 0.12, 16);
         WZ.toast("Loaded " + sc.title + ": " + sc.characters.length + " characters");
       } catch (e) { WZ.toast(e.message, "bad"); }
     }
@@ -292,7 +292,11 @@
         ta.style.height = Math.min(ta.scrollHeight + 2, max) + "px";
         ta.style.overflowY = ta.scrollHeight + 2 > max ? "auto" : "hidden";
       }
-      function sizeAreas() { autosize(roleTa, 10); autosize(moodTa, 6); roleTa.scrollTop = 0; moodTa.scrollTop = 0; }
+      function sizeAreas() {
+        autosize(roleTa, 10); autosize(moodTa, 6);
+        const top = () => { roleTa.scrollTop = 0; moodTa.scrollTop = 0; };
+        top(); requestAnimationFrame(top); setTimeout(top, 60);
+      }
       function syncPrompts() {
         const rp = rolePre(), mp = moodPre();
         roleTa.value = D.rolePrompt != null ? D.rolePrompt : preText(rp);
@@ -412,7 +416,7 @@
           S.sel = saved.id; S.tab = "characters";
           dlg.close();
           renderSide(); drawMap(); loadMemory();
-          S.map.frame([], P().characters.concat(P().robot_start ? [P().robot_start] : []), 0.2, 30);
+          S.map.frame([], P().characters.concat(P().robot_start ? [P().robot_start] : []), 0.2, 16);
           WZ.toast(existing ? "Saved " + saved.name : saved.name + " is on the map");
         } catch (e) { err.textContent = e.message; saveBtn.disabled = false; }
       }

@@ -93,7 +93,8 @@
     _fitBox() {
       const pts = [];
       for (const r of this.site.rooms) pts.push(...r.poly);
-      const b = pts.length ? bbox(pts) : this.bounds, p = Math.max(b.x1 - b.x0, b.y1 - b.y0) * 0.02;
+      for (const w of this.site.walls) pts.push([w[0], w[1]], [w[2], w[3]]);
+      const b = pts.length ? bbox(pts) : this.bounds, p = Math.max(b.x1 - b.x0, b.y1 - b.y0) * 0.04;
       return this._boxFor(b.x0 - p, b.y0 - p, b.x1 + p, b.y1 + p);
     }
     /* Frame rooms and points together with a fractional margin (and a minimum span in metres). */
@@ -223,25 +224,32 @@
       const fs = 11.5, v = this.vb, cw = fs * 0.58;
       for (const r of this.roomLabels) {
         const wpx = (r.bb.x1 - r.bb.x0) / k, hpx = (r.bb.y1 - r.bb.y0) / k;
-        let text = null;
+        let text = null, at = null;
         if (hpx > 16) {
+          // anchors inside the room, tried in order: centre, top, bottom, top-left, bottom-left
+          const ix = 8 * k, iy = 12 * k;
+          search:
           for (const cand of r.cands) {
             const tw = cand.length * cw;
             if (tw > wpx * 0.9) continue;
-            // the whole text must sit inside the visible map, with a margin
-            const hw = (tw / 2 + 8) * k, hh = 10 * k;
-            if (r.c[0] - hw < v.x || r.c[0] + hw > v.x + v.w || -r.c[1] - hh < v.y || -r.c[1] + hh > v.y + v.h) continue;
-            let clash = false;   // keep it out from under a person, the robot or a static patient
-            for (const m of this.markers) {
-              if (Math.abs(m.x - r.c[0]) / k < tw / 2 + 26 && Math.abs(m.y - r.c[1]) / k < 20) { clash = true; break; }
+            const half = (tw / 2 + 8) * k, hh = 10 * k, mid = (r.bb.x0 + r.bb.x1) / 2;
+            const anchors = [[mid, r.c[1]], [mid, r.bb.y1 - iy], [mid, r.bb.y0 + iy],
+              [r.bb.x0 + half, r.bb.y1 - iy], [r.bb.x0 + half, r.bb.y0 + iy]];
+            for (const a of anchors) {
+              if (hpx < 16 && a !== anchors[0]) continue;
+              if (a[0] - half < v.x || a[0] + half > v.x + v.w || -a[1] - hh < v.y || -a[1] + hh > v.y + v.h) continue;
+              let clash = false;
+              for (const mk of this.markers) {
+                if (Math.abs(mk.x - a[0]) / k < tw / 2 + 22 && Math.abs(mk.y - a[1]) / k < 24) { clash = true; break; }
+              }
+              if (!clash) { text = cand; at = a; break search; }
             }
-            if (!clash) { text = cand; break; }
           }
         }
         if (text === null) { r.txt.setAttribute("display", "none"); continue; }
         r.txt.removeAttribute("display");
         if (r.txt.textContent !== text) r.txt.textContent = text;
-        r.txt.setAttribute("transform", `translate(${r.c[0]} ${-r.c[1]}) scale(${k})`);
+        r.txt.setAttribute("transform", `translate(${at[0]} ${-at[1]}) scale(${k})`);
         r.txt.setAttribute("font-size", fs);
       }
     }
