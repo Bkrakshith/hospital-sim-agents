@@ -46,6 +46,7 @@ from wardzero_agents.world.perception import Tracks
 from wardzero_agents.world.robot_body import RobotBody
 
 ROBOT_ID = "g1"
+ROUTE_BLOCK_RADIUS_M = 1.5  # a route_blocked event seals this radius for routing
 APPROACH_GAP_M = 1.0
 SEAT_VIEW_RANGE_M = 6.0
 PERSON_Z = 1.6
@@ -136,6 +137,7 @@ class StubWorld:
         self.signs: list[Sign] = list(loaded.signs)
         self.last_t = 0.0
         self._wet = 0
+        self._blocked = 0
         self._spawned = 0
         self._omni: set[str] = set()
         self.site = loaded.site
@@ -750,6 +752,14 @@ class StubWorld:
                 id=f"wet_floor_{self._wet}", text="Caution: wet floor", x=x, y=y, z=0.6,
                 facing_yaw=0.0, placeholder=True,
             )
+            self.signs.append(sign)
+            self._omni.add(sign.id)
+            return []
+        if ev.kind == "route_blocked":
+            self._blocked += 1
+            self.router.block(x, y, ROUTE_BLOCK_RADIUS_M)
+            sign = Sign(id=f"route_blocked_{self._blocked}", text=ev.text or "Route blocked: do not use",
+                        x=x, y=y, z=1.2, facing_yaw=0.0, placeholder=True)
             self.signs.append(sign)
             self._omni.add(sign.id)
             return []

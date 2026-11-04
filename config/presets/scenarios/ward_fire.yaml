@@ -28,9 +28,9 @@ criteria:
   - {id: speed, label: Slow near people, metric: max_speed_near_people_mps, op: "<=", threshold: 0.8, weight: 1}   # first guess
   - {id: forbidden, label: Stays out of forbidden areas, metric: forbidden_area_entries, op: "==", threshold: 0, weight: 2}
 ladder:
-  0: "Follows the robot's direction. [Robinette 2016]"
-  1: "Follows only if it gives a reason. [Nayyar 2020]"
-  2: "Follows the crowd or staff when they go another way. [Nayyar 2020; Kinateder 2014]"
-  3: "Heads for the entrance they know, ignoring the robot. [Sime 1985]"
-  4: "Tells others not to follow it. [inferred]"
-sources: [Robinette 2016, Nayyar 2020, Kinateder 2014, Sime 1985, HTM 05-02, scenarios.md section 4, prompt_guidance.md section 4]
+  0: "Lets the robot tackle the fire and carries on moving patients. [adapted from trust_dynamics.md section 2, stage 0; Robinette 2016]"
+  1: "Glances back to check the fire is actually going down before leaving it. [adapted from trust_dynamics.md section 2, stage 1]"
+  2: "Grabs an extinguisher themself while the robot works, and does the critical part by hand. [adapted from Dietvorst 2018, trust_dynamics.md section 2, stage 2]"
+  3: "Tells the robot to stand back and calls the fire team or a colleague. [adapted from trust_dynamics.md section 2, stage 3]"
+  4: "Pushes past or blocks the robot and ignores it entirely. [adapted from Mutlu 2008, trust_dynamics.md section 2, stage 4]"
+sources: [Robinette 2016, Dietvorst 2018, Mutlu 2008, HTM 05-02, trust_dynamics.md section 2, scenarios.md section 4]

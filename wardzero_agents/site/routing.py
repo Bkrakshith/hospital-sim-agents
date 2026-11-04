@@ -44,6 +44,18 @@ class Router:
                     inf[yd, xd] |= occ[ys, xs]
         return inf
 
+    def block(self, x: float, y: float, radius: float) -> None:
+        """Make every cell within radius metres of (x, y) impassable (a blocked doorway or corridor)."""
+        g = self.grid
+        iy, ix = g.to_cell(x, y)
+        n = int(math.ceil(radius / g.res))
+        for dy in range(-n, n + 1):
+            for dx in range(-n, n + 1):
+                if dy * dy + dx * dx <= (radius / g.res) ** 2 and g.in_grid(iy + dy, ix + dx):
+                    self._raw[iy + dy][ix + dx] = True
+        self._near = self._inflate(np.array(self._raw, dtype=bool), CLEARANCE).tolist()
+        self._cache.clear()
+
     def is_free(self, x: float, y: float) -> bool:
         """Free of walls and of the clearance band."""
         iy, ix = self.grid.to_cell(x, y)

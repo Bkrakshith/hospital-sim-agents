@@ -176,3 +176,63 @@ def test_bad_preset_rejected(tmp_path):
     f.write_text(f.read_text().replace("metric: contacts", "metric: nonsense_metric", 1))
     with pytest.raises((ConfigError, ValueError)):
         load_scenario_presets(cfg)
+
+
+def _keys(text):
+    """Source keys in square brackets, skipping the ones that start with 'inferred'."""
+    out = []
+    for grp in re.findall(r"\[([^\]]+)\]", text):
+        for part in grp.split(";"):
+            part = part.strip()
+            if part.startswith("inferred"):
+                continue
+            part = re.sub(r"^(see|adapted from)\s+", "", part)
+            part = part.split(",")[0]
+            part = re.sub(r"\s+(section|queue)\b.*$", "", part).strip()
+            if part:
+                out.append(part)
+    return out
+
+
+def test_source_keys_appear_in_research_notes(presets):
+    notes = ROOT.parents[1] / "research_notes"
+    corpus = "\n".join(f.read_text() for d in ("persona_behaviour", "UK hospital visitor personas")
+                       for f in (notes / d).glob("*.md"))
+    texts = [r.prompt for r in load_roles(ROOT).values()] + [m.prompt for m in load_moods(ROOT).values()]
+    for p in presets.values():
+        texts += list(p.ladder.values())
+    keys = {k for t in texts for k in _keys(t)}
+    assert len(keys) > 20
+    missing = sorted(k for k in keys if k not in corpus)
+    assert not missing, missing
+
+
+def test_ward_fire_ladder_is_its_own(presets):
+    assert presets["ward_fire"].ladder != presets["evacuation_guide"].ladder
+    assert "extinguisher" in presets["ward_fire"].ladder[2]
+
+
+def test_specimen_run_has_beds_wheelchairs_and_a_crowded_lobby(presets):
+    p = presets["specimen_run"]
+    lobby = [c for c in p.characters if c.room == "Main_LiftLobby"]
+    assert len(lobby) >= 3
+    assert any("trolley bed" in (c.role_prompt or "") for c in lobby)
+    assert sum("wheelchair" in (c.role_prompt or "") for c in p.characters) >= 2
+    esc = [b for b in p.timeline if b.card == "escort_patient"]
+    assert esc and esc[0].target == "TR1" and esc[0].params["patient"] == "W2"
+
+
+def test_evacuation_blocks_a_route(presets, tmp_path):
+    p = presets["evacuation_guide"]
+    assert "blocked" in p.robot_brief["job"]
+    beat = next(b for b in p.timeline if b.card == "route_blocked")
+    loaded = preset_to_scenario(p, ROOT, tmp_path / "evac")
+    from wardzero_agents.contracts import WorldEvent
+    w = StubWorld(loaded, 7)
+    x, y = beat.params["x"], beat.params["y"]
+    before = w.router.route((x - 4, y), (x + 4, y))
+    w.apply_world_event(WorldEvent(id="rb", t=0, kind="route_blocked", x=x, y=y))
+    assert w.router._raw[w.site.grid.to_cell(x, y)[0]][w.site.grid.to_cell(x, y)[1]]
+    after = w.router.route((x - 4, y), (x + 4, y))
+    assert before is not None and after != before
+    assert any(s.id == "route_blocked_1" for s in w.signs)
