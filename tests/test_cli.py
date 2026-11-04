@@ -143,8 +143,11 @@ def test_run_spawns_the_nodes(fake_llm, launched, capsys, tmp_path):
     assert opt(stub, "--time-scale") == "30.0" and "--lockstep" in stub and opt(stub, "--ready-timeout") == "600.0"
     for c in children:
         assert c.argv[:2] == [sys.executable, "-m"]
+        if c.name == "reception_bot":  # the robot gets its own config, never the scenario with its people
+            assert Path(opt(c.argv, "--robot-config")) == run_dir / "robot_config.json" and "--scenario" not in c.argv
+            continue
         scen = Path(opt(c.argv, "--scenario"))
-        assert scen.parent == run_dir / "config"  # every node loads the run's own copy
+        assert scen.parent == run_dir / "config"  # every other node loads the run's own copy
     assert load_scenario(scen).storyboard.beats
     meta = json.loads((run_dir / "meta.json").read_text())
     assert meta["mode"] == "live" and meta["scenario_source"] == str(Path(V1).resolve())

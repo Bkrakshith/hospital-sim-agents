@@ -88,6 +88,16 @@ def load_scenario(path: "str | Path") -> LoadedScenario:
     return LoadedScenario(scenario, personas, area, signs, storyboard, deck, instances, site, root, path)
 
 
+def load_robot_view(root: "str | Path", site_name: str = "hospital", area: Optional[str] = None):
+    """What a robot process may load: the site (with the area merged in), the area and the signs.
+    Never the personas, the cast or the storyboard."""
+    from types import SimpleNamespace
+    root = Path(root)
+    site, wa = _load_site_and_area(root, SimpleNamespace(site=site_name, area=area))
+    raw_signs = (_read_yaml(root / "signs.yaml") or {}).get("signs", [])
+    return site, wa, [_validate(Sign, s, root / "signs.yaml") for s in raw_signs]
+
+
 def _load_site_and_area(root: Path, scenario: Scenario):
     """The site, with the scenario's optional area merged in, and the WaitingArea view of both.
 

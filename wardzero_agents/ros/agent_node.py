@@ -30,6 +30,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Optional, Protocol
 
+from ..campaign import robot_key
 from ..config.loader import LoadedScenario
 from ..config.models import PersonInstance
 from ..contracts import Control, Heard, Intent, Nudge, Observation, ReflexOverride, Roster, Say, Status
@@ -472,6 +473,7 @@ async def _serve(args, loaded: LoadedScenario, run_dir: Path, run_id: str, test_
         "snapshot_pre_restore": snap_pre, "snapshot_in": snap_in, "snapshot_out": None,
         "budget_usd": loaded.scenario.budget_usd, "cost_usd": 0.0, "started_at": started, "kb_sources_sha256": kb.sources_sha256,
         "preset_id": loaded.scenario.preset_id, "people": people_meta(loaded),
+        "robot_id": robot_key(loaded.scenario.robot.profile),
     }
     if camp is not None:
         base_meta.update({"word_of_mouth": camp[2], "run_index": run_index,
@@ -504,6 +506,7 @@ async def _serve(args, loaded: LoadedScenario, run_dir: Path, run_id: str, test_
             return Mind(MindDeps(inst=inst, loaded=loaded, gateway=effects.guard(gateway), kb=kb, ltm=ltm,
                                  run_id=run_id, run_index=run_index, effects=effects, runlog=runlog,
                                  run_dir=run_dir, checkpointer=saver, clock=effects.now,
+                                 memory_robot_id=robot_key(loaded.scenario.robot.profile),
                                  **_campaign_args(camp, inst)))
 
         svc = AgentService(loaded, runlog, _Out(), mind_factory, now=ros.now, ltm=ltm, events=publish_event)
@@ -575,10 +578,24 @@ async def _serve(args, loaded: LoadedScenario, run_dir: Path, run_id: str, test_
     return 0
 
 
+LOCK_PARENT_ENV = "WARDZERO_RUN_LOCK_PARENT"  # set by `hhumans run`, which holds the lock for the whole run
+
+
+def _lock_for(data: Path, run_id: str):
+    """The run lock, unless the CLI that started this node already holds it for the whole run (run, voice,
+    debrief and report); then there is nothing to take."""
+    import contextlib
+    from ..memory.runlock import RunLock, held_by
+    parent = os.environ.get(LOCK_PARENT_ENV, "")
+    if parent.isdigit() and held_by(data, int(parent)):
+        return contextlib.nullcontext()
+    return RunLock(data, run_id)
+
+
 def main(argv=None) -> int:
     from ..config.loader import ConfigError, load_scenario
     from ..memory import data_dir
-    from ..memory.runlock import RunActive, RunLock
+    from ..memory.runlock import RunActive
     from .rosutil import setup_logging
 
     setup_logging()
@@ -596,7 +613,7 @@ def main(argv=None) -> int:
     run_dir.mkdir(parents=True, exist_ok=True)
     run_id = run_dir.name
     try:
-        with RunLock(data_dir(), run_id):
+        with _lock_for(data_dir(), run_id):
             return asyncio.run(_serve(args, loaded, run_dir, run_id, test_mode))
     except RunActive as exc:
         print(str(exc), file=sys.stderr)

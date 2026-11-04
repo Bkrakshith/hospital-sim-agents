@@ -15,7 +15,7 @@ Its rules:
 Its node name is reception_bot, outside the wardzero_ prefix on purpose: the fairness audit
 treats it as the robot.
 
-    python -m wardzero_agents.examples.reception_bot --scenario FILE
+    python -m wardzero_agents.examples.reception_bot --scenario FILE [--domain N]
 """
 from __future__ import annotations
 
@@ -120,7 +120,11 @@ class ReceptionBot:
 def _parse(argv):
     import argparse
     p = argparse.ArgumentParser(description="Placeholder reception robot (hears /g1/audio/heard only).")
-    p.add_argument("--scenario", required=True, help="scenario file (for the area landmarks and signs)")
+    src = p.add_mutually_exclusive_group(required=True)
+    src.add_argument("--scenario", help="scenario file (for the area landmarks and signs)")
+    src.add_argument("--robot-config", help="the robot's own config (robot_config.json in the run folder)")
+    p.add_argument("--domain", type=int, default=None,
+                   help="the ROS domain the robot lives on (the run's robot domain); default ROS_DOMAIN_ID")
     return p.parse_args(argv)
 
 
@@ -132,15 +136,21 @@ async def _run(args) -> int:
     from wardzero_agents.ros.rosutil import RosBridge, install_stop_signals
 
     try:
-        loaded = load_scenario(args.scenario)
-    except ConfigError as exc:
-        print(f"Scenario error: {exc}", file=sys.stderr)
+        if args.robot_config:
+            from wardzero_agents.robots.view import load_robot_view
+            view = load_robot_view(args.robot_config)
+            area, signs = view.waiting_area, view.signs
+        else:
+            loaded = load_scenario(args.scenario)
+            area, signs = loaded.area, loaded.signs
+    except (ConfigError, OSError, ValueError, KeyError) as exc:
+        print(f"Robot config error: {exc}", file=sys.stderr)
         return 2
-    bot = ReceptionBot(loaded.area, loaded.signs)
+    bot = ReceptionBot(area, signs)
     loop = asyncio.get_running_loop()
     stop = asyncio.Event()
     install_stop_signals(loop, stop)
-    ros = RosBridge("reception_bot", loop)
+    ros = RosBridge("reception_bot", loop, domain_id=args.domain)
 
     def on_heard(h: Heard) -> None:
         reply = bot.on_heard(h, ros.now())

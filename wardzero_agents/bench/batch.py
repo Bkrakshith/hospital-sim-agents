@@ -68,13 +68,17 @@ def _forget_memory(mem: Path) -> None:
 def run_batch(scenario, n: int, carry_memory: bool = False, baseline: bool = False, *,
               runner: Callable[..., Path], preset=None, batch_root: "Path | None" = None,
               mem_path: "Path | None" = None, now: Optional[datetime] = None,
-              log: Callable[[str], None] = lambda s: None) -> Path:
+              log: Callable[[str], None] = lambda s: None,
+              should_stop: Callable[[], Optional[str]] = lambda: None,
+              spent: Callable[[], float] = lambda: 0.0, cap_usd: Optional[float] = None) -> Path:
     """Run `n` repeats and write batch.json and report.html into a new batch-<id> folder.
 
     scenario is the staged scenario (anything with .scenario.seed and .scenario.robot.profile and
     .scenario.id). runner(seed=..., profile=...) performs one complete run, debrief and report
     included, and returns its run folder; profile is None for the scenario's own robot. With baseline
-    the same seeds are repeated with the built-in profile from the same start memory."""
+    the same seeds are repeated with the built-in profile from the same start memory. should_stop() is asked
+    before each run and returns a reason to stop the batch cleanly (the spending limit); the runs done so far are
+    reported with that reason."""
     from ..memory import data_dir, memory_path
     from ..memory.snapshots import restore_snapshot, save_snapshot
     if n < 1:
@@ -107,21 +111,30 @@ def run_batch(scenario, n: int, carry_memory: bool = False, baseline: bool = Fal
         else:
             arms.append(("baseline", BASELINE_PROFILE))
     out_arms = {}
+    stopped = None
     try:
         for arm, profile in arms:
             rows = []
             for i, seed in enumerate(seeds):
+                stopped = should_stop()
+                if stopped:
+                    log(stopped)
+                    break
                 if not carry_memory or i == 0:
                     reset()
                 log(f"{arm}: run {i + 1} of {n}, seed {seed}")
                 rows.append(_run_row(Path(runner(seed=seed, profile=profile)), seed, preset))
-            out_arms[arm] = {"profile": profile or sc.robot.profile, **summarise_arm(rows)}
+            if rows:
+                out_arms[arm] = {"profile": profile or sc.robot.profile, **summarise_arm(rows)}
+            if stopped:
+                break
     finally:
         if not carry_memory:  # the user's campaign goes back to how it was before the batch
             reset()
     batch = {"label": LABEL, "batch_id": batch_id, "scenario_id": sc.id, "title": getattr(preset, "title", sc.id),
              "n": n, "carry_memory": carry_memory, "baseline": "baseline" in out_arms, "baseline_note": skipped,
-             "seeds": seeds, "snapshot": snap if had_memory else None, "arms": out_arms}
+             "seeds": seeds, "snapshot": snap if had_memory else None, "arms": out_arms,
+             "stopped": stopped, "spent_usd": round(float(spent()), 4), "cap_usd": cap_usd}
     (batch_dir / "batch.json").write_text(json.dumps(batch, indent=2, sort_keys=True), encoding="utf-8")
     (batch_dir / "report.html").write_text(render_batch_html(batch), encoding="utf-8")
     return batch_dir
@@ -172,6 +185,11 @@ def render_batch_html(batch: dict) -> str:
                      f"<td>{'pass' if r['passed'] else 'fail'}{'' if r['valid'] else ' (invalid)'}</td>"
                      f"<td class=\"n\">{_e(r['score'])}</td><td>{_e(Path(r['run_dir']).name)}</td></tr>")
     note = f'<p class="note">{_e(batch["baseline_note"])}</p>' if batch.get("baseline_note") else ""
+    if batch.get("stopped"):
+        note += f'<p class="note"><strong>{_e(batch["stopped"])}</strong></p>'
+    if batch.get("cap_usd"):
+        note += (f'<p class="note">Spent ${float(batch.get("spent_usd") or 0):.2f} of the '
+                 f'${float(batch["cap_usd"]):.2f} spending limit.</p>')
     carry = "Memory carried from run to run." if batch["carry_memory"] else \
         "Every repeat started from the same memory snapshot."
     return (f'<!doctype html><html lang="en"><head><meta charset="utf-8">'

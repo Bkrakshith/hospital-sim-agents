@@ -43,7 +43,8 @@ def _read(f: Path):
         return None
 
 
-def active_run(data_dir: Path) -> str | None:
+def active_run(data_dir: Path, ignore_pid: int | None = None) -> str | None:
+    """The id of the run holding the lock, or None. A lock held by ignore_pid (the caller's own) does not count."""
     f = _lock_file(data_dir)
     try:
         info = _read(f)
@@ -56,10 +57,21 @@ def active_run(data_dir: Path) -> str | None:
     except FileNotFoundError:
         return None
     run_id, pid = info
+    if ignore_pid is not None and pid == ignore_pid and _pid_alive(pid):
+        return None
     if _pid_alive(pid):
         return run_id
     f.unlink(missing_ok=True)
     return None
+
+
+def held_by(data_dir: Path, pid: int) -> bool:
+    """Whether the live process pid holds the lock (a parent that took it for the whole run)."""
+    try:
+        info = _read(_lock_file(data_dir))
+    except FileNotFoundError:
+        return False
+    return info is not None and info[1] == pid and _pid_alive(pid)
 
 
 class RunLock:

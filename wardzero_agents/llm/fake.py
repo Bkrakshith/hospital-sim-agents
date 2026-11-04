@@ -24,6 +24,18 @@ def _landmark(text: str) -> Optional[str]:
         (lm for label, lm in LABELS.items() if label in low), None)
 
 
+ROBOT_GREETING = "Hello, I am the hospital robot. Can I help you?"
+
+
+def _person_in_view(situation: str) -> bool:
+    """The robot's situation lists tracks under 'People your camera sees' and says 'nobody in view' when none."""
+    if "People your camera sees" not in situation:
+        return False
+    block = situation.split("People your camera sees", 1)[1].split("Objects in view", 1)[0]
+    rows = [ln for ln in block.splitlines() if ln.startswith("- ")]
+    return bool(rows) and "nobody in view" not in block
+
+
 def _decision(kind: str, target: str = "", say: str = "") -> dict:
     return {"intent": {"kind": kind, "target": target, "text": ""}, "say": say, "addressee": "",
             "mood": "calm", "patience_delta": 0.0, "reason": "fake policy"}
@@ -39,8 +51,9 @@ def default_policy(req: LLMRequest) -> dict:
         return {"items": []}
     if req.role == "summarise":
         return {"memories": []}
-    if req.role == "robot":  # the built-in robot waits and says nothing
-        return {"say": "", "toward_track": "", "action": "none", "target": "", "item": "",
+    if req.role == "robot":  # the built-in robot waits, and greets once when a person is in view
+        say = ROBOT_GREETING if _person_in_view(req.user) and "you said:" not in req.user else ""
+        return {"say": say, "toward_track": "", "action": "none", "target": "", "item": "",
                 "destination": "", "place": [], "reason": "fake policy"}
     u = req.full_user
     if "ROBOT SAID TO YOU" in u:

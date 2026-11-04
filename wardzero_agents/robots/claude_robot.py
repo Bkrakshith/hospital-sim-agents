@@ -6,7 +6,7 @@ tells lying from seated from standing), objects in view (perception/objects), wh
 hears, the results of its own actions and the task brief. No person id, name, mood or persona text
 reaches its prompt, and it speaks in place labels, never in internal ids.
 
-    python -m wardzero_agents.robots.claude_robot --scenario FILE --run-dir DIR
+    python -m wardzero_agents.robots.claude_robot --robot-config FILE|--scenario FILE --run-dir DIR [--domain N]
 
 The node is named robot_claude (not wardzero_*), so the fairness audit treats it as the robot.
 """
@@ -543,9 +543,30 @@ def make_usage_logger(runlog, now: Callable[[], float]) -> Callable[[LLMRequest,
 def _parse(argv):
     import argparse
     p = argparse.ArgumentParser(description="Built-in Claude robot (the robot side of the ROS contract only).")
-    p.add_argument("--scenario", required=True)
+    src = p.add_mutually_exclusive_group(required=True)
+    src.add_argument("--robot-config", help="the robot's own config (robot_config.json in the run folder)")
+    src.add_argument("--scenario", help="a scenario file (worked example; the robot reads only its robot part)")
     p.add_argument("--run-dir", required=True)
+    p.add_argument("--domain", type=int, default=None,
+                   help="the ROS domain the robot lives on (the run's robot domain); default ROS_DOMAIN_ID")
     return p.parse_args(argv)
+
+
+def _robot_view(args):
+    """The robot's view of the run: from robot_config.json, or from a scenario file (worked example)."""
+    from ..config.loader import ConfigError, default_models, load_scenario
+    from .view import RobotView, load_robot_view
+    if args.robot_config:
+        try:
+            return load_robot_view(args.robot_config)
+        except (OSError, ValueError, KeyError, ConfigError) as exc:
+            raise ConfigError(f"{args.robot_config}: {exc}") from None
+    loaded = load_scenario(args.scenario)
+    sc = loaded.scenario
+    return RobotView(root=loaded.root, site_name=sc.site, area=sc.area, robot=sc.robot,
+                     known_places=list(sc.known_places), models=sc.models or default_models(sc.provider),
+                     provider=sc.provider, budget_usd=sc.budget_usd * ROBOT_BUDGET_SHARE, brief=sc.robot_brief,
+                     domain=None, site=loaded.site, waiting_area=loaded.area, signs=loaded.signs)
 
 
 async def _run(args) -> int:
@@ -556,34 +577,35 @@ async def _run(args) -> int:
     from nav_msgs.msg import Odometry
 
     from .. import keys
-    from ..config.loader import ConfigError, load_scenario
+    from ..config.loader import ConfigError
     from ..llm.gateway import Budget, make_gateway
     from ..ros import topics
     from ..ros.rosutil import QOS, QOS_LATCHED, RosBridge, install_stop_signals, wait_or_sleep
     from ..runlog import RunLog
 
     try:
-        loaded = load_scenario(args.scenario)
+        view = _robot_view(args)
     except ConfigError as exc:
-        print(f"Scenario error: {exc}", file=sys.stderr)
+        print(f"Robot config error: {exc}", file=sys.stderr)
         return 2
-    cfg = loaded.scenario.robot
+    cfg = view.robot
     profile = get_profile(cfg.profile)
     rt = topics.robot_topics(cfg.ns)
     loop = asyncio.get_running_loop()
     stop = asyncio.Event()
     install_stop_signals(loop, stop)
-    ros = RosBridge(NODE_NAME, loop)
+    ros = RosBridge(NODE_NAME, loop, domain_id=args.domain)
     runlog = RunLog(Path(args.run_dir))
-    budget = Budget(loaded.scenario.budget_usd * ROBOT_BUDGET_SHARE)
+    budget = Budget(view.budget_usd)
     try:
-        gateway = make_gateway("claude", loaded.scenario.models, budget, make_usage_logger(runlog, ros.now))
+        gateway = make_gateway("claude", view.models, budget, make_usage_logger(runlog, ros.now))
     except keys.KeyMissing as exc:
         print(str(exc), file=sys.stderr)
         ros.close()
         return 2
-    mind = RobotMind(loaded.site, None, gateway, ros.now, profile=profile,
-                     known_places=loaded.scenario.known_places, pose=(cfg.x, cfg.y, cfg.yaw))
+    mind = RobotMind(view.site, None, gateway, ros.now, profile=profile,
+                     known_places=view.known_places, pose=(cfg.x, cfg.y, cfg.yaw))
+    t_start = None
 
     def jload(m):
         try:
@@ -612,7 +634,8 @@ async def _run(args) -> int:
     ros.publisher(rt["goal_pose"], PoseStamped, QOS)
     ros.publisher(rt["cmd_vel"], Twist, QOS)
     ros.start()
-    log.info("%s up (%s, %s)", NODE_NAME, profile.name, "mobile" if profile.can_move else "fixed post")
+    log.info("%s up on domain %s (%s, %s)", NODE_NAME, "default" if args.domain is None else args.domain,
+             profile.name, "mobile" if profile.can_move else "fixed post")
 
     def publish(out: Outputs) -> None:
         if out.say:
@@ -631,7 +654,11 @@ async def _run(args) -> int:
     try:
         while not stop.is_set():
             try:
-                d = await mind.tick(ros.now())
+                now = ros.now()
+                t_start = now if t_start is None else t_start
+                if mind.brief is None and view.brief and now - t_start >= BRIEF_WAIT_S:
+                    mind.on_brief(view.brief)  # no latched brief arrived: use the one in the robot's own config
+                d = await mind.tick(now)
                 if d is not None:
                     publish(decision_outputs(d, mind, mind.next_id()))
             except Exception as exc:  # one bad tick must not end the run

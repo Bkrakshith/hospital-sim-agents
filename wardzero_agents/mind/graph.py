@@ -189,7 +189,7 @@ def build_graph(deps: "MindDeps", checkpointer: Any = None):
         if deps.ltm is not None:
             mem = await asyncio.to_thread(deps.ltm.search, inst.memory_key, q, LTM_K,
                                           run_index=deps.run_index)
-            ltm_hits = [render_memory(h, deps.robot_id) for h in mem]
+            ltm_hits = [render_memory(h, deps.memory_robot_id) for h in mem]
         return {"kb_hits": kb_hits, "ltm_hits": ltm_hits}
 
     def history_blocks(state: MindState) -> list[str]:
@@ -282,7 +282,7 @@ def build_graph(deps: "MindDeps", checkpointer: Any = None):
                 text = m["text"].strip()
                 imp = _clamp01(float(m["importance"])) if _is_number(m.get("importance")) else 0.5
                 if deps.ltm is not None:
-                    tag = _robot_tag_for(text, deps.robot_id)
+                    tag = _robot_tag_for(text, deps.memory_robot_id)
                     extra = {"tag": tag} if tag else {}
                     await asyncio.to_thread(deps.ltm.add, inst.memory_key, deps.run_id, t, "episode",
                                             text, imp, **extra)

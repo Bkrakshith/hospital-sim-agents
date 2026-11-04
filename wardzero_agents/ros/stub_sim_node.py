@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import sys
 import time
 
@@ -48,6 +49,8 @@ def _parse(argv):
     p.add_argument("--lockstep", action="store_true")
     p.add_argument("--ready-timeout", type=float, default=READY_TIMEOUT_S,
                    help="wall seconds to wait for the other nodes before giving up")
+    p.add_argument("--robot-domain", type=int, default=None,
+                   help="the ROS domain the robot's topics and /clock are on (default: the people's domain)")
     p.add_argument("--wait-for", default=",".join(WAIT_TOKENS),
                    help="comma list of nodes to wait for before the clock starts: agents, director, or none")
     return p.parse_args(argv)
@@ -73,10 +76,20 @@ async def _run(args) -> int:
     stop = asyncio.Event()
     install_stop_signals(loop, stop)
     ros = RosBridge("wardzero_stub_sim", loop, use_sim_time=False)
-    sim_ros = SimRos(svc, ros)
-    ros.start()
-    log.info("stub sim up: %s, time scale %.1f%s, waiting for %s", loaded.scenario.id, args.time_scale,
-             ", lockstep" if lockstep else "", ", ".join(sorted(svc.waiting)) or "nothing")
+    bridges = [ros]
+    robot_bridge = None
+    private = int(os.environ.get("ROS_DOMAIN_ID", "").strip() or 0)
+    if args.robot_domain is not None and args.robot_domain != private:
+        # like the Isaac host: every robot topic and /clock on the robot's own domain, the people's stay here
+        robot_bridge = RosBridge("wardzero_stub_robot_side", loop, use_sim_time=False, domain_id=args.robot_domain)
+        bridges.append(robot_bridge)
+    sim_ros = SimRos(svc, ros, clock_bridges=[robot_bridge] if robot_bridge is not None else [],
+                     robot_ros=robot_bridge)
+    for b in bridges:
+        b.start()
+    log.info("stub sim up: %s, time scale %.1f%s%s, waiting for %s", loaded.scenario.id, args.time_scale,
+             ", lockstep" if lockstep else "",
+             f", the robot on domain {args.robot_domain}" if robot_bridge is not None else "", ", ".join(sorted(svc.waiting)) or "nothing")
 
     period = 1.0 / STEP_HZ
     last = time.monotonic()
@@ -105,7 +118,8 @@ async def _run(args) -> int:
                     last_wait_log = now
             await wait_or_sleep(stop, max(0.0, period - (time.monotonic() - now)))
     finally:
-        ros.close()
+        for b in bridges:
+            b.close()
     return code
 
 

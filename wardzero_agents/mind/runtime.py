@@ -56,7 +56,8 @@ class MindDeps:
     # Short-term state: a shared checkpointer if given, else <run_dir>/shortterm.sqlite, else in memory.
     run_dir: Optional[Path] = None
     checkpointer: Any = None
-    robot_id: str = "g1"
+    robot_id: str = "g1"  # the robot's name in the world (who people address)
+    memory_robot_id: str = "g1"  # the id its trust and the memories about it are kept under (per robot)
     # Campaign state, fixed at the start of the run because the persona card is a cached prefix.
     trust_stage: int = 0
     robot_memories: bool = False

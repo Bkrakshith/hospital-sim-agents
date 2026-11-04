@@ -369,10 +369,11 @@ def test_cli_bot_selection(monkeypatch):
 def test_cli_claude_child_is_the_only_robot_with_the_key(monkeypatch):
     from wardzero_agents import cli
     monkeypatch.setenv("ANTHROPIC_API_KEY", "placeholder-not-a-key")
-    (c,) = cli._bot_children("claude", "/s.yaml", "/run")
+    (c,) = cli._bot_children("claude", "/r.json", "/run", 18)
     assert c.name == "robot_claude" and not c.name.startswith("wardzero_")
-    assert c.env["ANTHROPIC_API_KEY"] and c.argv[-4:] == ["--scenario", "/s.yaml", "--run-dir", "/run"]
+    assert c.env["ANTHROPIC_API_KEY"] and c.argv[-6:] == ["--robot-config", "/r.json", "--run-dir", "/run",
+                                                          "--domain", "18"]
     assert "wardzero_agents.robots.claude_robot" in c.argv
-    (r,) = cli._bot_children("reception", "/s.yaml", "/run")
-    assert r.env is None  # supervised with the key-free env
-    assert cli._bot_children("none", "/s.yaml", "/run") == []
+    (r,) = cli._bot_children("reception", "/r.json", "/run", 18)
+    assert "ANTHROPIC_API_KEY" not in r.env  # the key-free env
+    assert cli._bot_children("none", "/r.json", "/run") == []

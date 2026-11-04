@@ -70,13 +70,34 @@ class Gateway(Protocol):
 
 
 class Budget:
+    """A spend limit. Besides what was charged it counts the calls in flight at an estimated cost each
+    (the largest cost seen so far, 1 cent before the first), so concurrent calls cannot all slip in
+    under the limit and overshoot it by the number of people."""
+
+    FIRST_CALL_ESTIMATE_USD = 0.01
+
     def __init__(self, limit_usd: float):
         self.limit_usd = limit_usd
         self._spent = 0.0
+        self._inflight = 0.0
+        self._biggest = 0.0
 
     def charge(self, usd: Optional[float]) -> None:
         if usd:
             self._spent += usd
+            self._biggest = max(self._biggest, usd)
+
+    def reserve(self) -> Optional[float]:
+        """Hold the estimated cost of one call, or None when spent plus held already reaches the limit."""
+        if self._spent + self._inflight >= self.limit_usd:
+            return None
+        est = self._biggest or self.FIRST_CALL_ESTIMATE_USD
+        self._inflight += est
+        return est
+
+    def release(self, held: Optional[float]) -> None:
+        if held:
+            self._inflight = max(0.0, self._inflight - held)
 
     @property
     def spent(self) -> float:
@@ -105,7 +126,8 @@ class BaseGateway:
     async def complete(self, req: LLMRequest) -> LLMResult:
         model = self.model_for(req.role)
         t0 = time.monotonic()
-        if self.budget.exhausted:
+        held = self.budget.reserve()
+        if held is None:
             res = LLMResult(False, None, "budget", model)
         else:
             try:
@@ -113,6 +135,8 @@ class BaseGateway:
             except Exception as exc:  # last resort: nothing escapes complete()
                 log.error("gateway call failed: %s", type(exc).__name__)
                 res = LLMResult(False, None, "provider_error", model)
+            finally:
+                self.budget.release(held)
             self.budget.charge(res.cost_usd)
         res.latency_s = time.monotonic() - t0
         self.on_usage(req, res)

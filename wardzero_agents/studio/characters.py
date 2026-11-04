@@ -81,11 +81,12 @@ def check_all(project: Project, site, roles, moods) -> Project:
 
 def memory_rows(project: Project, store, ltm_path: Path, roles: dict[str, RolePreset]) -> list[dict]:
     """Per character: trust, stage and what trust has been through, from the campaign store."""
-    from ..campaign import ROBOT_ID, role_defaults
+    from ..campaign import robot_key, role_defaults
+    robot_id = robot_key(project.robot_profile)  # trust is kept per robot: this is the selected robot's
     out = []
     for c in project.characters:
         key = memory_key(project.id, c.id)
-        s = store.get(key, ROBOT_ID, role_defaults(roles, c.role))
+        s = store.get(key, robot_id, role_defaults(roles, c.role))
         out.append({"id": c.id, "name": c.name, "memory_key": key, "trust": round(s.trust, 4), "stage": s.stage,
                     "runs": s.runs, "violations": s.violations, "repairs": s.repairs})
     return out

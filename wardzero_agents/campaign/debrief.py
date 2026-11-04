@@ -19,7 +19,7 @@ from .trust import Experience, TrustStore, apply_event, end_of_run, stage_for
 
 log = logging.getLogger(__name__)
 
-ROBOT_ID = "g1"  # as campaign.ROBOT_ID
+ROBOT_ID = "g1"  # as campaign.ROBOT_ID; the id trust is kept under comes from the run (meta robot_id)
 ROBOT_NAMES = frozenset({"robot", "g1"})
 MAX_TRANSCRIPT_LINES = 40
 MAX_HEARSAY_LINES = 80
@@ -157,7 +157,7 @@ async def _questionnaire(gateway: Gateway, pid: str, card: str, account: str) ->
     return out
 
 
-async def _hearsay(gateway: Gateway, says: list[dict], people: set[str]) -> list[Experience]:
+async def _hearsay(gateway: Gateway, says: list[dict], people: set[str], robot_id: str = ROBOT_ID) -> list[Experience]:
     talk = [s for s in sorted(says, key=lambda s: s.get("t", 0.0))
             if s.get("person") in people and s.get("addressee") in people and s.get("text")][:MAX_HEARSAY_LINES]
     if not talk:
@@ -181,7 +181,7 @@ async def _hearsay(gateway: Gateway, says: list[dict], people: set[str]) -> list
         v = max(-1.0, min(1.0, v))
         if abs(v) < HEARSAY_MIN_VALENCE:
             continue
-        out.append(Experience(float(line["t"]), str(line["addressee"]), ROBOT_ID, "hearsay", False, v < 0,
+        out.append(Experience(float(line["t"]), str(line["addressee"]), robot_id, "hearsay", False, v < 0,
                               str(line["person"])))
     return out
 
@@ -215,7 +215,8 @@ async def debrief(run_dir: "str | Path", gateway: Gateway, *, preset=None, roles
     instances = _load_instances(run_dir, meta)
     chars = {c.id: c for c in getattr(preset, "characters", [])}
     says = d.says
-    exps = detect(run_dir, preset)
+    robot_id = str(meta.get("robot_id") or ROBOT_ID)  # per robot; runs made before this have the G1's
+    exps = detect(run_dir, preset, robot_id)
 
     # 1. the questionnaire, one call per person
     result = DebriefResult()
@@ -238,7 +239,7 @@ async def debrief(run_dir: "str | Path", gateway: Gateway, *, preset=None, roles
 
     # 2. hearsay, only when people talked about the robot to each other in this run
     if meta.get("word_of_mouth"):
-        result.hearsay = await _hearsay(gateway, says, set(people))
+        result.hearsay = await _hearsay(gateway, says, set(people), robot_id)
     events = sorted([*exps, *result.hearsay], key=lambda e: (e.t, e.person, e.kind))
     result.experiences = events
 
@@ -252,7 +253,7 @@ async def debrief(run_dir: "str | Path", gateway: Gateway, *, preset=None, roles
         info = (meta.get("people") or {}).get(pid) or {}
         role = info.get("preset_role") or info.get("role") or (inst.role if inst else "visitor")
         # with --force the run starts again from the states it started from the first time
-        state = (stored_before or {}).get(key) or store.get(key, ROBOT_ID, role_defaults(roles, role))
+        state = (stored_before or {}).get(key) or store.get(key, robot_id, role_defaults(roles, role))
         before = state
         before_states.append(state)
         k = 0
@@ -262,7 +263,7 @@ async def debrief(run_dir: "str | Path", gateway: Gateway, *, preset=None, roles
             state = apply_event(state, e, roll_d20(int(seed), run_index, pid, k))
         state = end_of_run(state, clean=not any(e.kind == "failure" for e in mine))
         after_states.append(state)
-        trust_rows.append({"person": pid, "robot_id": ROBOT_ID, "before": round(before.trust, 4),
+        trust_rows.append({"person": pid, "robot_id": robot_id, "before": round(before.trust, 4),
                            "after": round(state.trust, 4), "stage_before": stage_for(before.trust),
                            "stage_after": state.stage})
     store.put_many(after_states, mark_run=run_id, before=before_states)  # trust and marker, one transaction
@@ -272,7 +273,7 @@ async def debrief(run_dir: "str | Path", gateway: Gateway, *, preset=None, roles
     return result
 
 
-POST_BUDGET_USD = 2.0  # the most a debrief and report may spend on top of the run itself
+POST_BUDGET_USD = 2.0  # the most a debrief and report may spend when the run did not set its own (post_budget_usd)
 
 
 def make_post_gateway(run_dir: "str | Path") -> Gateway:
@@ -302,4 +303,4 @@ def make_post_gateway(run_dir: "str | Path") -> Gateway:
             "cache_read_tokens": res.cache_read_tokens, "cache_write_tokens": res.cache_write_tokens,
             "cost_usd": res.cost_usd, "latency_s": res.latency_s})
 
-    return make_gateway(provider, roles, Budget(POST_BUDGET_USD), on_usage)
+    return make_gateway(provider, roles, Budget(float(d.meta.get("post_budget_usd") or POST_BUDGET_USD)), on_usage)

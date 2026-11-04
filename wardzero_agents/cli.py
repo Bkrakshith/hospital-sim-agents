@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import getpass
 import importlib.util
 import json
@@ -315,9 +316,32 @@ def _key_check(loaded) -> None:
 def _refuse_if_active() -> None:
     from .memory import data_dir
     from .memory.runlock import active_run
-    other = active_run(data_dir())
+    from .ros.agent_node import LOCK_PARENT_ENV
+    mine = os.getpid() if os.environ.get(LOCK_PARENT_ENV) == str(os.getpid()) else None  # held by this run command
+    other = active_run(data_dir(), ignore_pid=mine)
     if other is not None:
         raise CliError(f"Run {other} is active; stop it first.")
+
+
+@contextlib.contextmanager
+def _hold_run_lock(name: str):
+    """The run lock for the whole of a run: the simulation, the voice step, the debrief and the report. A reset,
+    a restore or another run cannot slip in between them. The agent node sees WARDZERO_RUN_LOCK_PARENT and
+    does not take it again."""
+    from .memory import data_dir
+    from .memory.runlock import RunActive, RunLock
+    from .ros.agent_node import LOCK_PARENT_ENV
+    try:
+        lock = RunLock(data_dir(), name)
+        lock.__enter__()
+    except RunActive as exc:
+        raise CliError(f"{str(exc).capitalize()}.") from None
+    os.environ[LOCK_PARENT_ENV] = str(os.getpid())
+    try:
+        yield
+    finally:
+        os.environ.pop(LOCK_PARENT_ENV, None)
+        lock.__exit__(None, None, None)
 
 
 def _stage(loaded, root: Path, run_name: str, overrides: dict, meta: dict) -> tuple[Path, "LoadedScenario"]:  # noqa: F821
@@ -357,22 +381,49 @@ def _bot(args, staged, claude_default: bool = True) -> str:
     return "claude" if claude_default and _claude_key_present() else "reception"
 
 
-def _bot_children(bot: str, sp: str, rd: str) -> list:
+def _robot_env(domain: Optional[int], with_keys: bool = False) -> dict:
+    """The environment of a robot-side process: on the robot's domain, so it never joins the people's."""
+    env = _child_env(with_keys=with_keys)
+    if domain is not None:
+        env["ROS_DOMAIN_ID"] = str(domain)
+    return env
+
+
+def _bot_children(bot: str, rcfg: str, rd: str, domain: Optional[int] = None) -> list:
+    """The robot-side children. rcfg is the robot's own config file (robot_config.json), never the scenario
+    with its people; domain is the run's robot domain (the robot is on it, and only on it)."""
+    dom = ["--domain", str(domain)] if domain is not None else []
     if bot == "reception":
-        return [Child("reception_bot", _module("wardzero_agents.examples.reception_bot", "--scenario", sp))]
+        return [Child("reception_bot", _module("wardzero_agents.examples.reception_bot", "--robot-config", rcfg,
+                                               *dom), env=_robot_env(domain))]
     if bot == "claude":  # the one robot process that gets the key, like the agent node
-        return [Child("robot_claude", _module("wardzero_agents.robots.claude_robot", "--scenario", sp,
-                                              "--run-dir", rd), env=_child_env(with_keys=True))]
+        return [Child("robot_claude", _module("wardzero_agents.robots.claude_robot", "--robot-config", rcfg,
+                                              "--run-dir", rd, *dom), env=_robot_env(domain, with_keys=True))]
     return []
 
 
-def _start_live(args, loaded, overrides: dict, meta: dict, out: Optional[dict] = None) -> int:
+def _baseline_bot(args, staged) -> str:
+    """The mind of the built-in robot in the baseline arm: Claude with a key, else the placeholder."""
+    if args.no_robot or not staged.scenario.robot.enabled:
+        return "none"
+    return "claude" if _claude_key_present() else "reception"
+
+
+def _start_live(args, loaded, overrides: dict, meta: dict, out: Optional[dict] = None, *,
+                run_usd: Optional[float] = None, baseline: bool = False) -> int:
+    """One live run. run_usd is what this run may spend in all (people, robot and the debrief and report);
+    default the scenario's whole budget."""
+    from .budget import split
+    from .robots.view import write_robot_config
     ts = _positive(args.time_scale, "--time-scale")
     ready = _positive(args.ready_timeout, "--ready-timeout")
     _key_check(loaded)
     _need_ros()
     _refuse_if_active()
-    overrides = {**overrides, **_robot_override(loaded, args)}
+    rb = split(loaded.scenario.budget_usd if run_usd is None else run_usd)
+    overrides = {**overrides, **_robot_override(loaded, args), "budget_usd": round(rb.people, 6)}
+    meta = {**meta, "run_budget_usd": round(rb.total, 6), "post_budget_usd": round(rb.post, 6),
+            "robot_budget_usd": round(rb.robot, 6)}
     sim = getattr(args, "sim", None) or "stub"
     meta = {**meta, "sim": sim, "time_scale": ts, "lockstep": bool(args.lockstep or loaded.scenario.lockstep or (sim == "isaac" and args.record)),
             "panel": not args.no_panel}
@@ -385,8 +436,10 @@ def _start_live(args, loaded, overrides: dict, meta: dict, out: Optional[dict] =
         if val is not None:  # the Isaac host also gets robot_domain; the Studio lists runs by project_id
             meta[key] = val
     run_dir, staged = _stage(loaded, runs_dir(), loaded.scenario.id, overrides, meta)
-    bot = _bot(args, staged)
+    bot = _baseline_bot(args, staged) if baseline else _bot(args, staged)
     rd, sp = str(run_dir), str(staged.scenario_path)
+    robot_domain = getattr(args, "robot_domain", None)
+    rcfg = str(write_robot_config(run_dir, staged, domain=robot_domain, budget_usd=rb.robot))
     children = [
         _sim_child(args, rd, sp, ts, ready),
         Child("agents", _module("wardzero_agents.ros.agent_node", "--run-dir", rd, "--scenario", sp),
@@ -394,7 +447,7 @@ def _start_live(args, loaded, overrides: dict, meta: dict, out: Optional[dict] =
         Child("director", _module("wardzero_agents.ros.director_node", "--run-dir", rd, "--scenario", sp,
                                   *(["--no-panel"] if args.no_panel else ["--panel-port", str(args.panel_port)]))),
     ]
-    children += _bot_children(bot, sp, rd)
+    children += _bot_children(bot, rcfg, rd, robot_domain)
     if out is not None:
         out["run_dir"] = run_dir
     print(f"Run folder: {run_dir}", flush=True)
@@ -427,7 +480,9 @@ def _sim_child(args, rd: str, sp: str, ts: float, ready: float) -> Child:
         return Child("isaac_host", argv, kill_after_s=ISAAC_KILL_AFTER_S, ends_run=True)  # no key in its env
     return Child("stub_sim", _module("wardzero_agents.ros.stub_sim_node", "--run-dir", rd, "--scenario", sp,
                                      "--time-scale", str(ts), "--ready-timeout", str(ready),
-                                     "--wait-for", "agents,director", *lock), ends_run=True)
+                                     "--wait-for", "agents,director", *lock,
+                                     *(["--robot-domain", str(args.robot_domain)]
+                                       if getattr(args, "robot_domain", None) is not None else [])), ends_run=True)
 
 
 def _sim_label(args) -> str:
@@ -482,27 +537,46 @@ def _ran_for_real(run_dir: Path) -> bool:
 
 
 def _cmd_batch(args, loaded) -> int:
-    from .bench.batch import run_batch
+    """Repeats (and the baseline arm). The scenario's budget is the cap for the whole batch: each run gets what
+    remains divided by the runs left, and the batch stops cleanly, with its report, when the cap is reached."""
+    from .bench.batch import BASELINE_PROFILE, run_batch
+    from .budget import cap_reached, per_run, run_cost
     from .config.presets import preset_for_run
     if args.repeat < 1:
         raise CliError("--repeat must be at least 1")
     preset = preset_for_run({"preset_id": loaded.scenario.preset_id, "scenario_id": loaded.scenario.id})
     meta = {"mode": "live", "scenario_source": str(loaded.scenario_path)}
+    cap = float(loaded.scenario.budget_usd)
+    arms = 2 if args.baseline and loaded.scenario.robot.profile != BASELINE_PROFILE else 1
+    state = {"remaining": cap, "left": args.repeat * arms}
 
     def runner(seed: int, profile: Optional[str]) -> Path:
         overrides: dict = {"seed": seed}
         if profile:
             overrides["robot"] = {**loaded.scenario.robot.model_dump(), "profile": profile}
         out: dict = {}
-        code = _start_live(args, loaded, overrides, meta, out=out)
-        if code != 0 or "run_dir" not in out:
-            raise CliError(f"A run of the batch ended with code {code}; the batch stops here.", code or 1)
-        if _ran_for_real(out["run_dir"]):
-            _post_run(out["run_dir"], report=not args.no_report)
-        return out["run_dir"]
+        share = per_run(state["remaining"], state["left"])
+        state["left"] -= 1
+        try:
+            code = _start_live(args, loaded, overrides, meta, out=out, run_usd=share, baseline=bool(profile))
+            if code != 0 or "run_dir" not in out:
+                raise CliError(f"A run of the batch ended with code {code}; the batch stops here.", code or 1)
+            if _ran_for_real(out["run_dir"]):
+                _post_run(out["run_dir"], report=not args.no_report)
+            return out["run_dir"]
+        finally:
+            if "run_dir" in out:  # people, robot, debrief and report: all of it counts against the cap
+                state["remaining"] -= run_cost(out["run_dir"])
+                print(f"Spent ${cap - state['remaining']:.2f} of the ${cap:.2f} limit.", flush=True)
+
+    def should_stop() -> Optional[str]:
+        if cap_reached(state["remaining"], cap):
+            return f"The spending limit of ${cap:.2f} was reached; the remaining runs were not started."
+        return None
 
     batch_dir = run_batch(loaded, args.repeat, args.carry_memory, args.baseline, runner=runner, preset=preset,
-                          log=lambda m: print(m, flush=True))
+                          log=lambda m: print(m, flush=True), should_stop=should_stop, spent=lambda: cap - state["remaining"],
+                          cap_usd=cap)
     print(f"Batch (repeatability): {batch_dir / 'report.html'}", flush=True)
     return 0
 
@@ -510,6 +584,11 @@ def _cmd_batch(args, loaded) -> int:
 def cmd_run(args) -> int:
     _resolve_sim(args)
     loaded = _load(args.scenario)
+    with _hold_run_lock(f"{loaded.scenario.id}-{datetime.now():%H%M%S}"):
+        return _run_locked(args, loaded)
+
+
+def _run_locked(args, loaded) -> int:
     if args.repeat > 1 or args.baseline:
         return _cmd_batch(args, loaded)
     out: dict = {}
@@ -670,7 +749,10 @@ def cmd_replay(args) -> int:
         Child("replay", _module("wardzero_agents.ros.replay_node", "--run-dir", rd, "--intents",
                                 "--record-dir", str(out_dir))),
     ]
-    children += _bot_children(bot, sp, str(out_dir))
+    from .budget import split
+    from .robots.view import write_robot_config
+    rcfg = str(write_robot_config(out_dir, staged, domain=None, budget_usd=split(staged.scenario.budget_usd).robot))
+    children += _bot_children(bot, rcfg, str(out_dir))
     print(f"Replaying the intents of {src.name} at x{ts:g}, robot: {bot}. Recording to {out_dir}", flush=True)
     return supervise(children, env=_child_env())
 
