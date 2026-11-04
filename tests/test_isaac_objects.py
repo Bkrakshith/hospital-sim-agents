@@ -219,3 +219,28 @@ def test_the_asset_of_an_instrument_follows_its_label():
     assert ob.instrument_asset("Adson forceps") == "adson_forceps"
     assert ob.instrument_asset("scalpel") == "scalpel_handle"
     assert ob.instrument_asset("") in ob.INSTRUMENT_ASSETS and ob.instrument_asset("mystery thing") in ob.INSTRUMENT_ASSETS
+
+
+def test_the_bodies_mirror_objects_once_a_frame_after_the_poses(world):
+    from wardzero_agents.isaac_host.bodies import IsaacBodies
+
+    seen = []
+
+    class Spy:
+        def update(self):
+            seen.append((world.robot.x, world.people["P1"].x if "P1" in world.people else None))
+
+    bodies = IsaacBodies(robot=lambda: (7.0, 1.0, 0.0))
+    bodies.objects = Spy()
+    bodies.step(world, 0.1)
+    assert seen and seen[0][0] == 7.0  # the robot's Isaac pose was already in the world when the objects were drawn
+
+
+def test_the_host_takes_a_fire_mode():
+    from wardzero_agents.isaac_host import app
+
+    base = ["--run-dir", "/tmp/x", "--scenario", "s.yaml"]
+    assert app.parse_args(base).fire == "flow"
+    assert app.parse_args(base + ["--fire", "proxy"]).fire == "proxy"
+    with pytest.raises(SystemExit):
+        app.parse_args(base + ["--fire", "lava"])

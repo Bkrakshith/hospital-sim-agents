@@ -10,7 +10,8 @@ Behavior System's people):
 2. open the stage through the culling wrapper layer (``<run>/stage.usda``);
 3. a CPU PhysX scene (``enableGPUDynamics=False``, MBP broadphase);
 4. the baked collision USD;
-5. the people (I2): the characters, the seat effectors and the lying patients are authored here;
+5. the people (I2): the characters, the seat effectors and the lying patients are authored here, then the
+   objects (I3): props and call lights (a fire appears when the world starts one);
 6. bake the NavMesh;
 7. one robot obstacle cylinder, collisions off;
 8. ``timeline.play()``, then the characters' Behavior agents are bound to their controllers (I2);
@@ -40,6 +41,7 @@ log = logging.getLogger("wardzero.isaac.app")
 EXTENSIONS = (
     "isaacsim.ros2.bridge",  # the bundled Humble rclpy and the OmniGraph bridge nodes (I4)
     "isaacsim.replicator.agent.core",  # IRA: Behavior System, NavMesh, character commands (I2)
+    "omni.flowusd",  # Flow fire and smoke (I3); nothing is simulated until a fire exists
 )
 KEY_ENV = ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_AUTH_TOKEN", "WARDZERO_KEY_FILE")
 CAMERA = "/OmniverseKit_Persp"
@@ -88,6 +90,8 @@ def parse_args(argv=None) -> argparse.Namespace:
     p.add_argument("--stage", type=Path, default=stage_mod.STAGE_USD)
     p.add_argument("--collision", type=Path, default=stage_mod.COLLISION_USD)
     p.add_argument("--renderer", default="RaytracedLighting")
+    p.add_argument("--fire", choices=("flow", "proxy", "none"), default=os.environ.get("WARDZERO_FIRE", "flow"),
+                   help="how a fire is drawn: Flow fire and smoke (default), emissive cones, or not at all")
     p.add_argument("--texture-max", type=int, default=None,
                    help="largest texture side in pixels (64..32768, a power of two); bigger textures are downsampled. "
                         f"Default: {TEXTURE_MAX_HEADLESS} when headless (it saves about 480 MiB per DH character), "
@@ -124,6 +128,7 @@ class IsaacHost:
         self.bodies = None
         self.svc = None  # the SimService (made before the people, which need its StubWorld)
         self.people = None  # IsaacPeople
+        self.objects = None  # IsaacObjects: props, fire and call lights
         self.startup: dict = {}
         self._stop = False
         self._t0 = time.monotonic()
@@ -206,6 +211,15 @@ class IsaacHost:
         self._updates(5)
         self._mark("people")
 
+    def spawn_objects(self) -> None:  # 5b: props before the NavMesh bake (kinematic bodies stay out of it)
+        from .objects_isaac import IsaacObjects
+
+        self.objects = IsaacObjects(self.stage, self.svc.world, self.args.fire)
+        self.objects.update()
+        self.bodies.objects = self.objects
+        self._updates(2)
+        self._mark("objects")
+
     def bind_people(self) -> None:  # 8b: after play the Behavior System has the agents; they get their controllers
         self.people.bind(self.app, self.bodies, self.svc.world, fps=self.args.fps)
         self._mark("people_bound")
@@ -260,6 +274,7 @@ class IsaacHost:
             self.physics()
             self.make_service()
             self.spawn_people()
+            self.spawn_objects()
             self.bake_navmesh()
             self.robot_proxy()
             self.play()

@@ -37,6 +37,7 @@ class IsaacBodies(Bodies):
         self.robot: Optional[PoseSource] = robot
         self.controllers: dict[str, "PersonController"] = {}
         self.props: dict[str, object] = {}  # person id -> the lying prop (people.BedProp) of a patient in a bed
+        self.objects = None  # objects_isaac.IsaacObjects (I3): mirrors items, fires and call lights once a frame
         self.spawner = spawner  # makes a controller for a person who joined after the start (None: stays kinematic)
         self._unserved: set[str] = set()
         self._last_t: Optional[float] = None
@@ -75,6 +76,8 @@ class IsaacBodies(Bodies):
         for q, point in trails:
             self._carry(world, q, point, dt)
         self.read_back(world)
+        if self.objects is not None:
+            self.objects.update()  # after the poses: held items go where their holder is now
 
     def _carry(self, world: "StubWorld", pid: str, point: tuple[float, float], dt: float) -> None:
         """A led person: a patient in a bed is wheeled (the lying prop moves), anyone else's character walks after the leader."""
