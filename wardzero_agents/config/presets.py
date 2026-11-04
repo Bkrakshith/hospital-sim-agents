@@ -248,8 +248,12 @@ def _persona_dict(c: CharacterSpec, role: RolePreset, mood: MoodPreset) -> dict:
     }
 
 
-def preset_to_scenario(preset: ScenarioPreset, root: "str | Path", dest: "str | Path | None" = None):
-    """Stage a loadable scenario folder for a preset and load it. Minimal: Studio compiles richer ones."""
+def preset_to_scenario(preset: ScenarioPreset, root: "str | Path", dest: "str | Path | None" = None, *,
+                       characters: "list[CharacterSpec] | None" = None, scenario_extra: "dict | None" = None,
+                       cast_extra: "dict[str, dict] | None" = None, robot_extra: "dict | None" = None):
+    """Stage a loadable scenario folder for a preset and load it. The Studio compiler passes its own
+    characters (default: the preset's), top-level scenario fields (scenario_extra), per-cast-entry fields
+    such as memory_key (cast_extra, by character id) and robot block fields (robot_extra)."""
     from .loader import load_scenario
     root = Path(root)
     dest = Path(dest) if dest is not None else Path(tempfile.mkdtemp(prefix=f"preset_{preset.id}_"))
@@ -263,7 +267,7 @@ def preset_to_scenario(preset: ScenarioPreset, root: "str | Path", dest: "str | 
     from ..site import load_site
     site = load_site(root)
     personas, cast = {}, []
-    for c in preset.characters:
+    for c in (preset.characters if characters is None else characters):
         personas[c.id] = _persona_dict(c, roles[c.role], moods[c.mood])
         entry: dict = {"id": c.id, "persona": c.id, "name": c.name}
         seat = next((s.id for s in site.seats.values() if abs(s.x - c.x) < 0.05 and abs(s.y - c.y) < 0.05), None)
@@ -273,6 +277,7 @@ def preset_to_scenario(preset: ScenarioPreset, root: "str | Path", dest: "str | 
             entry["seat"] = seat
         else:
             entry["start"] = {"x": c.x, "y": c.y, "yaw": c.yaw}
+        entry.update((cast_extra or {}).get(c.id, {}))
         cast.append(entry)
     (dest / "personas.yaml").write_text(yaml.safe_dump({"personas": personas}, sort_keys=False))
     (dest / "storyboards" / f"{preset.id}.yaml").write_text(yaml.safe_dump(
@@ -281,9 +286,11 @@ def preset_to_scenario(preset: ScenarioPreset, root: "str | Path", dest: "str | 
     scenario = {
         "id": preset.id, "preset_id": preset.id, "known_places": preset.known_places, "duration_min": preset.duration_min, "seed": 7,
         "provider": "claude", "storyboard": f"../storyboards/{preset.id}.yaml", "deck": "../cards/studio.yaml",
-        "robot": {"x": preset.robot_start.x, "y": preset.robot_start.y, "yaw": preset.robot_start.yaw},
+        "robot": {"x": preset.robot_start.x, "y": preset.robot_start.y, "yaw": preset.robot_start.yaw,
+                  **(robot_extra or {})},
         "robot_brief": preset.robot_brief, "objects": preset.objects,
         "ladder": {int(k): v for k, v in preset.ladder.items()}, "cast": cast}
+    scenario.update(scenario_extra or {})
     path = dest / "scenarios" / f"{preset.id}.yaml"
     path.write_text(yaml.safe_dump(scenario, sort_keys=False))
     return load_scenario(path)

@@ -54,7 +54,7 @@ def sample_instance(persona: Persona, cast: CastEntry, scenario_seed: int, index
         person_id=cast.id,
         persona_id=persona.id,
         seed=seed,
-        memory_key=f"{persona.id}#{seed}",
+        memory_key=cast.memory_key or f"{persona.id}#{seed}",
         display_name=name,
         age=age,
         sex=sex,

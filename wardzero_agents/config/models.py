@@ -73,6 +73,7 @@ class CastEntry(_Model):
     companion_of: Optional[str] = None
     seed: Optional[int] = None
     name: Optional[str] = None  # overrides the sampled display name
+    memory_key: Optional[str] = None  # overrides persona#seed (Studio keys memory per project character)
 
 
 class ModelRoles(_Model):
@@ -124,6 +125,7 @@ class Scenario(_Model):
     robot_brief: Optional[dict] = None  # the job told to the robot; published latched on task/brief
     objects: list[dict] = Field(default_factory=list)  # items and call bells present at the start
     preset_id: Optional[str] = None  # the Studio scenario preset this scenario was built from
+    word_of_mouth_p: Optional[float] = Field(default=None, ge=0, le=1)  # None: the campaign default
     campaign: bool = False  # trust carries across runs and word of mouth is rolled (Studio sets it)
     ladder: dict[int, str] = Field(default_factory=dict)  # what each trust stage looks like (0..4)
     cast: list[CastEntry]

@@ -31,4 +31,5 @@ def start_campaign(loaded, ltm, db_path, run_index: int, roles: dict, robot_id: 
         s = store.get(inst.memory_key, robot_id, role_defaults(roles, inst.role))
         stages[inst.memory_key] = s.stage
         mems[inst.memory_key] = ltm.has_robot_memories(inst.memory_key, robot_id)
-    return stages, mems, word_of_mouth(loaded.scenario.seed, run_index, WORD_OF_MOUTH_P)
+    return stages, mems, word_of_mouth(loaded.scenario.seed, run_index,
+                         WORD_OF_MOUTH_P if loaded.scenario.word_of_mouth_p is None else loaded.scenario.word_of_mouth_p)

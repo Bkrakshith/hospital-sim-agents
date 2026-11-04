@@ -11,6 +11,7 @@
     hhumans memory snapshot save|restore|list [NAME]
     hhumans kb build [--embedder hash|fastembed] [--scenario S]
     hhumans keys set|clear|status claude|openai
+    hhumans studio [--port 8770] [--no-browser]
     hhumans audit
 
 `run` checks the key in this process, copies the scenario and its configs into a new run folder
@@ -337,6 +338,10 @@ def _start_live(args, loaded, overrides: dict, meta: dict, out: Optional[dict] =
     overrides = {**overrides, **_robot_override(loaded, args)}
     meta = {**meta, "sim": "stub", "time_scale": ts, "lockstep": bool(args.lockstep or loaded.scenario.lockstep),
             "panel": not args.no_panel}
+    for key, val in (("robot_domain", getattr(args, "robot_domain", None)),
+                     ("project_id", getattr(args, "project_id", None))):
+        if val is not None:  # recorded only; the Isaac wiring reads robot_domain later, the Studio lists runs by project_id
+            meta[key] = val
     run_dir, staged = _stage(loaded, runs_dir(), loaded.scenario.id, overrides, meta)
     bot = _bot(args, staged)
     rd, sp = str(run_dir), str(staged.scenario_path)
@@ -803,9 +808,17 @@ def _live_flags() -> argparse.ArgumentParser:
     p.add_argument("--bot", choices=("claude", "reception", "none"), default=None,
                    help="the robot to run: claude (the built-in Claude robot; the default when a Claude key is "
                         "set), reception (the placeholder) or none")
+    p.add_argument("--robot-domain", type=int, default=None, metavar="N",
+                   help="ROS_DOMAIN_ID of the developer's robot (recorded in meta.json; Isaac wiring comes later)")
+    p.add_argument("--project-id", default=None, help=argparse.SUPPRESS)  # set by the Studio
     p.add_argument("--ready-timeout", type=float, default=DEFAULT_READY_TIMEOUT_S,
                    help="wall seconds the sim waits for the agents and director to come up")
     return p
+
+
+def cmd_studio(args) -> int:
+    from .studio.server import serve
+    return serve(args.port, open_browser=not args.no_browser)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -877,6 +890,11 @@ def build_parser() -> argparse.ArgumentParser:
     ky.add_argument("action", choices=("set", "clear", "status"))
     ky.add_argument("provider", choices=("claude", "openai"))
     ky.set_defaults(func=cmd_keys)
+
+    st = sub.add_parser("studio", help="open the Scenario Studio in the browser")
+    st.add_argument("--port", type=int, default=8770)
+    st.add_argument("--no-browser", action="store_true")
+    st.set_defaults(func=cmd_studio)
 
     a = sub.add_parser("audit", help="run the robot fairness audit on the live ROS graph once")
     a.add_argument("--wait", type=float, default=2.0, help="seconds of discovery before the audit")
