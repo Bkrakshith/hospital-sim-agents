@@ -256,6 +256,10 @@ The people carry on with their reflexes and what they were already doing. Check 
 are `auth` (401/403: the key), `model_not_found` (404: the model name or account access),
 `bad_request` (400) and `too_large` (413). Network errors and 5xx are not counted.
 
+If the key check says "failed (APIConnectionError)" although the network works, check
+`python -c "import brotli; print(brotli.__version__)"`. Ubuntu 22.04 ships Brotli 1.0.9, which the SDK HTTP
+client cannot use. Run `pip install "Brotli>=1.2"` in the environment.
+
 ROS 2 installs pytest plugins that clash with pytest 8. `pyproject.toml` switches them off.
 If you still see plugin errors, run `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -q -m "not ros"`.
 
