@@ -168,8 +168,11 @@ class IsaacHost:
         self._mark("extensions")
 
     def open_stage(self) -> None:  # 2
+        from . import fixes
+
         off = stage_mod.compute_cull(self.plan, self.args.stage, self.args.collision)
-        wrapper = stage_mod.write_wrapper(self.run_dir / "stage.usda", off, self.args.stage)
+        fix_off, authored = fixes.stage_fixes(self.loaded.site, self.plan, self.args.stage)
+        wrapper = stage_mod.write_wrapper(self.run_dir / "stage.usda", off + fix_off, self.args.stage, authored)
         self.stage = stage_mod.open_stage(self.app, wrapper)
         self.startup["culled_prims"] = len(off)
         self.startup["kept"] = self.plan.describe()

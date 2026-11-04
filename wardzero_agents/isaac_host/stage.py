@@ -216,8 +216,9 @@ def compute_cull(plan: CullPlan, stage_path: Path = STAGE_USD, collision_path: O
     return off
 
 
-def write_wrapper(out_path: Path, off: Iterable[str], stage_path: Path = STAGE_USD) -> Path:
-    """A root layer that sublayers the real stage and deactivates ``off``."""
+def write_wrapper(out_path: Path, off: Iterable[str], stage_path: Path = STAGE_USD,
+                  authored: Optional[Mapping[str, Mapping[str, object]]] = None) -> Path:
+    """A root layer that sublayers the real stage, deactivates ``off`` and authors ``authored`` ({prim: {attribute: bool or float}})."""
     from pxr import Sdf
 
     out_path = Path(out_path)
@@ -234,6 +235,12 @@ def write_wrapper(out_path: Path, off: Iterable[str], stage_path: Path = STAGE_U
         spec = Sdf.CreatePrimInLayer(lay, p)
         spec.specifier = Sdf.SpecifierOver
         spec.active = False
+    for p, attrs in (authored or {}).items():
+        spec = Sdf.CreatePrimInLayer(lay, p)
+        spec.specifier = Sdf.SpecifierOver
+        for name, value in attrs.items():
+            kind = Sdf.ValueTypeNames.Bool if isinstance(value, bool) else Sdf.ValueTypeNames.Float
+            Sdf.AttributeSpec(spec, name, kind).default = value if isinstance(value, bool) else float(value)
     lay.Save()
     return out_path
 
