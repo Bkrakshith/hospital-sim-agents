@@ -89,6 +89,7 @@ class Runner:
         self._folder: Optional[str] = None
         self._log_pos, self._log_partial, self._finished, self._stopping = 0, b"", False, False
         self._log_lines: collections.deque = collections.deque(maxlen=8)
+        self._diag: Optional[tuple] = None  # (the finished process, what _failure found)
         self._cost_before = 0.0  # what earlier run folders of this Start spent
         self._reset_view()
 
@@ -348,10 +349,29 @@ class Runner:
             if phase == "done" and self._proc is not None:
                 out["exit_code"] = self._proc.returncode
                 if self._proc.returncode not in (0, None, 130):  # 130 is a stop by the user; anything else failed
-                    from ..keys import redact
-                    tail = redact("\n".join(list(self._log_lines)[-6:]))[-800:]
-                    out["error"] = f"The run stopped with exit code {self._proc.returncode}." + (f"\n{tail}" if tail else "")
+                    out.update(self._failure())
             return out
+
+    def _failure(self) -> dict:
+        """Why the finished run failed and how to fix it, read once from the whole run log (the last lines are often
+        only the other processes being stopped)."""
+        if self._diag is not None and self._diag[0] is self._proc:
+            return self._diag[1]
+        from ..diagnose import diagnose, format_problems, read_log
+        from ..keys import redact
+        rc = self._proc.returncode
+        lines = read_log(self._log_path) if self._log_path is not None else list(self._log_lines)
+        found = diagnose(lines, rc, self._log_path)
+        text = f"The run stopped with exit code {rc}.\n\n" + redact(format_problems(found))
+        if any(p.key == "unknown" for p in found):
+            tail = redact("\n".join(list(self._log_lines)[-6:]))[-800:]
+            if tail:
+                text += "\n\nLast lines of the log:\n" + tail
+        info = {"error": text,
+                "problems": [{"title": redact(p.title), "fix": [redact(f) for f in p.fix]} for p in found],
+                "log_path": str(self._log_path) if self._log_path is not None else None}
+        self._diag = (self._proc, info)
+        return info
 
     def busy(self) -> bool:
         """A run is going: starting, running, in its debrief, voice step or report. Resets, project deletes and

@@ -129,6 +129,25 @@ def _resolve_sim(args) -> None:
         raise CliError(f"{', '.join(only)} need{'s' if len(only) == 1 else ''} the Isaac host (--sim isaac).")
 
 
+def _check_isaac_start(args, loaded) -> None:
+    """Refuse an Isaac run that cannot work (a robot with no URDF, another Isaac Sim on the GPU) before anything
+    starts, with the fix."""
+    if getattr(args, "sim", None) != "isaac":
+        return
+    from .preflight import isaac_start_problems
+    from .robots.profile import get_profile
+    r = loaded.scenario.robot
+    profile = None
+    if r.enabled and not getattr(args, "no_robot", False):
+        try:
+            profile = get_profile(r.profile)
+        except KeyError:
+            raise CliError(f"Unknown robot '{r.profile}'. Save it on the Studio's Robot page first.") from None
+    problems = isaac_start_problems(profile)
+    if problems:
+        raise CliError("The Isaac run cannot start:\n  - " + "\n  - ".join(problems))
+
+
 def _need_ros() -> None:
     if not ros_available():
         raise CliError("ROS 2 is not sourced. Run `source $HG1_ROOT/env.sh` first.")
@@ -597,6 +616,7 @@ def _cmd_batch(args, loaded) -> int:
 def cmd_run(args) -> int:
     _resolve_sim(args)
     loaded = _load(args.scenario)
+    _check_isaac_start(args, loaded)
     with _hold_run_lock(f"{loaded.scenario.id}-{datetime.now():%H%M%S}"):
         return _run_locked(args, loaded)
 
@@ -723,6 +743,7 @@ def cmd_rerun(args) -> int:
                        "it cannot be rerun with the memories it started with.")
     with tempfile.TemporaryDirectory(prefix="hhumans-rerun-") as tmp:
         loaded = _load_recorded(src, meta, Path(tmp))
+        _check_isaac_start(args, loaded)
         source = meta.get("scenario_source") or meta.get("scenario_path")
         return _start_live(args, loaded, {"memory_snapshot": snap},
                            {"mode": "rerun", "rerun_of": src.name, "scenario_source": source})
@@ -1045,6 +1066,43 @@ def _live_flags() -> argparse.ArgumentParser:
     return p
 
 
+def cmd_doctor(args) -> int:
+    from .doctor import FIX, format_checks, run_checks
+    checks = run_checks()
+    print(format_checks(checks), flush=True)
+    return 1 if any(c.status == FIX for c in checks) else 0
+
+
+def _latest_studio_log() -> Optional[Path]:
+    from .memory import data_dir
+    logs = list((data_dir() / "studio" / "projects").glob("*/last_run.log"))
+    return max(logs, key=lambda f: f.stat().st_mtime) if logs else None
+
+
+def cmd_diagnose(args) -> int:
+    from .diagnose import diagnose, format_problems, read_log
+    path = Path(args.log).expanduser() if args.log else _latest_studio_log()
+    if path is None:
+        raise CliError("No Studio run log found. Give the log file: `hhumans diagnose FILE` "
+                       "(save a run's output with `hhumans run ... 2>&1 | tee run.log`).")
+    if not path.is_file():
+        raise CliError(f"No log file at {path}")
+    lines = read_log(path)
+    code = None
+    for line in reversed(lines):  # the run's own last word on how it ended
+        if line.startswith("Run finished (exit code "):
+            try:
+                code = int(line.split("exit code ")[1].split(")")[0])
+            except (IndexError, ValueError):
+                pass
+            break
+    found = diagnose(lines, code if code is not None else 1, path)
+    print(f"Log: {path}\n", flush=True)
+    print(keys.redact(format_problems(found, show_lines=args.verbose)) if found else
+          "Nothing in this log looks like a failure.", flush=True)
+    return 0
+
+
 def cmd_studio(args) -> int:
     from .studio.server import serve
     return serve(args.port, open_browser=not args.no_browser)
@@ -1129,6 +1187,14 @@ def build_parser() -> argparse.ArgumentParser:
     st.add_argument("--port", type=int, default=8770)
     st.add_argument("--no-browser", action="store_true")
     st.set_defaults(func=cmd_studio)
+
+    dr = sub.add_parser("doctor", help="check this computer can run WardZero (Isaac Sim, files, key, ROS, GPU, voices)")
+    dr.set_defaults(func=cmd_doctor)
+    dg = sub.add_parser("diagnose", help="say why a run failed and how to fix it, from its log "
+                                          "(default: the Studio's latest run)")
+    dg.add_argument("log", nargs="?", help="a run log file (the Studio keeps one per project: last_run.log)")
+    dg.add_argument("-v", "--verbose", action="store_true", help="also print the log line behind each problem")
+    dg.set_defaults(func=cmd_diagnose)
 
     a = sub.add_parser("audit", help="run the robot fairness audit on the live ROS graph once")
     a.add_argument("--wait", type=float, default=2.0, help="seconds of discovery before the audit")

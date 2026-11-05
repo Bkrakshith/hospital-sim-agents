@@ -97,7 +97,7 @@
     const tail = h("ul.tail", { "aria-label": "What was said" });
     const tailBox = h("section.rsec", h("h3.sub", "What was said"), tail, h("p.muted.small.empty-tail", "Nothing said yet. People start talking once the run begins."));
     const reportBtn = h("button.btn.primary.wide", { type: "button", hidden: true, onclick: () => { location.hash = "#/report"; } }, "Open the report");
-    const errBox = h("p.error");
+    const errBox = h("div.error", { role: "alert" });
 
     function drawSettings() {
       const p = P();
@@ -137,6 +137,17 @@
       refresh();
     }
 
+    // A failed run: each problem the log shows, with the steps that fix it (the server reads the whole log).
+    function drawProblems(s) {
+      const probs = s.problems || [];
+      if (!probs.length) { errBox.textContent = s.error; return; }
+      const items = probs.map((p) => h("li.problem", h("strong", p.title), p.fix.length ? h("ol.fix", ...p.fix.map((f) => h("li", f))) : null));
+      errBox.replaceChildren(
+        h("span", "The run stopped (exit code " + s.exit_code + "). " + (probs.length === 1 ? "What went wrong:" : "What went wrong, most likely cause first:")),
+        h("ul.problems", ...items),
+        s.log_path ? h("span.muted.small", "Full log: " + s.log_path) : null);
+    }
+
     function refresh() {
       const s = WZ.state || {}, running = !!s.running;
       startBtn.hidden = running; stopBtn.hidden = !running;
@@ -152,7 +163,7 @@
       phases.replaceChildren(...PHASES.map(([id, label], i) => h("li.phase" + (i < idx ? ".past" : i === idx ? ".now" : ""), { "aria-current": i === idx ? "step" : false }, h("i"), label)));
       stateBox.textContent = running ? (ph === "debrief" ? "The people are being asked how it went." : ph === "report" ? "Writing the report. This takes a moment." : "Time " + clock(s.t) + " of " + clock(P().duration_min * 60))
         : ph === "done" && s.run_id ? (s.error ? "The run ended with a problem (exit code " + s.exit_code + ")." : "The run is finished.") : "";
-      if (!running && ph === "done" && s.error) errBox.textContent = s.error;
+      if (!running && ph === "done" && s.error) drawProblems(s);
       reportBtn.hidden = !(!running && s.has_report);
       chip.textContent = running ? (ph === "running" || !ph ? "Live · " + clock(s.t) : "Run ending") : (ph === "done" && s.run_id ? "Run finished" : "Start layout");
       // transcript

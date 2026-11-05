@@ -156,6 +156,19 @@ def follow_view(pose: tuple, framing: str = "follow") -> tuple[tuple, tuple]:
     return (ex, ey, height), (x, y, target_z)
 
 
+START_VIEW_FRAMING = "desk"
+
+
+def start_view(robot_pose: Optional[tuple]) -> Optional[tuple[tuple, tuple, float]]:
+    """(eye, target, focal mm) of the headed window when a run starts: where the scene happens, at the robot's start
+    post, framed like the desk camera (in front of the robot, below the ceiling, wide enough for the people who come
+    to it). None without a robot: the caller frames the kept rooms instead."""
+    if robot_pose is None:
+        return None
+    eye, target = follow_view(robot_pose, START_VIEW_FRAMING)
+    return eye, target, FRAMINGS[START_VIEW_FRAMING][4]
+
+
 # ---- the preview file -------------------------------------------------------------------------
 class JpegSink:
     """Writes ``latest.jpg`` by writing a temporary file and renaming it, so the Studio never reads half a frame."""

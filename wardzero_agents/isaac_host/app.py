@@ -314,8 +314,19 @@ class IsaacHost:
         try:
             from isaacsim.core.rendering_manager import ViewportManager
 
-            eye, target = stage_mod.view_of(self.plan, self.loaded.site)
+            r = self.loaded.scenario.robot
+            view = recording.start_view((r.x, r.y, r.yaw) if r.enabled else None)
+            if view is None:  # no robot: the kept rooms from above
+                eye, target = stage_mod.view_of(self.plan, self.loaded.site)
+            else:  # the robot's post, below the ceiling, with the people who come to it
+                eye, target, focal = view
+                from pxr import UsdGeom
+                cam = UsdGeom.Camera(self.stage.GetPrimAtPath(CAMERA))
+                if cam:
+                    cam.GetFocalLengthAttr().Set(float(focal))
             ViewportManager.set_camera_view(CAMERA, eye=list(eye), target=list(target))
+            log.info("viewport framed: eye %s looking at %s", tuple(round(v, 2) for v in eye),
+                     tuple(round(v, 2) for v in target))
         except Exception as exc:  # a nicety only
             log.warning("could not frame the viewport: %s", exc)
 

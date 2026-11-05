@@ -67,7 +67,7 @@ class Ctx:
 
     def __init__(self, data: Path, config_root: Path, runs_dir: Path, runner: Runner,
                  convert_command=None, probe=None, probe_every: float = PROBE_EVERY_S, isaac_installed=None,
-                 isaac_missing=None):
+                 isaac_missing=None, isaac_start_problems=None):
         self.data, self.config_root, self.runs_dir, self.runner = data, config_root, runs_dir, runner
         self.projects = ProjectStore(data)
         self.roles, self.moods = load_roles(config_root), load_moods(config_root)
@@ -83,6 +83,9 @@ class Ctx:
         self.isaac_installed = isaac_installed or _isaac_installed
         # what an Isaac run still needs (stage, collision USD): checked for real unless a test injects the install
         self.isaac_missing = isaac_missing or ((lambda: []) if isaac_installed else _isaac_missing)
+        # what stops an Isaac run with this robot (no URDF, another Isaac running); tests that fake Isaac fake this too
+        self.isaac_start_problems = isaac_start_problems or ((lambda profile: []) if isaac_installed
+                                                             else _isaac_start_problems)
 
 
 # ---- helpers ----------------------------------------------------------------------------------
@@ -128,6 +131,25 @@ def check_sim(ctx: Ctx, project: Project) -> None:
     missing = ctx.isaac_missing()
     if missing:
         raise ProjectError("Isaac cannot run yet: " + " ".join(missing) + " Pick Quick 2D meanwhile.")
+
+
+def _isaac_start_problems(profile) -> list[str]:
+    from ..preflight import isaac_start_problems
+    return isaac_start_problems(profile)
+
+
+def check_isaac_start(ctx: Ctx, project: Project) -> None:
+    """Refuse a Start that Isaac cannot run (only at Start: a project may be saved with a robot still being set up)."""
+    if studio_sim(project) != "isaac":
+        return
+    from .compile import robot_profile_for
+    try:
+        profile = robot_profile_for(project.robot_profile, ctx.data)
+    except (KeyError, ValueError, OSError):
+        raise ProjectError(f"Unknown robot '{project.robot_profile}'. Save it under Robots first.") from None
+    problems = ctx.isaac_start_problems(profile)
+    if problems:
+        raise ProjectError(" ".join(problems))
 
 
 def check_robot_profile(ctx: Ctx, project: Project) -> None:
@@ -641,6 +663,7 @@ def make_app(ctx: Ctx) -> web.Application:
             raise BadRequest("'project_id' is required.")
         project = ctx.projects.get(pid)
         check_sim(ctx, project)
+        await asyncio.to_thread(check_isaac_start, ctx, project)
         conn = read_connection(ctx.data)
         if domain_conflict(conn["robot_domain"]):
             raise ApiError(400, domain_conflict(conn["robot_domain"]))

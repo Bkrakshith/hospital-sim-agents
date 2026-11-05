@@ -79,6 +79,12 @@ select:focus, input.text:focus, textarea:focus { outline: none; border-color: va
 .link:hover { text-decoration: underline; }
 .link[hidden] { display: none; }
 .error { color: var(--bad); font-weight: 500; min-height: 1.4em; }
+.error ul.problems { list-style: none; margin: .5em 0; padding: 0; color: var(--text); font-weight: 400; }
+.error li.problem { margin: 0 0 .75em; padding: .5em .75em; border-left: 3px solid var(--bad); background: color-mix(in srgb, var(--bad) 6%, transparent); }
+.error li.problem strong { display: block; color: var(--bad); margin-bottom: .25em; }
+.error ol.fix { margin: .25em 0 0 1.25em; padding: 0; }
+.error ol.fix li { margin: .15em 0; overflow-wrap: anywhere; }
+.error .small { display: block; font-weight: 400; overflow-wrap: anywhere; }
 
 /* page frame */
 main { flex: 1; min-height: 0; display: flex; }

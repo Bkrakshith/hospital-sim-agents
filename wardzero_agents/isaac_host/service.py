@@ -41,6 +41,16 @@ def nvidia_smi_mib() -> Optional[int]:
         return None
 
 
+def nvidia_smi_free_mib() -> Optional[int]:
+    """Free graphics memory in MiB on the first GPU, or None without nvidia-smi."""
+    try:
+        out = subprocess.check_output(["nvidia-smi", "--query-gpu=memory.free", "--format=csv,noheader,nounits"],
+                                      text=True, timeout=5)
+        return int(out.split()[0])
+    except (OSError, ValueError, IndexError, subprocess.SubprocessError):
+        return None
+
+
 class VramSampler:
     """Samples VRAM in a background thread (nvidia-smi takes ~50 ms; never on the frame thread)."""
 

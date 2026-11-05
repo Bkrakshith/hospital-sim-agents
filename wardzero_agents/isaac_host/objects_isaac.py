@@ -21,7 +21,7 @@ import logging
 import math
 import re
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable, Optional
 
 from . import objects as ob
 from .people_isaac import ASSETS_ROOT
@@ -41,6 +41,15 @@ BELL_LIT = (8.0, 0.7, 0.2)  # emissive colour of a ringing call light
 BELL_OFF = (0.02, 0.02, 0.02)
 FLOW_LAYER = 3
 FIRE_MODES = ("flow", "proxy", "none")
+# Flow's fire and smoke take up to about 1.5 GB of graphics memory when the first fire starts (task I3's measurement).
+# Authoring it on a card without that much free crashes Isaac outright (a segfault in FlowCreatePrim, seen with the
+# G1, three people and a window on an 8 GB card), so below this much free memory the fire is drawn as the proxy.
+FLOW_MIN_FREE_MIB = 2048
+
+
+def flow_fits(free_mib: Optional[int]) -> bool:
+    """Whether there is room for Flow. Unknown free memory (no nvidia-smi) counts as room, as before."""
+    return free_mib is None or free_mib >= FLOW_MIN_FREE_MIB
 
 
 def _safe(key: str) -> str:
@@ -50,11 +59,12 @@ def _safe(key: str) -> str:
 class UsdObjectStage:
     """Authors and updates the prims. Methods are the ones ``objects.ObjectMirror`` calls."""
 
-    def __init__(self, stage, fire: str = "flow"):
+    def __init__(self, stage, fire: str = "flow", free_vram: Optional[Callable[[], Optional[int]]] = None):
         if fire not in FIRE_MODES:
             raise ValueError(f"fire must be one of {', '.join(FIRE_MODES)}")
         self.stage = stage
         self.fire = fire
+        self._free_vram = free_vram
         self.paths: dict[str, str] = {}  # item key -> prim path
         self.bell_paths: dict[str, str] = {}
         self.fire_paths: dict[str, str] = {}
@@ -216,6 +226,8 @@ class UsdObjectStage:
     def set_fire(self, key: str, x: float, y: float, params: "ob.FireParams") -> None:
         if self.fire == "none":
             return
+        if self.fire == "flow" and not self._flow_ready and not self._room_for_flow():
+            self.fire = "proxy"
         if self.fire == "flow" and not self._flow_ready:
             self._flow_ready = self._init_flow() or False
             if not self._flow_ready:
@@ -259,6 +271,18 @@ class UsdObjectStage:
         path = self.fire_paths.pop(key, None)
         if path is not None and self.stage.GetPrimAtPath(path):
             self.stage.RemovePrim(path)
+
+    def _room_for_flow(self) -> bool:
+        if self._free_vram is None:
+            from .service import nvidia_smi_free_mib
+            self._free_vram = nvidia_smi_free_mib
+        free = self._free_vram()
+        if flow_fits(free):
+            return True
+        log.warning("Not enough graphics memory for the Flow fire (%d MiB free, it needs about %d MiB): the fire is "
+                    "drawn as the simple stand-in instead. Run headless, or close other GPU programs, for the full "
+                    "fire.", free, FLOW_MIN_FREE_MIB)
+        return False
 
     def _init_flow(self) -> bool:
         """The shared Flow layer (simulate, offscreen shadows and colormap, render), in metres and Z up."""
