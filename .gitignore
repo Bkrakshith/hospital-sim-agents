@@ -8,3 +8,4 @@ artifacts/screens/
 *.onnx
 *.onnx.json
 voice.wav
+assets/*.usd

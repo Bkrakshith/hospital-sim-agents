@@ -374,7 +374,7 @@ def add_collision(stage, collision_path: Path = COLLISION_USD) -> Optional[str]:
     if not Path(collision_path).exists():
         # `hhumans run` refuses to start without it (exit 2); this is for a host started by hand
         log.error("collision USD %s is missing; the people and robots get no walls. Build it with "
-                  "hospital-sim-humans/sim/build_collision_usd.py", collision_path)
+                  "scripts/build_collision_usd.py in hospital-sim-agents", collision_path)
         return None
     col = UsdGeom.Xform.Define(stage, COLLIDERS_PATH)
     col.GetPrim().GetReferences().AddReference(str(collision_path))

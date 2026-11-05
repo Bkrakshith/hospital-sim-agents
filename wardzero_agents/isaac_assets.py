@@ -1,8 +1,8 @@
 """Where the Isaac mode's files live, and what is missing. No Isaac imports: the CLI and the Studio use it
 before anything is started.
 
-Nothing here is published with the repo. The stage is part of the hospital-sim-env checkout and the collision
-USD is built once from it with ``hospital-sim-humans/sim/build_collision_usd.py``."""
+Neither USD is stored in this repo. The stage is part of the hospital-sim-env checkout and the collision USD is built
+once from it with ``scripts/build_collision_usd.py``."""
 from __future__ import annotations
 
 import os
@@ -10,7 +10,9 @@ from pathlib import Path
 
 HG1 = Path(__file__).resolve().parents[2]
 STAGE_ENV, COLLISION_ENV, ROS_ENV_SH_ENV = "WARDZERO_STAGE_USD", "WARDZERO_COLLISION_USD", "WARDZERO_ROS_ENV_SH"
-BUILD_SCRIPT = "hospital-sim-humans/sim/build_collision_usd.py"
+BUILD_SCRIPT = "scripts/build_collision_usd.py"
+AGENTS = Path(__file__).resolve().parents[1]
+OLD_COLLISION = HG1 / "hospital-sim-humans" / "sim" / "assets" / "hospital_collision.usd"  # earlier checkouts
 
 
 def _path(env: str, default: Path) -> Path:
@@ -23,7 +25,8 @@ def stage_usd() -> Path:
 
 
 def collision_usd() -> Path:
-    return _path(COLLISION_ENV, HG1 / "hospital-sim-humans" / "sim" / "assets" / "hospital_collision.usd")
+    new = AGENTS / "assets" / "hospital_collision.usd"
+    return _path(COLLISION_ENV, OLD_COLLISION if not new.is_file() and OLD_COLLISION.is_file() else new)
 
 
 def ros_env_sh() -> Path:
@@ -44,5 +47,6 @@ def missing_for_isaac(isaac_root: Path) -> list[str]:
                    f"set {STAGE_ENV} if it lives elsewhere.")
     if not collision_usd().is_file():
         out.append(f"the collision USD is missing: {collision_usd()}. Without it the people walk through walls. "
-                   f"Make it with {BUILD_SCRIPT} (run with Isaac Sim's python.sh), or set {COLLISION_ENV}.")
+                   f"Make it once with `python {BUILD_SCRIPT}` in hospital-sim-agents after "
+                   f"`pip install usd-core numpy`), or set {COLLISION_ENV}.")
     return out

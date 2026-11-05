@@ -1,33 +1,120 @@
-# hospital-sim-agents
+# hospital-sim-agents: WardZero Studio
 
-Simulated hospital patients and visitors who think for themselves. Each person is a
-language-model "mind" with a persona, a memory and a body. They talk to a Unitree G1 robot
-over ROS 2: they ask it the way to the clinic, cough, get lost and get impatient, and the
-robot has to cope.
+Test your robot against simulated hospital patients, visitors and staff before a real trial.
 
-You use it to test a robot's reception behaviour against people who are not scripted.
+Each person is run by an AI model (Claude or OpenAI). They have a role, a mood and a memory. They ask the robot
+for help, get impatient when it does not help, and tell each other how it went. After a run, a report scores the
+robot against the scenario's success criteria: problems solved, near misses, contacts, forbidden areas,
+unanswered requests, response time and mood changes.
 
-The people run on a lightweight stand-in simulator (the "stub sim"), which is what the tests
-use. Running them in Isaac Sim is in progress (see "Isaac Sim mode" below). The Python
-package is `wardzero_agents` and the command is `hhumans`.
+Bring your own robot (its URDF, its sensors and a ROS 2 controller), or start with the built-in Unitree G1. Run a
+scenario in a quick 2D simulator, or in the 3D hospital in Isaac Sim 6.0.
 
-What it covers: a hospital with a ward, an A&E waiting room and a reception area. It
-comes with several ready-made scenarios (see "Studio") and the original waiting-area scenario
-with 12 starter cards and an 8-beat storyboard (both in `config/`). The scenarios include crises such as a
-ward fire, a fire evacuation, a patient who gets worse and a patient who wanders off. Each
-scenario can be scored against success criteria.
+The Python package is `wardzero_agents` and the command is `hhumans`. This repository is part of
+[WardZero](https://github.com/Bkrakshith/hospital-sim) (project page: <https://bkrakshith.github.io/wardzero/>).
 
-## Setup
+## Quick start
+
+### What you need
+
+- Ubuntu 22.04 (x86_64) with ROS 2 Humble and Python 3.10.
+- For real runs, an API account with pay-as-you-go billing: a Claude Console account (the default) or an OpenAI
+  Platform account. A Claude Pro or Max subscription does not work for API calls. You can try the Studio for free
+  first, without a key (step 3).
+- For 3D runs only: Isaac Sim 6.0 and an NVIDIA RTX GPU (step 6). Quick 2D runs need no GPU.
+
+### 1. Install
 
 ```bash
-source /path/to/Hospital_G1/env.sh        # Python 3.10 venv and ROS 2 Humble
-cd hospital-sim-agents
-pip install -e .                          # add ".[test]" to run the tests
-scripts/install_hooks.sh                  # pre-commit secret scan, once per clone
-hhumans --help
+sudo apt install ros-humble-desktop ros-humble-vision-msgs ros-humble-rmw-cyclonedds-cpp python3-venv git
+git clone --recurse-submodules -b v3 https://github.com/Bkrakshith/hospital-sim.git WardZero
+cd WardZero
+python3 -m venv --system-site-packages .venv   # system site-packages make ROS 2's rclpy visible
+source env.sh                                  # ROS 2 and the venv; do this in every new terminal
+pip install -e "hospital-sim-agents[voice]"
+python hospital-sim-agents/scripts/fetch_voices.py   # optional: spoken voices in recorded runs
 ```
 
-Run the unit tests with `python -m pytest -q -m "not ros"`.
+`env.sh` also removes conda libraries from the library path, because they break ROS 2 and Isaac Sim.
+
+### 2. Check the computer
+
+```bash
+hhumans doctor
+```
+
+Each line says `ok`, `note` or `FIX`. Each `FIX` comes with numbered steps that fix it.
+
+### 3. Try the Studio for free
+
+```bash
+WARDZERO_TEST_FAKE_LLM=1 hhumans studio
+```
+
+This opens the Studio at <http://127.0.0.1:8770/> with a fake model in place of the AI. The people follow simple
+fixed behaviour, nothing is billed, and each run is marked as a test. Use it to learn the four pages.
+
+### 4. Add your key and run the demo scenario
+
+```bash
+hhumans keys set claude        # stored in your OS keyring; see "Accounts and API keys"
+hhumans studio
+```
+
+In the Studio:
+
+1. **Scene.** Choose **Reception and guide**. The people, their roles and moods, and their start positions are on
+   the map. Change them if you like.
+2. **Robot.** Choose **Built-in G1 (Claude)**. Its camera, microphone and speaker are already set up.
+3. **Run.** Choose **Quick 2D**, a duration of 1 minute and a **Spending limit** of $5. Leave **Word of mouth**
+   on. Press Start. The live cost shows during the run; a one-minute run with the defaults costs well under $1.
+4. **Report.** Read pass or fail for each success criterion, what each person said and asked, how their mood
+   changed, and the suggestions for the robot.
+
+Then set **Repeats** to 2 or more and tick **Carry memory between repeats**. The people now remember the earlier
+run, so a robot that let someone down starts the next run with less trust.
+
+The built-in G1 is a placeholder. It can see, hear and talk, but it has no walking controller, so it cannot walk
+anyone to a room or press a call button, and tasks that need that fail. That is expected: the Studio is there to
+test your robot.
+
+### 5. Test your own robot
+
+1. On the **Robot** page, make a new robot and give the folder with its URDF. Press **Check the URDF**.
+2. Add or edit its sensors: camera, lidar, microphone and speaker. Each sensor decides which topics the robot gets.
+3. Choose the ROS 2 domain and namespace. The page lists the topics your controller publishes and subscribes to,
+   with three lights that turn on as it connects. The full contract is in `docs/robot-topics.md`, and
+   `wardzero_agents/examples/reception_bot.py` is a small controller to start from.
+4. Place the robot on the map, then run the same scenario in Quick 2D. When it behaves there, run it in Isaac Sim.
+
+The built-in robot (`--bot claude`) uses the same contract, so it is a worked example. Details are in
+"Your own robot" below.
+
+### 6. Optional: Isaac Sim
+
+1. Install Isaac Sim 6.0 in `~/isaacsim`, or set `ISAAC_SIM_ROOT` to where it is.
+2. Install the NVIDIA asset packs and connect them to the hospital scene. The
+   [hospital-sim-env README](https://github.com/Bkrakshith/hospital-sim-env) gives the steps. On a GPU with less
+   than 12 GB of graphics memory, use the reduced asset set (`python3 hospital-sim-env/isaac/scene/select_assets.py lite`).
+3. Build the collision file once. It keeps the people and the robot inside the walls:
+
+   ```bash
+   pip install usd-core numpy
+   python hospital-sim-agents/scripts/build_collision_usd.py   # writes hospital-sim-agents/assets/hospital_collision.usd
+   ```
+
+4. Run `hhumans doctor` again, then choose **Isaac Sim** on the Run page. A window or headless with a live preview
+   are both available.
+
+Isaac Sim starts slowly the first time, because it compiles shaders and loads the hospital. Wait for it.
+
+### For developers
+
+```bash
+pip install -e "hospital-sim-agents[test]"
+cd hospital-sim-agents && scripts/install_hooks.sh   # pre-commit secret scan, once per clone
+python -m pytest -q -m "not ros"
+```
 
 ## Accounts and API keys
 
@@ -88,7 +175,7 @@ Useful flags:
 
 - `--time-scale N` runs the sim N times faster than the wall clock.
 - `--lockstep` holds the sim clock while any person is still deciding, so slow model calls
-  do not change what happens. On the RTX 3070, slower than real time is fine.
+  do not change what happens. The run is then slower than real time, which is fine.
 - `--no-robot` runs the people alone. `--bot none` leaves the robot slot empty so you can
   start your own.
 - `--no-panel` skips the control panel. `--panel-port PORT` moves it.
@@ -180,19 +267,21 @@ own topics are in `docs/robot-topics.md`.
 `--headed` to watch in a window or `--headless` (the default, with a live preview in the Studio) and
 `--record` to save the videos and a rosbag. `--sim stub` is the fast 2D stand-in without rendering.
 In both, only the robot's topics and `/clock` are on the robot's domain (`--robot-domain N`, shown on the
-Studio's Robot page); the people are on a private domain the robot never joins.
+Studio's Robot page); the people are on a private domain the robot never joins. With a window, the view starts at
+the robot's post, in front of it and below the ceiling, so the robot and the people who come to it are in view.
 
-**What you need.**
+**What you need** (setup steps in "Quick start", step 6).
 
-- Isaac Sim 6.0 installed, with its `python.sh` (set `ISAAC_SIM_ROOT` if it is not in `~/isaacsim`) and a GPU
-  with enough memory for the hospital.
+- Isaac Sim 6.0 installed, with its `python.sh` (set `ISAAC_SIM_ROOT` if it is not in `~/isaacsim`) and an NVIDIA RTX
+  GPU. The hospital with three people and the robot uses about 6.5 GB of graphics memory with the reduced assets
+  and a window; headless uses less.
 - ROS 2 Humble sourced for the lab's own nodes (`env.sh`; set `WARDZERO_ROS_ENV_SH` to your own file). Without
   it the run goes ahead with no rosbag, and the run log says so.
 - Two USD files, which are not part of this repository:
   - the hospital stage, from the `hospital-sim-env` checkout (`WARDZERO_STAGE_USD` overrides the path);
   - the collision USD that keeps people and robots inside the walls. Make it once with
-    `hospital-sim-humans/sim/build_collision_usd.py`, run with Isaac Sim's `python.sh`
-    (`WARDZERO_COLLISION_USD` overrides the path).
+    `python scripts/build_collision_usd.py` (needs `pip install usd-core numpy`). It writes
+    `assets/hospital_collision.usd`; `WARDZERO_COLLISION_USD` overrides the path.
 
   If either file is missing, `hhumans run --sim isaac` stops with exit code 2 and says which one, and the
   Studio's Isaac option says what is missing instead of starting a run that would fail.
@@ -301,25 +390,8 @@ and world events it re-sent. That folder can itself be replayed.
 
 ## Motion data
 
-v1 uses placeholder clips (`hospital-sim-humans/motion/clips_v1.yaml`).
-
-Real clips come from BONES-SEED, a 45.2 GB archive:
-
-1. Free the disk space.
-2. Accept the licence on Hugging Face.
-3. Run `hospital-sim-humans/scripts/fetch_bones_seed.sh --dry-run` first, then without it.
-
-Fix these before the first real download (known issues in the script):
-
-- A converter that exits 0 with silent skips still deletes the BVH.
-- `BATCH=500` is unused.
-- A subshell killed for memory leaves no DONE marker and the loop hangs.
-- The strict M==N check fails on stale outputs.
-- The generic `cough` and `walk_slow limp` patterns are not anchored.
-- `HF_TOKEN` is inherited by child processes.
-- `failed_batches` nests on a rerun.
-
-Licence: BONES-SEED and clips made from it are not redistributed. Never commit them.
+In Isaac Sim the people are NVIDIA's animated characters from the Isaac Sim asset pack, so there is nothing extra to
+download. Motion-capture clips (BONES-SEED) are not part of this repository and are not needed for a run.
 
 ## Costs
 
@@ -346,6 +418,33 @@ reflexes and the minds stop deciding. The panel shows the cost against the budge
 | `WARDZERO_TEST_FAKE_LLM` | `1` for tests only |
 
 ## Troubleshooting
+
+**Before a run: `hhumans doctor`.** It checks ROS 2, the Claude key (stored, not spent), Isaac Sim and its two USD
+files, another Isaac Sim already on the GPU, free graphics memory, disk space, the voices and your saved robots. Each
+problem comes with the steps that fix it, and it exits non-zero when something must be fixed.
+
+**When a run fails.** A run is several processes. When one fails, the others are stopped, and their stop messages (a
+`KeyboardInterrupt` traceback, "There was an error running python") come after the line that matters. The Studio's
+Run page reads the whole run log (and Isaac Sim's own log when Isaac stopped) and shows each problem it recognises,
+most likely cause first, with numbered steps to fix it. From a terminal, `hhumans diagnose` does the same for the
+Studio's latest run, or `hhumans diagnose FILE` for a saved log (`hhumans run ... 2>&1 | tee run.log`). It knows:
+
+- a robot with no URDF, a URDF that does not convert, robot settings that are not valid;
+- a scenario mistake, a missing hospital stage or collision USD, Isaac Sim not installed;
+- no key, a rejected key, no credit left, a model the account cannot use, rate limits, provider outages, the keyring,
+  an old Brotli;
+- conda libraries on the path, ROS 2 not sourced, a missing Python package;
+- Isaac Sim crashes (out of graphics memory, the fire effect, no GPU or driver, no display for a window), a process
+  killed for RAM, a port in use, another run or another Isaac Sim already going;
+- the people or director not coming up, a missing memory snapshot, and the after-run notes (no voices, no report).
+
+Some of these are refused before anything starts: an Isaac run with a robot that has no URDF, or while another Isaac
+Sim is running, stops at Start with the fix.
+
+**Fire scenarios and graphics memory.** The realistic fire and smoke (NVIDIA Flow) needs about 1.5 GB of graphics
+memory when the fire starts. With less than 2 GB free, the fire is drawn as a simple glowing stand-in instead, and the run log
+says so (without this, Isaac Sim crashed). Headless runs leave more room for the full fire. `WARDZERO_FIRE=proxy`
+always uses the stand-in; `WARDZERO_FIRE=none` draws no fire.
 
 If the AI provider rejects requests (a bad key, a model the account cannot use, a request that
 is too large), the agent service logs a warning with the HTTP status the first time each kind
