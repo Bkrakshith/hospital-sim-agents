@@ -529,3 +529,43 @@ def test_a_scripted_robot_line_can_name_nobody_so_the_fake_people_do_not_answer(
     rows = [json.loads(l) for l in (tmp_path / "r" / "audio.jsonl").read_text().splitlines()]
     quiet = next(r for r in rows if r.get("text") == "Quiet line.")
     assert quiet["addressee"] is None and quiet["source_kind"] == "robot"
+
+
+def test_a_scripted_move_walks_the_person_and_their_own_mind_cannot_cancel_it(tmp_path, monkeypatch):
+    from wardzero_agents.config.loader import load_scenario
+    from wardzero_agents.contracts import Intent
+    from wardzero_agents.ros.sim_service import SimService
+    from wardzero_agents.runlog import RunLog
+    loaded = load_scenario(CONFIG / "scenarios" / "waiting_area_v1.yaml")
+    probe = SimService(loaded, RunLog(tmp_path / "p"), wait_for=())
+    pid = next(i for i, q in probe.world.people.items() if q.kind != "static")
+    script = tmp_path / "s.json"
+    script.write_text(json.dumps([{"t": 0.5, "who": pid, "do": "approach", "target": "g1"}]))
+    monkeypatch.setenv("WARDZERO_TEST_SCRIPTED_SAY", str(script))
+    svc = SimService(load_scenario(CONFIG / "scenarios" / "waiting_area_v1.yaml"), RunLog(tmp_path / "r"), wait_for=())
+    p = svc.world.people[pid]
+    start = (p.x, p.y)
+    for _ in range(40 * 2):
+        svc.step(1 / 40)
+    svc.on_intent(Intent(id="mind-1", person=pid, t=svc.t, kind="sit_idle"))  # the fake mind's usual answer
+    for _ in range(40 * 6):
+        svc.step(1 / 40)
+    moved = math.hypot(p.x - start[0], p.y - start[1])
+    assert moved > 1.0, f"{pid} moved only {moved:.2f} m"
+    assert pid in svc._scripted_people
+
+
+def test_without_the_script_a_mind_intent_still_applies(tmp_path, monkeypatch):
+    from wardzero_agents.config.loader import load_scenario
+    from wardzero_agents.contracts import Intent
+    from wardzero_agents.ros.sim_service import SimService
+    from wardzero_agents.runlog import RunLog
+    monkeypatch.delenv("WARDZERO_TEST_SCRIPTED_SAY", raising=False)
+    svc = SimService(load_scenario(CONFIG / "scenarios" / "waiting_area_v1.yaml"), RunLog(tmp_path / "r"), wait_for=())
+    pid = next(i for i, q in svc.world.people.items() if q.kind != "static")
+    p = svc.world.people[pid]
+    start = (p.x, p.y)
+    svc.on_intent(Intent(id="mind-1", person=pid, t=svc.t, kind="approach", target="g1"))
+    for _ in range(40 * 8):
+        svc.step(1 / 40)
+    assert math.hypot(p.x - start[0], p.y - start[1]) > 1.0

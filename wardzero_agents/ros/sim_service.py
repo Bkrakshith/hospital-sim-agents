@@ -77,6 +77,8 @@ _AUTO = object()  # on_robot_say: work the addressee out
 
 def _scripted_lines() -> list:
     """WARDZERO_TEST_SCRIPTED_SAY=<json file>: [{"t": 3.0, "who": "robot" | person id, "text": "...", "to": id}].
+    An entry with "do" instead of "text" moves a person: {"t", "who": person id, "do": intent kind, "target": id,
+    "point": [x, y], "speed": m/s}. A person moved by the script ignores its own mind from then on.
     Unset in every real run; never read by the default fake LLM."""
     path = os.environ.get("WARDZERO_TEST_SCRIPTED_SAY")
     if not path:
@@ -132,6 +134,7 @@ class SimService:
         # itself sees source "unknown"; the sim uses the true id to route the reply.
         self._last_robot_listener: Optional[tuple[float, str]] = None
         self._scripted = _scripted_lines()
+        self._scripted_people: set[str] = set()  # test hook: people the script moves; their minds' intents are ignored
 
     # ---- inputs --------------------------------------------------------------------------
     def ready(self, what: str) -> None:
@@ -192,9 +195,12 @@ class SimService:
         self._last_spoken[person] = key
         return False
 
-    def on_intent(self, intent: Intent) -> None:
+    def on_intent(self, intent: Intent, scripted: bool = False) -> None:
         if intent.person not in self.world.people:
             log.warning("intent for unknown person %s ignored", intent.person)
+            return
+        if intent.person in self._scripted_people and not scripted:
+            log.info("intent %s for %s ignored: the test script moves this person", intent.kind, intent.person)
             return
         if intent.kind == "talk" and self._spoken_before(intent.person, intent.t, intent.text or ""):
             return
@@ -311,6 +317,12 @@ class SimService:
                     self.on_robot_say(str(line["text"]), line["to"] or None)
                 else:
                     self.on_robot_say(str(line["text"]))
+            elif "do" in line and who in self.world.people and self.world.people[who].posture != "gone":
+                self._scripted_people.add(who)
+                pt = line.get("point")
+                self.on_intent(Intent(id=f"scripted-{line['do']}-{who}-{line['t']}", person=who, t=self.t,
+                                      kind=line["do"], target=line.get("target"),
+                                      point=tuple(pt) if pt else None, speed=line.get("speed")), scripted=True)
             elif who in self.world.people and self.world.people[who].posture != "gone":
                 self.on_say(Say(person=who, t=self.t, text=str(line["text"]), addressee=line.get("to")))
             elif self.t - line["t"] < 20.0:
