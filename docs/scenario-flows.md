@@ -92,15 +92,17 @@ flowchart TD
   n4 --> n5
   n6["Wait 30 s"]
   n5 --> n6
-  n7[["M3 rings for help [call_bell_at]"]]
+  n7[["M3 decides to ring for help [call_bell_at]"]]
   n6 --> n7
-  n8(["Expect: The robot answers M3 (goes to them or fetches a nurse) (up to 120 s)"])
+  n8[["The bell at M3's bed rings [ring_bell]"]]
   n7 --> n8
-  n9(["Expect: The robot tells a nurse that M2 is asleep (up to 360 s)"])
-  n4 --> n9
-  n10(("All done"))
-  n8 --> n10
-  n9 --> n10
+  n9(["Expect: The robot answers M3 (goes to them or fetches a nurse) (up to 120 s)"])
+  n8 --> n9
+  n10(["Expect: The robot tells a nurse that M2 is asleep (up to 360 s)"])
+  n4 --> n10
+  n11(("All done"))
+  n9 --> n11
+  n10 --> n11
 ```
 
 ## Night call bell (`night_call_bell`)
@@ -112,27 +114,34 @@ flowchart TD
   n1(("Run starts"))
   n2["The ward is quiet"]
   n1 --> n2
-  n3[["P1 rings the call bell [call_bell_at]"]]
+  n3{{"At the same time: P1 rings the call bell"}}
   n2 --> n3
-  n4{{"At the same time: The bell is answered"}}
+  n4[["P1 decides to ring for a nurse [call_bell_at]"]]
   n3 --> n4
-  n5(["Expect: The robot reaches P1 and reassures them (up to 90 s)"])
-  n4 --> n5
-  n6(["Expect: The robot fetches the nurse (up to 120 s)"])
+  n5[["The bell at P1's bed rings [ring_bell]"]]
+  n3 --> n5
+  n6(("All done"))
   n4 --> n6
-  n7{"Unless: The nurse reaches P1"}
-  n4 --> n7
-  n8["Wait 150 s"]
+  n5 --> n6
+  n7{{"At the same time: The bell is answered"}}
+  n6 --> n7
+  n8(["Expect: The robot reaches P1 and reassures them (up to 90 s)"])
   n7 --> n8
-  n9[["P1 rings again [call_bell_at]"]]
-  n8 --> n9
-  n10(("Go on"))
-  n9 --> n10
-  n7 -.->|it happens first| n10
-  n11(("All done"))
-  n5 --> n11
-  n6 --> n11
+  n9(["Expect: The robot fetches the nurse (up to 120 s)"])
+  n7 --> n9
+  n10{"Unless: The nurse reaches P1"}
+  n7 --> n10
+  n11["Wait 150 s"]
   n10 --> n11
+  n12[["P1 rings again [ring_bell]"]]
+  n11 --> n12
+  n13(("Go on"))
+  n12 --> n13
+  n10 -.->|it happens first| n13
+  n14(("All done"))
+  n8 --> n14
+  n9 --> n14
+  n13 --> n14
 ```
 
 ## Reception guide (`reception_guide`)

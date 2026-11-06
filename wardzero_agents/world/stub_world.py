@@ -262,6 +262,12 @@ class StubWorld:
                 return s.x, s.y
         return None
 
+    def _nearest_free_seat(self, p: _Person, pid: str, within: float = 6.0) -> Optional[str]:
+        staff = p.inst.role in STAFF_ROLES
+        free = [s for s in self._seats.values() if (staff or not s.staff_only) and not self._seat_taken(s.id, pid)
+                and math.hypot(s.x - p.x, s.y - p.y) <= within]
+        return min(free, key=lambda s: math.hypot(s.x - p.x, s.y - p.y)).id if free else None
+
     def _seat_taken(self, seat: str, by: str) -> bool:
         return any(
             pid != by and q.posture != "gone" and (q.seat == seat or q.claim == seat)
@@ -446,6 +452,8 @@ class StubWorld:
             self._begin(p, intent)
             self._start(p, self._stand_phase(p) + [walk])
         elif kind == "sit_down":
+            if intent.target is None:  # "sit down here": the nearest free seat they may use, within a few metres
+                intent = intent.model_copy(update={"target": self._nearest_free_seat(p, intent.person)})
             seat = self._seats.get(intent.target or "")
             if seat is None:
                 self._fail(p, intent, "unknown target")

@@ -10,7 +10,8 @@ steps:
     branches:
     - - expect: {label: The robot delivers a first tray, when: {robot_did: {action: hand_over}}, timeout_s: 240}
       - wait: {seconds: 30}
-      - fire: {id: b2, card: call_bell_at, target: M3, label: M3 rings for help}
+      - fire: {id: b2, card: call_bell_at, target: M3, label: M3 decides to ring for help}
+      - fire: {id: b2r, card: ring_bell, target: M3, label: The bell at M3's bed rings}
       - expect:
           label: The robot answers M3 (goes to them or fetches a nurse)
           when: {any: [{robot_near: {person: M3, within_m: 2.5}}, {robot_did: {action: tell, about: M3}},

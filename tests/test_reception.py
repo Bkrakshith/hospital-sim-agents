@@ -241,7 +241,10 @@ def test_follow_needs_the_robot():
     ok, err = check_decision({**base, "intent": {"kind": "follow", "target": None, "text": None}}, area, [], ["V1"],
                              role="ward_visitor")
     assert err is None and ok["intent"]["target"] == "g1"
-    _, err = check_decision({**base, "intent": {"kind": "follow", "target": "V1", "text": None}}, area, [], ["V1"],
+    ok, err = check_decision({**base, "intent": {"kind": "follow", "target": "V1", "text": None}}, area, [], ["V1"],
+                             role="ward_visitor")
+    assert err is None and ok["intent"]["kind"] == "approach"  # following a person is walking with them
+    _, err = check_decision({**base, "intent": {"kind": "follow", "target": "Q9", "text": None}}, area, [], ["V1"],
                             role="ward_visitor")
     assert err == "invalid_target"
     _, err = check_decision({**base, "intent": {"kind": "follow", "target": "g1", "text": None}}, area, [], ["V1"],

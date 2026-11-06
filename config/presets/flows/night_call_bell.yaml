@@ -4,7 +4,11 @@ summary: On a quiet night ward a patient rings the call bell while the nurse is 
   fetch the nurse. If no nurse has come, the patient rings again.
 steps:
 - wait: {seconds: 20, label: The ward is quiet}
-- fire: {id: b1, card: call_bell_at, target: P1, label: P1 rings the call bell}
+- parallel:
+    label: P1 rings the call bell
+    branches:
+    - - fire: {id: b1, card: call_bell_at, target: P1, label: P1 decides to ring for a nurse}
+    - - fire: {id: b1r, card: ring_bell, target: P1, label: The bell at P1's bed rings}
 - parallel:
     label: The bell is answered
     branches:
@@ -21,4 +25,4 @@ steps:
           when: {near: {person: N1, to: P1, within_m: 1.5}}
           then:
           - wait: {seconds: 150}
-          - fire: {id: b2, card: call_bell_at, target: P1, label: P1 rings again}
+          - fire: {id: b2, card: ring_bell, target: P1, label: P1 rings again}

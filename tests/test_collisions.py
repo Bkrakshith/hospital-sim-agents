@@ -283,3 +283,35 @@ def test_held_with_someone_too_close_it_steps_back_then_carries_on(reception, tm
             break
     assert max(gaps[:40]) >= rt.BACK_OFF_M  # it stepped back first
     assert arrived  # and then got where it was going (the same goal, not given up)
+
+
+# ---- decisions people make that the world used to refuse --------------------------------------------------------
+def test_following_a_person_walks_with_them_instead_of_being_refused():
+    from wardzero_agents.mind.graph import check_decision
+    loaded = preset_to_scenario(PRESETS["ae_waiting"], CONFIG)
+    data = {"intent": {"kind": "follow", "target": "N1", "text": None}, "mood": "anxious", "patience_delta": 0,
+            "reason": "the nurse is taking me to triage", "say": None, "addressee": None}
+    d, err = check_decision(data, loaded.area, loaded.signs, ["N1", "P1", "P2"], role="ae_patient", site=loaded.site)
+    assert err is None and d["intent"] == {"kind": "approach", "target": "N1", "text": None}
+    data["intent"]["target"] = "g1"
+    d, err = check_decision(data, loaded.area, loaded.signs, ["N1"], role="ae_patient", site=loaded.site)
+    assert err is None and d["intent"]["kind"] == "follow"  # the robot still leads as before
+
+
+def test_sitting_down_without_a_seat_takes_the_nearest_free_one(ae, tmp_path):
+    from wardzero_agents.mind.graph import check_decision
+    data = {"intent": {"kind": "sit_down", "target": None, "text": None}, "mood": "anxious", "patience_delta": 0,
+            "reason": "I need to sit", "say": None, "addressee": None}
+    d, err = check_decision(data, ae.area, ae.signs, ["P1"], role="ae_patient", site=ae.site)
+    assert err is None and d["intent"]["target"] is None
+    s = svc(ae, tmp_path)
+    w = s.world
+    put(w, "P2", -6.8, -1.2)
+    s.on_intent(Intent(id="s1", person="P2", t=0.0, kind="sit_down", target=None))
+    for _ in range(200):
+        s.step(0.1)
+        if w.people["P2"].posture == "seated":
+            break
+    seat = w.people["P2"].seat
+    assert w.people["P2"].posture == "seated" and seat is not None and not w.site.seats[seat].staff_only
+    assert math.hypot(w.site.seats[seat].x + 6.8, w.site.seats[seat].y + 1.2) < 3.0  # a seat near her
