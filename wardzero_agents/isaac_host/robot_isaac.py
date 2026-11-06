@@ -22,17 +22,24 @@ from ..robots import sanitise
 from ..robots.profile import RobotProfile
 from . import robot as rb
 from . import stage as stage_mod
+from . import walking as W
 from .robot_graph import CAMERA_HZ, IMPULSE_ATTR, SIMTIME_ATTR, PrimPath, build_robot_graph
 
 log = logging.getLogger("wardzero.isaac.robot")
 
 ROBOT_PATH = "/World/Robot"
 SETTLE_UPDATES = 5  # PhysX parses the articulation while playing (S1b)
+WALKER_AFTER_UPDATES = 2  # the walker's tensor view needs the parsed articulation; the gantry holds it from then on
+
+
+def walking_g1(profile: RobotProfile) -> bool:
+    """The built-in G1 on its own legs (GEAR-SONIC in this host)."""
+    return profile.controller == "builtin_claude" and profile.base == "legged" and bool(profile.can_move)
 
 
 class IsaacRobot:
     def __init__(self, stage, app, loaded, profile: RobotProfile, usd: Path, fps: int, robot_domain: int,
-                 private_domain: int):
+                 private_domain: int, runlog=None):
         self.cfg = loaded.scenario.robot
         # the scenario's namespace is the one SimRos and the robot use: the graph follows it, not robot.yaml's
         self.profile, self.downgraded = rb.effective_profile(dataclasses.replace(profile, ns=self.cfg.ns))
@@ -48,25 +55,56 @@ class IsaacRobot:
         self.arm = None
         self._arm_idx = None
         self._proxy = None
-        self.gestures = profile.controller == "builtin_claude" and profile.name == "g1_claude"
+        self.walking = walking_g1(self.profile)
+        self.gestures = profile.controller == "builtin_claude" and profile.name == "g1_claude" and not self.walking
+        self.walker = None  # walker.SonicWalker for the walking G1
+        self.runlog = runlog
         self.stats = {"proxy_moves": 0, "arm_writes": 0}
 
     # ---- step 9: one authoring pass --------------------------------------------------------
     def add(self, world=None) -> None:
         """The authoring pass (reference, pose, camera, graph: no ``app.update()`` between them), then the settle."""
+        walking = getattr(self, "walking", False)
         self._check_ready()
         self._reference()
         self._locate()
+        if walking:
+            self._make_walker(world)  # its joint settings are part of the one authoring pass
         self._build_graph()
+        if walking:
+            for _ in range(WALKER_AFTER_UPDATES):
+                self.app.update()
+            self.walker.start(self.art_root)
         self._settle()
         c = self.cfg
-        if self.profile.can_move:
+        if walking:
+            self._proxy = rb.ProxyMover(c.x, c.y, move_m=W.WALK_PROXY_MOVE_M, every_s=W.WALK_PROXY_EVERY_S)
+        elif self.profile.can_move:
             self._proxy = rb.ProxyMover(c.x, c.y)
         if self.downgraded and world is not None:
             rb.immobilise(world)
         self._articulation()
         log.info("robot %s at (%.2f, %.2f) facing %.0f deg: articulation %s, camera %s, graph %d nodes", self.profile.name,
                  c.x, c.y, math.degrees(c.yaw), self.art_root, self.camera_path, len(self.graph.nodes))
+
+    def _make_walker(self, world) -> None:
+        from .walker import SonicWalker
+
+        body = getattr(world, "robot", None) if world is not None else None
+        if body is None or not hasattr(body, "report_fall"):
+            raise RuntimeError("the walking G1 needs the world's LeggedBody (IsaacHost.add_robots makes it)")
+        c = self.cfg
+        self.walker = SonicWalker(self.stage, ROBOT_PATH, (c.x, c.y, c.yaw), body, runlog=self.runlog,
+                                  on_fall=lambda why: self._on_fall(world, why))
+        self.walker.author()
+
+    def _on_fall(self, world, why: str) -> None:
+        """A fall ends the robot's part of the run: the world's log says so (the report reads it)."""
+        r = world.robot
+        log_ = getattr(world, "_log", None)
+        if log_ is not None:
+            log_.append(("world", {"t": float(getattr(world, "last_t", 0.0)), "kind": "robot_fell", "reason": why,
+                                   "x": round(float(r.x), 3), "y": round(float(r.y), 3)}))
 
     def _check_ready(self) -> None:
         from pxr import Sdf
@@ -190,7 +228,9 @@ class IsaacRobot:
 
     # ---- per frame ---------------------------------------------------------------------------
     def pose(self):
-        """(x, y, yaw) of the base link in the site frame, for IsaacBodies."""
+        """(x, y, yaw) of the base link in the site frame, for IsaacBodies (the walking G1's pelvis from its walker)."""
+        if self.walker is not None:
+            return self.walker.pose()
         import omni.usd
 
         prim = self.stage.GetPrimAtPath(self.base_path or self.art_root)
@@ -238,9 +278,14 @@ class IsaacRobot:
         return rb.pitch_down((local[0], local[1], local[2]))
 
     def describe(self) -> dict:
-        return {"camera_pitch": self.camera_pitch(), "art_root": self.art_root, "base": self.base_path, "camera": self.camera_path,
+        return {"walking": self.walking, "camera_pitch": self.camera_pitch(), "art_root": self.art_root, "base": self.base_path, "camera": self.camera_path,
                 "render_product": self.render_product, "nodes": len(self.graph.nodes) if self.graph else 0,
-                "topics": dict(self.graph.topics) if self.graph else {}, **self.stats}
+                "topics": dict(self.graph.topics) if self.graph else {}, **self.stats,
+                **({"walker": self.walker.summary()} if self.walker is not None else {})}
+
+    def close(self) -> None:
+        if self.walker is not None:
+            self.walker.close()
 
 
 def _ident(s: str) -> str:

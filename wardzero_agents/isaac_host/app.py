@@ -101,7 +101,9 @@ def parse_args(argv=None) -> argparse.Namespace:
                    default=_env_int("WARDZERO_PRIVATE_DOMAIN", "ROS_DOMAIN_ID", default=0),
                    help="ROS domain of the wz.v1 topics (the agents and director)")
     p.add_argument("--robot-domain", type=int, default=None, help="ROS domain of the robot (default: private)")
-    p.add_argument("--fps", type=int, default=30, help="fixed frames per sim second")
+    p.add_argument("--fps", type=int, default=None,
+                   help="fixed frames per sim second (default 30; 25 with the walking G1, whose physics runs at 200 Hz "
+                        "in whole steps a frame, so its fps must divide 200)")
     p.add_argument("--stage", type=Path, default=stage_mod.STAGE_USD)
     p.add_argument("--collision", type=Path, default=stage_mod.COLLISION_USD)
     p.add_argument("--renderer", default="RaytracedLighting")
@@ -117,6 +119,9 @@ def parse_args(argv=None) -> argparse.Namespace:
     if unknown:
         p.error(f"--wait-for: unknown {', '.join(unknown)} (use agents, director or none)")
     a.rooms = [r.strip() for r in a.rooms.split(",") if r.strip()] if a.rooms else None
+    a.fps_given = a.fps is not None
+    a.fps = 30 if a.fps is None else a.fps
+    a.physics_hz = None  # set by apply_frame_plan once the robot is known
     if a.fps <= 0:
         p.error("--fps must be positive")
     if a.texture_max is None:
@@ -127,6 +132,23 @@ def parse_args(argv=None) -> argparse.Namespace:
         except ValueError as exc:
             p.error(str(exc))
     return a
+
+
+def host_profile(loaded):
+    """The robot's profile as this host runs it (the built-in G1 walks here with the GEAR-SONIC weights), or None."""
+    from ..robots.profile import get_profile, profile_for_sim
+
+    r = loaded.scenario.robot
+    return profile_for_sim(get_profile(r.profile), "isaac") if r.enabled else None
+
+
+def apply_frame_plan(args, profile) -> None:
+    """--fps and the physics rate: physics 200 Hz and a frame rate dividing it (25 by default) for the walking G1."""
+    from .robot_isaac import walking_g1
+    from .walking import frame_plan
+
+    walking = profile is not None and walking_g1(profile)
+    args.fps, args.physics_hz = frame_plan(args.fps if args.fps_given else None, walking)
 
 
 # The start-up steps after the app is up, in the binding order (the module docstring). ``boot_sequence`` is the only
@@ -152,6 +174,8 @@ class IsaacHost:
         self.objects = None  # IsaacObjects: props, fire and call lights
         self.robot = None  # IsaacRobot (None without a robot)
         self.robot_usd: Optional[Path] = None
+        self.profile = None  # the robot's profile as this host runs it (host_profile)
+        self.cams = None  # recording.HeadedCameras: the headed window's named cameras
         self.recorder: Optional[recording.Recorder] = None
         self.bag: Optional[BagRecorder] = None
         self.startup: dict = {}
@@ -210,7 +234,14 @@ class IsaacHost:
         self._mark("stage")
 
     def physics(self) -> None:  # 3, 4
-        stage_mod.add_physics_scene(self.stage)
+        hz = getattr(self.args, "physics_hz", None)
+        stage_mod.add_physics_scene(self.stage, hz)
+        if hz:
+            import carb
+
+            from .walking import MIN_FRAME_RATE
+            carb.settings.get_settings().set("/persistent/simulation/minFrameRate", MIN_FRAME_RATE)  # never drop substeps
+            self.startup["physics_hz"] = hz
         stage_mod.add_collision(self.stage, self.args.collision)
         self._updates(2)
         self._mark("physics")
@@ -281,11 +312,12 @@ class IsaacHost:
         """Before Kit starts: the robot's ready USD (converted with Isaac's URDF importer in a process of its own the
         first time, or when its URDF, sensors or the importer changed)."""
         from ..robots import ready_usd
-        from ..robots.profile import get_profile
 
         r = self.loaded.scenario.robot
+        if r.enabled and self.profile is None:
+            self.profile = host_profile(self.loaded)
         if r.enabled and self.robot_usd is None:
-            self.robot_usd = ready_usd.ensure_ready_usd(get_profile(r.profile))
+            self.robot_usd = ready_usd.ensure_ready_usd(self.profile)
 
     @property
     def robot_domain(self) -> int:
@@ -293,24 +325,53 @@ class IsaacHost:
         return a.private_domain if a.robot_domain is None else a.robot_domain
 
     def add_robots(self) -> None:  # 9: the ready robot USD goes in as one reference after play(), with its graph
-        from ..robots.profile import get_profile
-        from .robot_isaac import IsaacRobot
+        from .robot_isaac import IsaacRobot, walking_g1
 
         r = self.loaded.scenario.robot
         if not r.enabled:
             return
         if self.robot_usd is None:
             raise RuntimeError("the robot's ready USD is not made: call prepare_robot() before start_app()")
-        self.robot = IsaacRobot(self.stage, self.app, self.loaded, get_profile(r.profile), self.robot_usd,
-                                self.args.fps, self.robot_domain, self.args.private_domain)
+        if walking_g1(self.profile):
+            self._legged_body()
+        elif self.profile.name == "g1_claude":
+            from ..robots.profile import g1_static_reason
+            log.warning("%s", g1_static_reason())
+        self.robot = IsaacRobot(self.stage, self.app, self.loaded, self.profile, self.robot_usd,
+                                self.args.fps, self.robot_domain, self.args.private_domain, runlog=self.runlog)
         self.robot.add(self.svc.world)
         self.bodies.set_robot(self.robot.pose)
         self.bodies.robot_driver = self.robot
         self._mark("robot")
 
+    def _legged_body(self) -> None:
+        """The world's robot becomes a LeggedBody: Isaac moves it, a RouteFollower on a router with the G1's clearance
+        turns goals into walking commands, and the walker reports falls to it."""
+        from ..site.routing import Router
+        from ..world.legged_body import LeggedBody, door_points
+        from ..world.route_follower import G1_CLEARANCE_M
+
+        w = self.svc.world
+        old = w.robot
+        router = Router(w.site.grid, clearance=G1_CLEARANCE_M)
+        w.robot = LeggedBody(old.x, old.y, old.yaw, old.radius, self.profile.max_speed, router,
+                             doors=door_points(w.site))
+        log.info("the G1 walks (GEAR-SONIC): routes with %.2f m clearance, at most %.1f m/s", G1_CLEARANCE_M,
+                 self.profile.max_speed)
+
     def frame_view(self) -> None:
         if not self.args.headed:
             return
+        if self.robot is not None:  # the follow camera, behind and above the robot; desk and overhead stay selectable
+            try:
+                self.cams = recording.HeadedCameras(self.stage, list(self.plan.rects.values()) or
+                                                    [tuple(self.loaded.site.bounds[i] for i in (0, 2, 1, 3))],
+                                                    self.robot.pose, (1280, 720))
+                self.cams.start()
+                return
+            except Exception as exc:  # a nicety only: fall back to the fixed view
+                log.warning("could not set up the follow camera: %s", exc)
+                self.cams = None
         try:
             from isaacsim.core.rendering_manager import ViewportManager
 
@@ -389,7 +450,46 @@ class IsaacHost:
         recorder. A frame with several Kit updates (the recorder's) still gives one message per topic."""
         if self.robot is not None and self.timeline.is_playing():
             self.robot.fire()
+        cams = getattr(self, "cams", None)
+        if cams is not None:
+            cams.update()
+        walker = getattr(self.robot, "walker", None)
+        if walker is not None:
+            walker.begin_frame()
         (self.recorder.step if self.recorder is not None else self.app.update)()
+        if walker is not None:
+            walker.end_frame()
+            self._check_steps(walker)
+        self._test_viewport_shot()
+
+    def _check_steps(self, walker) -> None:
+        """Once, a few frames in: the physics steps a frame must be 200 Hz / fps, or SONIC's PD runs at the wrong rate."""
+        if "steps_per_frame" in self.startup or len(walker.frame_steps) < 6:
+            return
+        from .walking import steps_per_frame
+
+        want = steps_per_frame(self.args.fps, self.args.physics_hz)
+        got = sorted(walker.frame_steps[2:6])
+        self.startup["steps_per_frame"] = got[len(got) // 2]
+        (log.info if all(n == want for n in got) else log.error)(
+            "physics steps a frame: %s (want %s: %s Hz physics at %d fps)", got, want, self.args.physics_hz, self.args.fps)
+
+    def _test_viewport_shot(self) -> None:
+        """Test only (WARDZERO_TEST_VIEWPORT_SHOTS=<dir>, headed): the window's view as a PNG every 5 s of sim time."""
+        d = os.environ.get("WARDZERO_TEST_VIEWPORT_SHOTS")
+        if not d or not getattr(getattr(self, "args", None), "headed", False) or getattr(self, "svc", None) is None:
+            return
+        n = int(self.svc.t // 5.0)
+        if n == getattr(self, "_shot_n", -1):
+            return
+        self._shot_n = n
+        try:
+            from omni.kit.viewport.utility import capture_viewport_to_file, get_active_viewport
+
+            Path(d).mkdir(parents=True, exist_ok=True)
+            capture_viewport_to_file(get_active_viewport(), str(Path(d) / f"viewport_{n * 5:04d}s.png"))
+        except Exception as exc:
+            log.warning("viewport shot failed: %s", exc)
 
     def finish_recording(self) -> None:
         if self.recorder is not None:
@@ -441,10 +541,24 @@ class IsaacHost:
             return loop.run(stop_requested=lambda: self._stop, ready_timeout=a.ready_timeout)
         finally:
             vram.close()
+            self._write_walker()
             self.finish_recording()
+
+    def _write_walker(self) -> None:
+        walker = getattr(self.robot, "walker", None)
+        if walker is None:
+            return
+        try:
+            s = walker.summary()
+            self.runlog.write("host", {"kind": "walker", "t": round(float(self.svc.t), 3), **s})
+            log.info("walker: %s", s)
+        except Exception:
+            log.exception("could not write the walker summary")
 
     def close(self, code: int) -> None:
         self.finish_recording()  # the loop's own finally did it; this covers a failed start-up
+        if self.robot is not None and hasattr(self.robot, "close"):
+            self.robot.close()
         for b in self.bridges:
             try:
                 b.close()
@@ -474,6 +588,15 @@ def main(argv=None) -> int:
         return 2
     if not Path(args.stage).exists():
         print(f"Stage not found: {args.stage}", file=sys.stderr)
+        return 2
+    try:
+        profile = host_profile(loaded)
+    except KeyError:
+        profile = None  # prepare_robot says what is wrong with it
+    try:
+        apply_frame_plan(args, profile)
+    except ValueError as exc:
+        print(f"Frame rate error: {exc}", file=sys.stderr)
         return 2
     host = IsaacHost(args, loaded, plan)
     code = 1
