@@ -426,11 +426,13 @@ def _holder_at(states: list[tuple[float, dict]], t: float) -> Optional[str]:
 
 def _instrument_matches(d: RunData):
     """(requests, matches, unrequested): requests are (t, item id) for each instrument a person named
-    to the robot; matched to the earliest ok hand_over of that instrument within 60 s after it.
+    to the robot; matched to the earliest ok hand_over of that instrument from the request until 60 s after its
+    latest repeat.
 
-    Not every mention is a new request. Naming an item again within 60 s of a request for it, with no ok hand-over
-    of it in between, repeats that request (the earliest one counts). Naming it within 10 s after its ok hand-over,
-    or while the speaker already holds it, is not a request (thanks, a remark about it)."""
+    Not every mention is a new request. Naming an item again within 60 s of the last mention of a request for it,
+    with no ok hand-over of it in between, repeats that request (the earliest time counts for latency). Naming it
+    within 10 s after its ok hand-over, or while the speaker already holds it, is not a request (thanks, a remark
+    about it)."""
     states = _item_states(d)
     names = {iid: s[-1][1] for iid, s in states.items() if s[-1][1].get("kind") == "instrument"}
     pats = {iid: re.compile(r"\b(" + "|".join(re.escape(x.lower()) for x in
@@ -447,16 +449,17 @@ def _instrument_matches(d: RunData):
             if _holder_at(states[iid], t) == a.get("source_id") \
                     or any(item == iid and 0 <= t - tg <= RESPONSE_WINDOW_S for tg, item in gives):
                 continue
-            last = next((tr for tr, i in reversed(reqs) if i == iid), None)
-            if last is not None and t - last <= INSTRUMENT_WINDOW_S \
-                    and not any(item == iid and last <= tg <= t for tg, item in gives):
+            k = next((k for k in range(len(reqs) - 1, -1, -1) if reqs[k][1] == iid), None)
+            if k is not None and t - reqs[k][2] <= INSTRUMENT_WINDOW_S \
+                    and not any(item == iid and reqs[k][0] <= tg <= t for tg, item in gives):
+                reqs[k] = (reqs[k][0], iid, t)  # a repeat: keeps the first time, extends the window
                 continue
-            reqs.append((t, iid))
+            reqs.append((t, iid, t))
     used: set[int] = set()
     matches = []
-    for t_req, iid in reqs:
+    for t_req, iid, t_last in reqs:
         for k, (t_res, item) in enumerate(gives):
-            if k not in used and item == iid and t_req <= t_res <= t_req + INSTRUMENT_WINDOW_S:
+            if k not in used and item == iid and t_req <= t_res <= t_last + INSTRUMENT_WINDOW_S:
                 used.add(k)
                 matches.append((t_req, t_res))
                 break
@@ -518,7 +521,7 @@ def fire_out_by_robot_s(d: RunData) -> Optional[float]:
 
 def _destination(d: RunData) -> Optional[str]:
     """The robot's destination: robot_brief.destination in the run's robot_config.json, else in the scenario copy
-    named by meta["scenario_path"] (or that file's name under the run's config/scenarios). None without one."""
+    named by meta["scenario_path"] (or the run's own copy, config/<that file's name>). None without one."""
     try:
         brief = json.loads((d.run_dir / "robot_config.json").read_text(encoding="utf-8")).get("robot_brief")
     except (OSError, ValueError, AttributeError):
@@ -526,7 +529,7 @@ def _destination(d: RunData) -> Optional[str]:
     if not isinstance(brief, dict):
         import yaml
         sp = str(d.meta.get("scenario_path") or "")
-        for path in ([Path(sp), d.run_dir / "config" / "scenarios" / Path(sp).name] if sp else []):
+        for path in ([Path(sp), d.run_dir / "config" / Path(sp).name] if sp else []):
             try:
                 doc = yaml.safe_load(path.read_text(encoding="utf-8"))
             except (OSError, yaml.YAMLError):

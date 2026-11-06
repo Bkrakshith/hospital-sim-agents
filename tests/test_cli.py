@@ -684,6 +684,29 @@ def test_static_robot_warns_for_an_unreachable_fire(walks, fake_llm, launched, i
         assert meta["robot_cannot_reach_task"] is True
 
 
+def test_reach_warning_judges_the_robot_after_overrides(monkeypatch, capsys, tmp_path):
+    # a batch arm swaps the robot through overrides["robot"]: the warning is about that robot, not the scenario's
+    import argparse
+    import dataclasses
+    from wardzero_agents.robots import profile
+    monkeypatch.setattr(profile, "g1_walks_in_isaac", lambda: False)
+    real = profile.get_profile
+    monkeypatch.setattr(profile, "get_profile", lambda name: dataclasses.replace(
+        profile.G1_CLAUDE, name="walker", can_move=True, base="legged") if name == "walker" else real(name))
+    loaded = load_scenario(_preset_scenario(tmp_path, "ward_fire"))
+    args = argparse.Namespace(no_robot=False)
+    g1 = loaded.scenario.robot.model_dump()
+    walker = {**g1, "profile": "walker"}
+    loaded.scenario.robot = loaded.scenario.robot.model_copy(update={"profile": "walker"})
+    meta: dict = {}
+    cli._warn_if_task_out_of_reach("isaac", loaded, args, meta, {"robot": {**walker, "profile": "g1_claude"}})
+    assert "WARNING" in capsys.readouterr().out and meta["robot_cannot_reach_task"] is True
+    loaded.scenario.robot = loaded.scenario.robot.model_copy(update={"profile": "g1_claude"})
+    meta = {}
+    cli._warn_if_task_out_of_reach("isaac", loaded, args, meta, {"robot": walker})
+    assert "WARNING" not in capsys.readouterr().out and "robot_cannot_reach_task" not in meta
+
+
 def test_no_reach_warning_without_a_fire_criterion_or_in_the_stub(fake_llm, launched, isaac_install, monkeypatch,
                                                                   capsys, tmp_path):
     from wardzero_agents.robots import profile

@@ -465,7 +465,7 @@ def _start_live(args, loaded, overrides: dict, meta: dict, out: Optional[dict] =
         if val is not None:  # the Isaac host also gets robot_domain; the Studio lists runs by project_id
             meta[key] = val
     _say_if_g1_static(sim, loaded, args)
-    _warn_if_task_out_of_reach(sim, loaded, args, meta)
+    _warn_if_task_out_of_reach(sim, loaded, args, meta, overrides)
     if os.environ.get("WARDZERO_TEST_SCRIPTED_SAY"):
         err("WARNING: WARDZERO_TEST_SCRIPTED_SAY is set. Scripted lines are injected into this run, so it is a "
             "test of the pipeline and not a real run of any robot or person.")
@@ -510,11 +510,12 @@ def _say_if_g1_static(sim: str, loaded, args) -> None:
 FIRE_METRICS = frozenset({"fire_out_s", "fire_out_by_robot_s"})
 
 
-def _warn_if_task_out_of_reach(sim: str, loaded, args, meta: dict) -> None:
+def _warn_if_task_out_of_reach(sim: str, loaded, args, meta: dict, overrides: Optional[dict] = None) -> None:
     """A robot that cannot move in this simulator, in a scenario scored on putting a fire out that starts beyond its
     extinguisher's reach of its post, can never meet that criterion: say so, and mark the run
-    (meta["robot_cannot_reach_task"]). It only warns: a fixed-post run may be what the user wants to test."""
-    r = loaded.scenario.robot
+    (meta["robot_cannot_reach_task"]). It only warns: a fixed-post run may be what the user wants to test.
+    The robot is the run's, after overrides["robot"] (a batch arm or a rerun may swap it)."""
+    r = loaded.scenario.robot.model_copy(update=(overrides or {}).get("robot") or {})
     if getattr(args, "no_robot", False) or not r.enabled:
         return
     from .config.presets import preset_for_run

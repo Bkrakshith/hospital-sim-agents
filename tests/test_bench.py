@@ -351,6 +351,16 @@ def test_robot_reached_destination_from_the_scenario_copy(tmp_path):
     assert val(d, "robot_reached_destination_s") == pytest.approx(55.0)
 
 
+def test_robot_reached_destination_from_the_run_folder_copy(tmp_path):
+    # a run moved elsewhere, no robot_config.json: meta["scenario_path"] is gone, the copy is at config/<file>
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config" / "visiting_rush.yaml").write_text(
+        "id: visiting_rush\nrobot_brief: {job: x, destination: nurse_base_ward}\n")
+    d = make_run(tmp_path, robot_pose=[pose(0, 19.0, 6.5), pose(55, 21.46, 23.0)],
+                 meta={"scenario_path": str(tmp_path / "elsewhere" / "visiting_rush.yaml")})
+    assert val(d, "robot_reached_destination_s") == pytest.approx(55.0)
+
+
 def _fire(t, active, fid="fire_1"):
     return {"t": t, "objects": [{"id": fid, "kind": "fire", "size": 0.3 if active else 0.0, "active": active}]}
 
@@ -424,6 +434,32 @@ def test_thanks_after_a_hand_over_is_not_a_request(tmp_path):
         robot_tasks=_given("a", 11, "scalpel"),
     )
     assert val(d, "instruments_correct_rate") == pytest.approx(1.0)
+
+
+def test_a_late_repeat_extends_the_request_window(tmp_path):
+    # she repeats 55 s after the first request and the scalpel comes 7 s after the repeat (62 s after the first):
+    # one request, answered, with the latency from the first
+    d = make_run(
+        tmp_path,
+        objects=[_instruments(0), _instruments(73, scalpel="S1")],
+        audio=[_ask(10, "Scalpel, please"), _ask(65, "Scalpel! Now.")],
+        robot_tasks=_given("a", 71, "scalpel"),
+    )
+    assert val(d, "instruments_correct_rate") == pytest.approx(1.0)
+    assert val(d, "instrument_mean_latency_s") == pytest.approx(62.0)
+
+
+def test_a_mention_soon_after_the_hand_over_is_not_a_request_before_the_holder_shows(tmp_path):
+    # the objects stream has not caught up with the hand-over (nobody holds the scalpel yet): a remark within
+    # 10 s of the ok result is not a request, one 13 s after it is
+    def run(sub, t_said):
+        p = tmp_path / sub
+        p.mkdir()
+        return make_run(p, objects=[_instruments(0)],
+                        audio=[_ask(10, "Scalpel, please"), _ask(t_said, "Scalpel's good")],
+                        robot_tasks=_given("a", 11, "scalpel"))
+    assert val(run("soon", 15), "instruments_correct_rate") == pytest.approx(1.0)
+    assert val(run("later", 25), "instruments_correct_rate") == pytest.approx(1 / 2)
 
 
 def test_a_request_after_the_instrument_is_back_counts_again(tmp_path):
