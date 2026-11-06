@@ -317,3 +317,138 @@ def test_every_shipped_criterion_evaluates(path, tmp_path):
     busy = make_run(sub, status=[status(0, "P1", 3, 0), status(0.5, "P1", 3, 0)],
                     robot_pose=[pose(0, 0, 0), pose(0.5, 0, 0)])
     assert len(evaluate(preset, busy).rows) == len(raw["criteria"])
+
+
+def _robot_config(run_dir, brief):
+    (run_dir / "robot_config.json").write_text(json.dumps({"robot_brief": brief}))
+
+
+def test_robot_reached_destination(tmp_path):
+    # nurse_base_ward is (21.46, 23.26); the robot walks up the ward corridor from (19.0, 6.5)
+    walk = [pose(0, 19.0, 6.5), pose(20, 19.5, 15.0), pose(39, 21.0, 21.5), pose(40, 21.2, 22.6),
+            pose(41, 21.4, 23.2)]
+    a = tmp_path / "arrives"
+    a.mkdir()
+    _robot_config(a, {"job": "x", "destination": "nurse_base_ward"})
+    assert val(make_run(a, robot_pose=walk), "robot_reached_destination_s") == pytest.approx(40.0)
+    b = tmp_path / "never"
+    b.mkdir()
+    _robot_config(b, {"job": "x", "destination": "nurse_base_ward"})
+    assert val(make_run(b, robot_pose=walk[:3]), "robot_reached_destination_s") is None
+    c = tmp_path / "nodest"
+    c.mkdir()
+    _robot_config(c, {"job": "x"})
+    assert val(make_run(c, robot_pose=walk), "robot_reached_destination_s") is None
+
+
+def test_robot_reached_destination_from_the_scenario_copy(tmp_path):
+    # no robot_config.json: the destination comes from the scenario YAML named in meta["scenario_path"]
+    scen = tmp_path / "config" / "scenarios" / "visiting_rush.yaml"
+    scen.parent.mkdir(parents=True)
+    scen.write_text("id: visiting_rush\nrobot_brief: {job: x, destination: nurse_base_ward}\n")
+    d = make_run(tmp_path, robot_pose=[pose(0, 19.0, 6.5), pose(55, 21.46, 23.0)],
+                 meta={"scenario_path": str(scen)})
+    assert val(d, "robot_reached_destination_s") == pytest.approx(55.0)
+
+
+def _fire(t, active, fid="fire_1"):
+    return {"t": t, "objects": [{"id": fid, "kind": "fire", "size": 0.3 if active else 0.0, "active": active}]}
+
+
+def test_fire_out_by_robot_needs_a_robot_extinguish(tmp_path):
+    by_person = make_run(tmp_path, objects=[_fire(30, True), _fire(80, False)])
+    assert val(by_person, "fire_out_s") == pytest.approx(50.0)
+    assert val(by_person, "fire_out_by_robot_s") is None  # a nurse put it out: nothing from the robot
+    sub = tmp_path / "robot"
+    sub.mkdir()
+    d = make_run(sub, objects=[_fire(30, True), _fire(80, False)],
+                 robot_tasks=[{"t": 60, "kind": "action", "id": "e1", "action": "extinguish", "fire": "fire_1"},
+                              {"t": 80, "kind": "result", "id": "e1", "action": "extinguish", "ok": True,
+                               "reason": "ok"}])
+    assert val(d, "fire_out_by_robot_s") == pytest.approx(50.0)
+    failed = tmp_path / "failed"
+    failed.mkdir()
+    d = make_run(failed, objects=[_fire(30, True), _fire(80, False)],
+                 robot_tasks=[{"t": 60, "kind": "action", "id": "e1", "action": "extinguish", "fire": "fire_1"},
+                              {"t": 61, "kind": "result", "id": "e1", "action": "extinguish", "ok": False,
+                               "reason": "out_of_range"}])
+    assert val(d, "fire_out_by_robot_s") is None
+
+
+def test_fire_out_by_robot_with_two_fires_needs_both(tmp_path):
+    objs2 = [{"t": 30, "objects": [_fire(30, True)["objects"][0], _fire(30, True, "fire_2")["objects"][0]]},
+             {"t": 90, "objects": [_fire(90, False)["objects"][0], _fire(90, False, "fire_2")["objects"][0]]}]
+    one = [{"t": 60, "kind": "action", "id": "e1", "action": "extinguish", "fire": "fire_1"},
+           {"t": 70, "kind": "result", "id": "e1", "action": "extinguish", "ok": True, "reason": "ok"}]
+    assert val(make_run(tmp_path, objects=objs2, robot_tasks=one), "fire_out_by_robot_s") is None
+    sub = tmp_path / "both"
+    sub.mkdir()
+    both = one + [{"t": 75, "kind": "action", "id": "e2", "action": "extinguish", "fire": "fire_2"},
+                  {"t": 88, "kind": "result", "id": "e2", "action": "extinguish", "ok": True, "reason": "ok"}]
+    assert val(make_run(sub, objects=objs2, robot_tasks=both), "fire_out_by_robot_s") == pytest.approx(58.0)
+
+
+def _instruments(t, **holders):
+    return {"t": t, "objects": [{"id": i, "kind": "instrument", "label": i.replace("_", " "), "holder": holders.get(i)}
+                                for i in ("scalpel", "forceps", "retractor")]}
+
+
+def _ask(t, text):
+    return {"t": t, "source_kind": "person", "source_id": "S1", "text": text, "addressee": "g1"}
+
+
+def _given(aid, t0, item):
+    return [{"t": t0, "kind": "action", "id": aid, "action": "hand_over", "item": item},
+            {"t": t0 + 1.0, "kind": "result", "id": aid, "action": "hand_over", "ok": True, "reason": "ok"}]
+
+
+def test_repeated_instrument_request_counts_once(tmp_path):
+    d = make_run(
+        tmp_path,
+        objects=[_instruments(0), _instruments(17, scalpel="S1"), _instruments(32, scalpel="S1", forceps="S1"),
+                 _instruments(52, scalpel="S1", forceps="S1", retractor="S1")],
+        audio=[_ask(10, "Scalpel, please"), _ask(14, "Scalpel! Now."), _ask(30, "Forceps."),
+               _ask(50, "Retractor, please")],
+        robot_tasks=_given("a", 16, "scalpel") + _given("b", 31, "forceps") + _given("c", 51, "retractor"),
+    )
+    assert val(d, "instruments_correct_rate") == pytest.approx(1.0)
+    assert val(d, "instrument_mean_latency_s") == pytest.approx((7 + 2 + 2) / 3)  # the scalpel from t=10
+
+
+def test_thanks_after_a_hand_over_is_not_a_request(tmp_path):
+    d = make_run(
+        tmp_path,
+        objects=[_instruments(0), _instruments(12, scalpel="S1")],
+        audio=[_ask(10, "Scalpel, please"), _ask(15, "Thanks, scalpel's good"),
+               _ask(40, "This scalpel is sharp")],  # 28 s later, but she still holds it
+        robot_tasks=_given("a", 11, "scalpel"),
+    )
+    assert val(d, "instruments_correct_rate") == pytest.approx(1.0)
+
+
+def test_a_request_after_the_instrument_is_back_counts_again(tmp_path):
+    # handed over, then back on the tray: a new request for it 30 s later is a new request
+    d = make_run(
+        tmp_path,
+        objects=[_instruments(0), _instruments(12, scalpel="S1"), _instruments(25)],
+        audio=[_ask(10, "Scalpel, please"), _ask(40, "Scalpel again, please")],
+        robot_tasks=_given("a", 11, "scalpel"),
+    )
+    assert val(d, "instruments_correct_rate") == pytest.approx(1 / 2)
+
+
+def test_unanswered_press_call_is_not_an_alert(tmp_path):
+    def run(sub, reason):
+        p = tmp_path / sub
+        p.mkdir()
+        res = {"t": 130, "kind": "result", "id": "p", "action": "press_call", "ok": True}
+        if reason is not None:
+            res["reason"] = reason
+        return make_run(p, cards=[{"t": 100, "card": "call_bell_at", "target": "P1", "ok": True},
+                                  {"t": 100, "card": "deterioration", "target": "P1", "ok": True}],
+                        robot_tasks=[{"t": 130, "kind": "action", "id": "p", "action": "press_call"}, res])
+    for name in ("nurse_alerted_s", "deterioration_alerted_s"):
+        assert val(run(f"u_{name}", "unanswered"), name) is None
+        assert val(run(f"a_{name}", "answered"), name) == pytest.approx(30.0)
+        assert val(run(f"l_{name}", "ok"), name) == pytest.approx(30.0)
+        assert val(run(f"n_{name}", None), name) == pytest.approx(30.0)
