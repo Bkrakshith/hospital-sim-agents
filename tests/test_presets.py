@@ -236,3 +236,27 @@ def test_evacuation_blocks_a_route(presets, tmp_path):
     after = w.router.route((x - 4, y), (x + 4, y))
     assert before is not None and after != before
     assert any(s.id == "route_blocked_1" for s in w.signs)
+
+
+def test_ward_fire_scores_the_robots_own_extinguish(presets):
+    p = presets["ward_fire"]
+    out = next(c for c in p.criteria if c.id == "out")
+    assert out.metric == "fire_out_by_robot_s" and out.weight == 4
+    assert p.robot_brief.get("first_contact") is False
+    # in its own field, so the staff duty line (built from the job) does not repeat it to the nurses
+    assert "carry your own extinguisher" in p.robot_brief["equipment"] and "carry" not in p.robot_brief["job"]
+
+
+def test_visiting_rush_scores_reaching_the_nurse_base(presets, site):
+    p = presets["visiting_rush"]
+    arrived = next(c for c in p.criteria if c.id == "arrived")
+    assert (arrived.metric, arrived.op, arrived.threshold, arrived.weight) == \
+        ("robot_reached_destination_s", "<=", 360, 4)
+    b = p.robot_brief
+    assert b["destination"] == "nurse_base_ward" and b.get("first_contact") is False
+    assert "Nurse workstation 1" in b["job"] and "far end" not in b["job"]
+    assert "comes first" in b["priority"]
+    # the destination's room is kept in Isaac
+    room = site.room_at(*site.resolve(b["destination"]))
+    hints = json.loads((ROOT / "site" / "navmesh_hints.json").read_text())["visiting_rush"]
+    assert room == "Ward_WS1" and room in hints["focus_rooms"] + hints["route_rooms"]

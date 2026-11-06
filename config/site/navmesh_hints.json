@@ -71,7 +71,8 @@
   "route_rooms": [
    "Lobby",
    "Main_Corridor",
-   "Ward_Entrance"
+   "Ward_Entrance",
+   "Ward_WS1"
   ]
  },
  "wandering_patient": {
