@@ -61,6 +61,16 @@ def test_ae_p2_is_a_walk_in(staged):
     assert p2.seat is None and p2.posture == "standing", "Ava walks in: the robot checks her in and seats her"
     assert w.site.room_at(p2.x, p2.y) == "AE_Waiting"
     assert not w._seat_taken("A1", "")
+    # she and the robot see each other from the start, so checking her in is the robot's doing, not luck
+    assert "P2" in seen_people(w)
+    assert "g1" in [v.id for v in w.observation("P2", 0.0, []).visible if v.kind == "robot"]
+
+
+def test_ae_robot_reaches_george_past_the_walk_in(staged, tmp_path):
+    s = sim(staged("ae_waiting", with_auto=True), tmp_path)
+    s.on_task_action({"id": "a1", "action": "approach", "track": s.world.tracks.track("P1")})
+    goals = [r for r in results(advance(s, 30.0), "a1") if r.get("kind") == "goal"]
+    assert goals and goals[0]["reason"] in ("arrived", "already_there"), goals
 
 
 def test_ae_triage_nurse_has_her_own_job(staged):
