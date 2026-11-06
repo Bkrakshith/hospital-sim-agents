@@ -158,7 +158,9 @@ def test_room_at_smallest_overlap(model):
 
 def test_resolve_prefixes_and_order(model):
     seat = model.seats["B2"]
-    assert model.resolve("B2") == (seat.x, seat.y)
+    # A&E seats B1-B3 share their ids with the ward bedrooms: a bare id is the room, the seat needs its prefix
+    assert model.resolve("B2") == model.resolve("room:B2")
+    assert model.room_at(*model.resolve("B2")) == "B2"
     assert model.resolve("seat:B2") == (seat.x, seat.y)
     assert model.resolve("landmark:entrance") == model.resolve("entrance")
     assert model.resolve("room:B2") != model.resolve("seat:B2")

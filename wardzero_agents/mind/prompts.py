@@ -326,6 +326,9 @@ def _heard_line(h: Heard) -> str:
         prefix = "ROBOT SAID TO YOU" if h.addressed_to_me else "ROBOT SAID NEARBY"
         return f"{prefix}: {h.text}{part}"
     if h.source_kind == "person":
+        if not h.text and h.source_id.startswith("bell_"):
+            bed = h.source_id[len("bell_"):]
+            return "A staff call chime sounds." if bed == "robot" else f"A call bell is ringing (bed {bed})."
         if not h.text:
             return f"{h.source_id} said something you could not make out."
         to = " to you" if h.addressed_to_me else ""
@@ -362,6 +365,11 @@ def _where_pos(status: Status, area: Optional[WaitingArea]) -> str:
     return out + "."
 
 
+# Reasons whose identifier would not read as a reason to a person. The others are left as they are, so the prompts
+# of existing runs do not change.
+TRIGGER_WORDS = {"start": "you are just starting: take stock of where you are and decide what to do"}
+
+
 def render_situation(inst: PersonInstance, obs: Observation, status: Status, triggers: list[str],
                      nudges: list[Nudge], clock_min: float, *, mood: str = "calm",
                      patience_left: float = 1.0, current_intent: Optional[dict] = None,
@@ -394,6 +402,7 @@ def render_situation(inst: PersonInstance, obs: Observation, status: Status, tri
     if obs.heard:
         lines.append("You hear:")
         lines += [_heard_line(h) for h in obs.heard]
-    lines.append("Why you are deciding now: " + (", ".join(triggers) if triggers else "nothing new"))
+    lines.append("Why you are deciding now: " + (", ".join(TRIGGER_WORDS.get(r, r) for r in triggers)
+                                                 if triggers else "nothing new"))
     lines += [f"NUDGE: {n.message}" for n in nudges]
     return "\n".join(lines)

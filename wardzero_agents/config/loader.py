@@ -176,6 +176,8 @@ def _cross_check(scenario: Scenario, personas: dict[str, Persona], area: Waiting
     for name in [area.entrance, area.nurse_call_point, *area.exits]:
         if name not in area.landmarks:
             raise ConfigError(f"{scenario.area or 'site'}: unknown landmark '{name}'")
+    if scenario.arrival_entrance is not None and scenario.arrival_entrance not in area.landmarks:
+        raise ConfigError(f"arrival_entrance: unknown landmark '{scenario.arrival_entrance}'")
     for k, name in enumerate(scenario.known_places):
         if site is not None and site.resolve(name) is None:
             raise ConfigError(f"known_places[{k}]: unknown place '{name}'")

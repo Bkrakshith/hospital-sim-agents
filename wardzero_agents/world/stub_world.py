@@ -42,12 +42,13 @@ from wardzero_agents.world.objects import (
 )
 from wardzero_agents.world.reach import giver_reach_ok, receiver_zone_ok
 from wardzero_agents.world.oracle import Entity, Pose, visible
-from wardzero_agents.world.perception import Tracks
+from wardzero_agents.world.perception import Tracks, call_light_points
 from wardzero_agents.world.robot_body import CONTACT_MARGIN_M, RobotBody
 from wardzero_agents.world.route_follower import ROBOT_HARD_M
 
 ROBOT_ID = "g1"
 ROUTE_BLOCK_RADIUS_M = 1.5  # a route_blocked event seals this radius for routing
+FIRE_KEEP_M = 1.0  # no route (a person's or the robot's) comes closer than this to a burning fire
 APPROACH_GAP_M = 1.0
 SEAT_VIEW_RANGE_M = 6.0
 PERSON_Z = 1.6
@@ -64,7 +65,7 @@ STATIC_PERSONA = "static_patient"
 PERSON_REACH_Z = (0.5, 1.6)
 GIVE_RANGE_M = 1.5
 TAKE_RANGE_M = 1.2
-BELL_DB = 55.0
+BELL_DB = 65.0  # carries the length of the ward corridor (heard in full to about 28 m)
 ALARM_DB = 100.0
 APPROACH_KINDS = ("approach", "attend")
 # where a person is sent to stand (walking up to someone, following the robot) is moved to free floor: out of the
@@ -80,6 +81,7 @@ FOLLOW_FAR_M = 1.5
 FOLLOW_GAP_M = 1.25  # ... walking up to this far behind when they have fallen back
 FOLLOW_DONE_M = 1.75  # the robot has stopped and the follower is this close: the follow is done
 ROBOT_AVOID_M = 0.75  # people's routes keep this far from where the robot stands, when they can
+ARRIVAL_JITTER_M = 0.8  # people arriving mid-run appear up to this far from the entrance, so they do not stack
 STAFF_ROLES = frozenset({"receptionist", "ward_nurse", "staff", "nurse", "porter", "surgeon"})
 ROLE_KINDS = ("give_item", "take_item", "call_for_help", "call_bell", "accept_item", "refuse_item",
               "request_instrument", "reject_item", "take_instrument_self", "use_extinguisher",
@@ -603,14 +605,27 @@ class StubWorld:
     def _end_timed(self, p: _Person, ph: _Phase) -> None:
         """A stand or sit phase has run its time: the person is standing (seat and bed freed) or seated."""
         if ph.kind == "stand":
+            from_bed = p.bed is not None
             p.posture = "standing"
             p.seat = None
             p.bed = None
+            if from_bed and self.site.grid.blocked(p.x, p.y):
+                self._out_of_bed(p)
         else:
             seat = self._seats[p.claim]
             p.x, p.y, p.yaw, p.posture = seat.x, seat.y, seat.yaw, "seated"
             if p.state != "running":  # the sit outlived its intent (a quick intent came meanwhile): the seat is theirs
                 p.seat, p.claim = p.claim, None
+
+    def _out_of_bed(self, p: _Person) -> None:
+        """A patient who gets up stands beside the bed, not inside it: where the walk that follows leaves the bed (the
+        route's first free point), else on the nearest free floor."""
+        nxt = p.plan[0] if p.plan and p.plan[0].kind == "walk" and not p.plan[0].lazy else None
+        if nxt is not None and nxt.i < len(nxt.path) and not self.site.grid.blocked(*nxt.path[nxt.i]):
+            p.x, p.y = nxt.path[nxt.i]
+            nxt.i += 1
+            return
+        p.x, p.y = self.free_spot(p.x, p.y, p.inst.person_id)
 
     def _settle(self, p: _Person) -> None:
         """After a phase ends: the intent is done when the plan is empty, else its progress moves on."""
@@ -974,13 +989,22 @@ class StubWorld:
                 size = "small" if f.size < 0.34 else "medium" if f.size < 0.67 else "large"
                 text[f"fire:{f.id}"] = ("fire", f"a {size} fire (id {f.id})")
         for b in self.objects.bells.values():
-            bed = self.site.beds.get(b.bed_id)
-            if b.active and bed is not None:
-                ents.append(Entity("seat", f"bell:{b.bed_id}", bed.x, bed.y))
-                text[f"bell:{b.bed_id}"] = ("call_light", f"call light on at bed {b.bed_id}")
-        return [SeenObject(kind=text[s.id][0], id=s.id.split(":", 1)[1], distance=s.distance,
-                           bearing_deg=s.bearing_deg, detail=text[s.id][1])
-                for s in visible(me, ents, [], los=self._los)]
+            if not b.active:
+                continue
+            for k, (lx, ly) in enumerate(call_light_points(self.site, b.bed_id)):
+                ents.append(Entity("seat", f"bell:{b.bed_id}:{k}", lx, ly))
+                text[f"bell:{b.bed_id}:{k}"] = ("call_light", f"call light on at bed {b.bed_id}")
+        out, lit = [], set()
+        for s in sorted(visible(me, ents, [], los=self._los), key=lambda s: s.distance):
+            kind, detail = text[s.id]
+            if kind == "call_light":  # one line per bell, however many of its lights are in view
+                bed_id = s.id.split(":")[1]
+                if bed_id in lit:
+                    continue
+                lit.add(bed_id)
+            out.append(SeenObject(kind=kind, id=s.id.split(":")[1], distance=s.distance,
+                                  bearing_deg=s.bearing_deg, detail=detail))
+        return out
 
     # ---- world events and spawning -------------------------------------------------------
     def spawn(self, persona_id: str, t: float) -> str:
@@ -990,7 +1014,18 @@ class StubWorld:
         while f"N{self._spawned}" in self.people:  # never overwrite a cast person who has an N id
             self._spawned += 1
         pid = f"N{self._spawned}"
-        self.people[pid] = self._at_entrance(spawned_instance(self.loaded, pid, persona_id, t))
+        p = self._at_entrance(spawned_instance(self.loaded, pid, persona_id, t))
+        if self.loaded.scenario.arrival_entrance is not None and p.inst.entrance is None:
+            lm = self.site.landmarks[self.loaded.scenario.arrival_entrance]
+            p.x, p.y = lm.x, lm.y
+        # a spot of its own near the entrance: its own random stream, so the rest of the run's draws are unchanged
+        rng = np.random.default_rng((self.loaded.scenario.seed, self._spawned))
+        a, r = rng.uniform(0.0, 2 * math.pi), ARRIVAL_JITTER_M * math.sqrt(rng.uniform())
+        x, y = p.x + r * math.cos(a), p.y + r * math.sin(a)
+        if self.router.is_free(x, y) and self._los((p.x, p.y), (x, y)):
+            p.x, p.y = x, y
+        self.people[pid] = p
+        p.x, p.y = self.free_spot(p.x, p.y, pid)
         return pid
 
     def apply_world_event(self, ev: WorldEvent) -> list[AudioEvent]:
@@ -1020,18 +1055,32 @@ class StubWorld:
             return []
         if ev.kind == "fire_start":
             self.objects.start_fire(x, y)
+            self._fire_hazards()
             self._log_objects(ev.t)
             return []
         if ev.kind == "arrival":
-            persona = ev.persona or (
-                "anxious_first_timer" if "anxious_first_timer" in self.loaded.personas
-                else next(iter(self.loaded.personas))
-            )
+            persona = ev.persona
+            if persona is None and "anxious_first_timer" in self.loaded.personas:
+                persona = "anxious_first_timer"
+            if persona is None:
+                from wardzero_agents.director.cards import arrival_persona
+                in_bed = {i.persona_id for i in self.loaded.instances if i.start is not None and i.start.bed}
+                persona = arrival_persona(self.loaded.personas, self.loaded.scenario.seed, ev.id, in_bed)
+            if persona is None:
+                log.warning("arrival ignored: nobody in this scenario could walk in")
+                return []
             try:
                 self.spawn(persona, ev.t)
             except ValueError:
                 log.warning("arrival ignored: unknown persona '%s'", persona)
             return []
+        if ev.kind == "ring_bell":
+            # the scenario rings the bell itself, so it does not hang on the patient's model choosing to ring
+            q = self.people.get(ev.person or "")
+            if q is None or q.posture != "lying" or q.bed is None:
+                log.warning("ring_bell ignored: '%s' is not a patient in bed", ev.person)
+                return []
+            return self._ring_bell(q, ev.t)
         if ev.kind == "person_exit" and ev.person:
             q = self.people.get(ev.person)
             if q is None or q.posture == "gone":
@@ -1081,7 +1130,35 @@ class StubWorld:
                     self._fighting.pop(pid)
                     p.state, p.progress = "done", 1.0
         self._resolve_offers(t)
+        self._fire_hazards()
         self._log_objects(t)
+
+    def _fire_hazards(self) -> None:
+        """Every router (people's, the robot's and any it was swapped for) keeps out of the burning fires."""
+        discs = tuple((f.x, f.y, FIRE_KEEP_M) for f in self.objects.fires.values() if not f.out)
+        if discs == getattr(self, "_hazards", ()):
+            return
+        self._hazards = discs
+        for r in {id(r): r for r in (self.router, self.robot_router, getattr(self.robot, "router", None))
+                  if r is not None and hasattr(r, "set_hazards")}.values():
+            r.set_hazards(discs)
+        for p in self.people.values():  # walks planned before the fire: round it now (later phases when they start)
+            if p.posture == "gone" or p.inst.person_id in self.body_driven:
+                continue
+            for k, ph in enumerate(p.plan):
+                if ph.kind != "walk" or ph.trail:
+                    continue
+                if k > 0:
+                    ph.lazy = ph.lazy or ph.goal is not None
+                    continue
+                goal = self._walk_dest(p, ph) if ph.follow is not None else (ph.goal or ph.dest)
+                path = self.router.route((p.x, p.y), goal, self._robot_disc(p)) if goal is not None else None
+                if path is None:
+                    p.plan, p.claim = [], None
+                    p.state, p.reason = "failed", "no route"
+                    p.posture = "standing"
+                    break
+                ph.path, ph.i, ph.goal = path, 1, goal
 
     def extinguish(self, by: str, t: float, dt: float) -> bool:
         """by (the robot or a person) sprays the nearest fire within 2 m for dt seconds."""
@@ -1164,6 +1241,17 @@ class StubWorld:
         bases = [r.centre for r in self.site.rooms.values() if r.use == "nurse_base"]
         return min(bases, key=lambda c: math.hypot(c[0] - x, c[1] - y)) if bases else (x, y)
 
+    def _ring_bell(self, p: _Person, t: float) -> list[AudioEvent]:
+        """Light p's call bell and chime it at the bed and at the nearest nurse base, so whoever is on the ward
+        (the robot included) can hear it, not only the nurses at their base."""
+        self.objects.ring(p.bed, t)
+        bed = self.site.beds.get(p.bed or "")
+        bx, by = (bed.x, bed.y) if bed is not None else (p.x, p.y)
+        nx, ny = self._nurse_base(p.x, p.y)
+        self._log_objects(t)
+        return [self._event(t, "person", f"bell_{p.bed}", bx, by, 1.0, BELL_DB),
+                self._event(t, "person", f"bell_{p.bed}", nx, ny, 2.0, BELL_DB)]
+
     def _held(self, who: str) -> list:
         return [i for i in self.objects.items.values() if i.holder == who]
 
@@ -1207,10 +1295,7 @@ class StubWorld:
         elif kind == "lie_back":
             p.sitting_up = False
         elif kind == "call_bell":
-            self.objects.ring(p.bed, t)
-            bx, by = self._nurse_base(p.x, p.y)
-            out.append(self._event(t, "person", f"bell_{p.bed}", bx, by, 2.0, BELL_DB))
-            self._log_objects(t)
+            out += self._ring_bell(p, t)
         elif kind in ("accept_item", "refuse_item"):
             self._responses[pid] = (kind, t)
         elif kind == "call_for_help":

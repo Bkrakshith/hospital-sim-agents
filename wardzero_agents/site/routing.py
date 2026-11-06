@@ -39,6 +39,7 @@ class Router:
         self._cache: "OrderedDict[tuple, Optional[list]]" = OrderedDict()
         self._size = cache_size
         self.version = 0  # goes up with every block(): a router built from this one knows to rebuild
+        self.hazards: tuple = ()  # (x, y, r) discs no route may enter (a fire), unlike the avoid discs, which give way
 
     def _inflate(self, occ: np.ndarray, clearance: float) -> np.ndarray:
         r = clearance / self.grid.res
@@ -94,6 +95,15 @@ class Router:
         out._cache = OrderedDict()
         out.rebuild_bands()
         return out
+
+    def set_hazards(self, discs) -> None:
+        """(x, y, r) discs no route enters while they last (a fire): a route goes round them or there is none."""
+        self.hazards = tuple(discs)
+
+    def _hazard_cells(self, a) -> frozenset:
+        """The cells of the hazard discs, less any disc a (the route's start) is already in: one can walk out."""
+        hz = [d for d in getattr(self, "hazards", ()) if math.hypot(a[0] - d[0], a[1] - d[1]) > d[2]]
+        return self._discs(hz, ()) if hz else frozenset()
 
     def is_free(self, x: float, y: float) -> bool:
         """Free of walls and of the clearance band."""
@@ -230,15 +240,21 @@ class Router:
             return tuple(p) if self.grid.to_cell(*p) == c else self.grid.to_world(*c)
 
         ea, eb = endpoint(a, ca), endpoint(b, cb)
+        hz = self._hazard_cells(a)
+        if cb in hz:
+            return None  # the goal is in a fire
         if getattr(self, "_hard", None) is not None:
-            strict = self._strict(ca, cb, avoid)
+            strict = self._strict(ca, cb, avoid, hz)
             if strict is not None:
                 return [ea] + list(strict) + [eb]
         extra = self._discs(avoid, (ca, cb)) if avoid else frozenset()
         if extra:
-            mid = self._plan(ca, cb, extra)
+            mid = self._plan(ca, cb, extra | hz)
             if mid is not None:
                 return [ea] + list(mid) + [eb]
+        if hz:  # not cached: hazards come and go
+            mid = self._plan(ca, cb, hz)
+            return None if mid is None else [ea] + list(mid) + [eb]
         key = (ca, cb)
         if key in self._cache:
             self._cache.move_to_end(key)
@@ -250,7 +266,7 @@ class Router:
                 self._cache.popitem(last=False)
         return None if mid is None else [ea] + list(mid) + [eb]
 
-    def _strict(self, ca, cb, avoid) -> Optional[list]:
+    def _strict(self, ca, cb, avoid, hz=frozenset()) -> Optional[list]:
         """The inner waypoints of a route that keeps out of the hard band (and of the avoid discs if it can), or None.
         Band cells within ``hard`` + 0.5 m of either end stay open, so a route can leave or reach a spot by furniture."""
         g = self.grid
@@ -263,7 +279,7 @@ class Router:
         if base is None or base[0] != self.version:  # the band's cells, once per change of the map
             base = (self.version, frozenset((y, x) for y in range(h) for x in range(w) if hard[y][x] and not self._raw[y][x]))
             self._hard_cells = base
-        band = base[1] - ends
+        band = (base[1] - ends) | hz
         discs = self._discs(avoid, (ca, cb)) if avoid else frozenset()
         if discs:
             mid = self._plan(ca, cb, band | discs)

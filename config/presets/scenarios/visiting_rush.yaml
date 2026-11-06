@@ -6,6 +6,7 @@ prompt: >-
 focus_rooms: [Ward_Corridor]
 known_places: [Ward_Entrance, Ward_Corridor, ward_doors, nurse_base_ward, B1, B3]
 duration_min: 10
+arrival_entrance: ward_entrance
 robot_brief:
   role: ward corridor runner
   job: Get through the crowd to the nurse base at the far end of the ward corridor. Give way, keep to a walking pace, and do not push through.

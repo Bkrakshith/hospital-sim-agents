@@ -377,3 +377,13 @@ def test_cli_claude_child_is_the_only_robot_with_the_key(monkeypatch):
     (r,) = cli._bot_children("reception", "/r.json", "/run", 18)
     assert "ANTHROPIC_API_KEY" not in r.env  # the key-free env
     assert cli._bot_children("none", "/r.json", "/run") == []
+
+
+def test_a_ward_bedroom_is_not_mistaken_for_an_ae_seat():
+    from wardzero_agents.robots.claude_robot import route_words
+    from wardzero_agents.site.model import load_site
+    site = load_site(Path(__file__).resolve().parents[1] / "config")
+    text = route_words(site, (19.0, 15.0, 0.0), ["B1", "B3"])
+    line = next(ln for ln in text.splitlines() if "B3" in ln)
+    assert "A&E" not in line and "about" in line
+    assert int(line.split("about ")[1].split(" m")[0]) < 10

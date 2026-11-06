@@ -6,6 +6,7 @@ prompt: >-
 focus_rooms: [Ward_Corridor, Main_LiftLobby]
 known_places: [Ward_Entrance, Ward_Corridor, ward_doors, Main_Corridor, Main_LiftLobby, porter_point]
 duration_min: 10
+arrival_entrance: ward_entrance
 robot_brief:
   role: specimen runner
   job: Carry the specimen box from the ward nurse base to the porter waiting at the main lift lobby. Hand it to the porter, and share the corridor and lift lobby politely.

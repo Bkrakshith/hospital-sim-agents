@@ -155,7 +155,7 @@ class WorldEvent(_Envelope):
     id: str
     t: float
     kind: Literal["pa_announcement", "alarm", "wet_floor", "arrival", "person_exit", "fire_start",
-                  "route_blocked"]
+                  "route_blocked", "ring_bell"]
     text: Optional[str] = None
     x: Optional[float] = None
     y: Optional[float] = None

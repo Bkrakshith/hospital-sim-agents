@@ -135,6 +135,7 @@ class ScenarioPreset(_P):
     criteria: list[Criterion]
     ladder: dict[int, str]
     duration_min: float = Field(default=10, gt=0, le=60)
+    arrival_entrance: Optional[str] = None  # a landmark: where the arrival card brings people in (None: main entrance)
     sources: list[str] = Field(default_factory=list)
     # False: shown last in the Studio, and hidden when WARDZERO_STUDIO_PUBLIC_CAPTURE=1 (demo films and screenshots)
     listed_in_public_capture: bool = True
@@ -308,6 +309,8 @@ def preset_to_scenario(preset: ScenarioPreset, root: "str | Path", dest: "str | 
         flow = prune_flow(flow, [e["id"] for e in cast])
         (dest / "flows" / f"{preset.id}.yaml").write_text(dump_flow(flow))
         scenario["flow"] = f"../flows/{preset.id}.yaml"
+    if preset.arrival_entrance is not None:
+        scenario["arrival_entrance"] = preset.arrival_entrance
     scenario.update(scenario_extra or {})
     path = dest / "scenarios" / f"{preset.id}.yaml"
     path.write_text(yaml.safe_dump(scenario, sort_keys=False))
