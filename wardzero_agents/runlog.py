@@ -60,7 +60,7 @@ class RunLog:
             os.replace(tmp, self.dir / "meta.json")
 
     def copy_configs(self, loaded, overrides: "dict | None" = None) -> Path:
-        """Copy the scenario, personas, area, signs, storyboard and deck YAML into config/.
+        """Copy the scenario, personas, area, signs, storyboard, deck and flow YAML into config/.
 
         The copy is self-contained: the copied scenario's storyboard and deck fields name the
         copied files, so load_scenario(config/<scenario>.yaml) works from the run folder alone
@@ -77,11 +77,14 @@ class RunLog:
             plain.append(loaded.root / f"{sc.area}.yaml")
         taken = {spath.name, *(p.name for p in plain)}
         names = {}
-        for kind, src in (("storyboard", storyboard), ("deck", deck)):
+        sources = [("storyboard", storyboard), ("deck", deck)]
+        if getattr(sc, "flow", None):  # the scenario flow the director runs
+            sources.append(("flow", spath.parent / sc.flow))
+        for kind, src in sources:
             name = src.name if src.name not in taken else f"{kind}_{src.name}"
             taken.add(name)
             names[kind] = name
-        for src, name in [*((p, p.name) for p in plain), (storyboard, names["storyboard"]), (deck, names["deck"])]:
+        for src, name in [*((p, p.name) for p in plain), *((src, names[k]) for k, src in sources)]:
             dst = dest / name
             if src.is_file() and not (dst.exists() and os.path.samefile(src, dst)):
                 shutil.copyfile(src, dst)
@@ -91,6 +94,8 @@ class RunLog:
         raw = yaml.safe_load(spath.read_text(encoding="utf-8"))
         want = dict(raw)
         want.update(storyboard=names["storyboard"], deck=names["deck"])
+        if "flow" in names:
+            want["flow"] = names["flow"]
         want.update(overrides or {})
         out = dest / spath.name
         if out.exists() and os.path.samefile(spath, out) and want == raw:

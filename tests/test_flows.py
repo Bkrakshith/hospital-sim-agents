@@ -276,3 +276,13 @@ def test_the_flow_request_never_sends_an_empty_text_block():
     _adapt(gw)
     r = gw.reqs[0]
     assert r.system_fixed.strip() and r.persona_card.strip() and r.user.strip()
+
+
+def test_a_run_folder_copy_keeps_the_flow_so_the_run_loads_it(tmp_path):
+    from wardzero_agents.config.loader import load_scenario
+    from wardzero_agents.runlog import RunLog
+    loaded = preset_to_scenario(PRESETS["ae_waiting"], CONFIG, tmp_path / "staged")
+    copied = RunLog(tmp_path / "run").copy_configs(loaded)
+    again = load_scenario(copied)
+    assert again.flow is not None and again.flow.steps == loaded.flow.steps
+    assert (tmp_path / "run" / "config" / "ae_waiting.yaml").exists() or again.scenario.flow
