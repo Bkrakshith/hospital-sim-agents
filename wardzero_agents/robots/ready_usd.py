@@ -8,6 +8,7 @@ built-in G1's the first time it is needed.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from pathlib import Path
 from typing import Callable, Optional
@@ -17,7 +18,9 @@ from .sensors import write_sensors_yaml
 
 REPO = Path(__file__).resolve().parents[2]
 SCRIPT = REPO / "scripts" / "isaac_import_urdf.py"
-G1_URDF = REPO.parent / "g1-brainco-description" / "g1_29dof_brainco" / "urdf" / "g1_29dof_brainco.urdf"
+# $HG1_ROOT (set by env.sh) is the Hospital_G1 checkout; a git worktree of this repo is not next to the URDF
+G1_URDF = (Path(os.environ.get("HG1_ROOT") or REPO.parent) / "g1-brainco-description" / "g1_29dof_brainco" / "urdf"
+           / "g1_29dof_brainco.urdf")
 CONVERT_TIMEOUT_S = 600
 
 
@@ -29,8 +32,14 @@ def robot_urdf(profile: RobotProfile) -> Path:
     raise ValueError(f"robot {profile.name!r} has no URDF to convert")
 
 
-def ready_usd_path(profile: RobotProfile, data: Optional[Path] = None) -> Path:
-    return profile_path(profile.name, data).parent / "robot.usd"
+def ready_usd_path(profile: RobotProfile, data: Optional[Path] = None, floating: bool = False) -> Path:
+    """robot.usd (fixed base, anchored to the world) or robot_floating.usd (a free base: the walking G1)."""
+    return profile_path(profile.name, data).parent / ("robot_floating.usd" if floating else "robot.usd")
+
+
+def floating_base(profile: RobotProfile) -> bool:
+    """A robot that walks on its own legs gets a free base; every other robot keeps the fixed one."""
+    return profile.base == "legged" and profile.can_move
 
 
 def _sensors_text(profile: RobotProfile) -> str:
@@ -42,17 +51,19 @@ def is_stale(usd: Path, inputs) -> bool:
     return not usd.exists() or any(Path(i).exists() and Path(i).stat().st_mtime > usd.stat().st_mtime for i in inputs)
 
 
-def convert_command(urdf: Path, sensors: Path, out: Path, python: Optional[str] = None) -> list[str]:
-    import os
+def convert_command(urdf: Path, sensors: Path, out: Path, python: Optional[str] = None,
+                    floating: bool = False) -> list[str]:
     py = python or os.environ.get("WARDZERO_ISAAC_PYTHON") or str(Path.home() / "isaacsim" / "python.sh")
-    return [py, str(SCRIPT), "--urdf", str(urdf), "--sensors", str(sensors), "--out", str(out)]
+    return [py, str(SCRIPT), "--urdf", str(urdf), "--sensors", str(sensors), "--out", str(out)] + (
+        ["--floating-base"] if floating else [])
 
 
 def ensure_ready_usd(profile: RobotProfile, data: Optional[Path] = None,
                      runner: Callable = subprocess.run) -> Path:
     """The ready USD for the robot, converting first when it is missing or older than its URDF, sensors or importer."""
     urdf = robot_urdf(profile)
-    out = ready_usd_path(profile, data)
+    floating = floating_base(profile)
+    out = ready_usd_path(profile, data, floating)
     out.parent.mkdir(parents=True, exist_ok=True)
     sensors = out.parent / "wardzero_sensors.yaml"
     text = _sensors_text(profile)
@@ -60,7 +71,7 @@ def ensure_ready_usd(profile: RobotProfile, data: Optional[Path] = None,
         write_sensors_yaml(out.parent, profile.sensors)
     if not is_stale(out, (urdf, sensors, SCRIPT)):
         return out
-    res = runner(convert_command(urdf, sensors, out), capture_output=True, text=True, timeout=CONVERT_TIMEOUT_S)
+    res = runner(convert_command(urdf, sensors, out, floating=floating), capture_output=True, text=True, timeout=CONVERT_TIMEOUT_S)
     last = (res.stdout or "").strip().splitlines()[-1:] or [""]
     try:
         info = json.loads(last[0])

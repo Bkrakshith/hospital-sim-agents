@@ -23,7 +23,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Literal, Optional
 
 from ..llm.gateway import PERMANENT_ERRORS, LLMRequest, LLMResult
-from .profile import G1_CLAUDE, G1_NAME, RobotProfile, get_profile
+from .profile import G1_CLAUDE, G1_NAME, RobotProfile, get_profile, profile_for_sim
 
 log = logging.getLogger("robot_claude")
 
@@ -589,7 +589,7 @@ async def _run(args) -> int:
         print(f"Robot config error: {exc}", file=sys.stderr)
         return 2
     cfg = view.robot
-    profile = get_profile(cfg.profile)
+    profile = profile_for_sim(get_profile(cfg.profile), getattr(view, "sim", "stub"))
     rt = topics.robot_topics(cfg.ns)
     loop = asyncio.get_running_loop()
     stop = asyncio.Event()

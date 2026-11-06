@@ -5,6 +5,8 @@ The built-in g1_claude profile lives here; bring-your-own profiles are saved by 
 """
 from __future__ import annotations
 
+import dataclasses
+import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -70,6 +72,39 @@ G1_CLAUDE = RobotProfile(
         SensorSpec("speaker", "speaker", None, "head_link", params={"label": "speaker"})))
 
 PROFILES = {G1_CLAUDE.name: G1_CLAUDE}
+
+# THE SWITCH for the built-in G1's legs in Isaac Sim: it walks there (NVIDIA GEAR-SONIC in the Isaac host) when the
+# SONIC weights are on this machine (`python scripts/fetch_sonic.py`, checked by `hhumans doctor`); without them it
+# stands at its post as before. WARDZERO_G1_WALKS_IN_ISAAC=0 or 1 forces it either way.
+G1_WALK_SPEED = 0.6  # m/s: SONIC's SLOW_WALK as the gate test drove it (the ankles saturate more in WALK mode)
+
+
+def g1_walks_in_isaac() -> bool:
+    env = os.environ.get("WARDZERO_G1_WALKS_IN_ISAAC", "").strip()
+    if env in ("0", "1"):
+        return env == "1"
+    from ..isaac_host.sonic.weights import missing_files  # pure Python: no onnxruntime, no Kit
+    return not missing_files()
+
+
+def g1_static_reason() -> str:
+    """Why the built-in G1 stands still in Isaac Sim, and the fix (for logs and the run's output)."""
+    from ..isaac_host.sonic.weights import resolve_dir
+    if os.environ.get("WARDZERO_G1_WALKS_IN_ISAAC", "").strip() == "0":
+        return "WARDZERO_G1_WALKS_IN_ISAAC=0 keeps the G1 at its post in Isaac Sim."
+    return (f"The G1 stands at its post in Isaac Sim: the GEAR-SONIC walking controller weights are not in "
+            f"{resolve_dir()}. Run `python scripts/fetch_sonic.py` in hospital-sim-agents (or set WARDZERO_SONIC_DIR).")
+
+
+def profile_for_sim(profile: RobotProfile, sim: str) -> RobotProfile:
+    """The profile the robot's mind and body work with in this simulator. Only the built-in G1 changes: in Isaac Sim it
+    walks (can_move, base "legged") when g1_walks_in_isaac(). Quick 2D keeps the profile as it is here. Other robots keep
+    what their robot.yaml says."""
+    if profile.name != G1_NAME or profile.can_move:
+        return profile
+    if sim != "isaac" or not g1_walks_in_isaac():
+        return profile
+    return dataclasses.replace(profile, can_move=True, base="legged", max_speed=G1_WALK_SPEED)
 
 
 def get_profile(name: str) -> RobotProfile:
