@@ -304,6 +304,8 @@ class IsaacHost:
         self.robot = IsaacRobot(self.stage, self.app, self.loaded, get_profile(r.profile), self.robot_usd,
                                 self.args.fps, self.robot_domain, self.args.private_domain)
         self.robot.add(self.svc.world)
+        # a robot that cannot walk here (the G1 until its walking controller lands) tells the staff from where it stands
+        self.svc.tasks.mobile = bool(getattr(self.robot.profile, "can_move", False))
         self.bodies.set_robot(self.robot.pose)
         self.bodies.robot_driver = self.robot
         self._mark("robot")

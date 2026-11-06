@@ -274,6 +274,18 @@ class PersonController:
         if pose is None:
             return False
         x, y = pose[0], pose[1]
+        if getattr(ph, "trail", False):  # following the robot: the world says when it is over, never "arrived"
+            if world.trail_done(self.pid):
+                world.end_phase(self.pid)
+                return True
+            nd = world.walk_goal(self.pid)
+            st = self.api.status(self._task)
+            if nd is not None and (math.hypot(nd[0] - self._goal[0], nd[1] - self._goal[1]) > REROUTE_M
+                                   or (st != "running" and math.hypot(nd[0] - x, nd[1] - y) > ARRIVE_ENDED_M)):
+                self._goal = nd
+                self._issue_walk(nd)
+            self._set_posture(p)
+            return False
         if ph.follow is not None:  # the person being approached moves: chase them
             nd = world.walk_goal(self.pid)
             if nd is not None and math.hypot(nd[0] - self._goal[0], nd[1] - self._goal[1]) > REROUTE_M:
