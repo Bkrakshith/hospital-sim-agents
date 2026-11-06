@@ -1,31 +1,37 @@
 id: scrub_nurse
 title: Scrub nurse
 prompt: >-
-  The robot stands by the instrument table in theatre and passes the instrument the surgeon asks for, when asked.
+  The robot stands beside the surgeon in theatre, with the instrument tray, and passes the instrument she asks for,
+  when asked.
   Requests come in batches and get sharper when the robot is slow.
 focus_rooms: [Theatre]
-known_places: [Theatre, theatre_table, instrument_table]
+known_places: [Theatre, theatre_table]
 duration_min: 10
 listed_in_public_capture: false
 robot_brief:
   role: scrub nurse assistant
-  job: Pass the instrument the surgeon asks for, when asked, from the instrument table. Do not hand over anything that was not requested.
-  instruments: [scalpel, forceps, retractor, suture scissors, needle holder]
-robot_start: {x: 24.6, y: -19.6, yaw: 3.1416}
+  job: >-
+    Stand beside the surgeon with the instrument tray at your side. When she names an instrument, take it (take, with
+    its item id) and hold it out to her (hand_over, her track), saying its name. Pass only what was asked for.
+  instruments: "scalpel, forceps, retractor, suture_scissors (suture scissors), needle_holder (needle holder)"
+  first_contact: false
+# On the surgeon's side of the operating table, facing her; the tray is on the trolley just south of the robot.
+robot_start: {x: 22.1, y: -19.9, yaw: 1.33}
 characters:
   - {id: S1, name: Helen Clarke, sex: female, age_band: 51-70, role: surgeon, mood: stressed, room: Theatre, x: 22.3, y: -19.06, yaw: 0.0}
   - {id: N1, name: Oliver Rogers, sex: male, age_band: 31-50, role: ward_nurse, mood: custom, room: Theatre, x: 26.0, y: -17.0, yaw: 3.1416,
      role_prompt: "You are the circulating nurse. You count swabs and fetch supplies, and you stay out of the surgeon's way. [inferred from Korkiakangas 2014]",
      mood_prompt: ""}
 objects:
-  - {kind: instrument, id: scalpel, label: scalpel, x: 25.6, y: -20.6, z: 0.91}
-  - {kind: instrument, id: forceps, label: forceps, x: 25.6, y: -20.6, z: 0.91}
-  - {kind: instrument, id: retractor, label: retractor, x: 25.6, y: -20.6, z: 0.91}
-  - {kind: instrument, id: suture_scissors, label: suture scissors, x: 25.6, y: -20.6, z: 0.91}
-  - {kind: instrument, id: needle_holder, label: needle holder, x: 25.6, y: -20.6, z: 0.91}
+  # On the instrument trolley at the south end of the operating table (on top of the electrosurgical unit, 1.05 m).
+  - {kind: instrument, id: scalpel, label: scalpel, x: 22.4, y: -20.45, z: 1.05}
+  - {kind: instrument, id: forceps, label: forceps, x: 22.4, y: -20.45, z: 1.05}
+  - {kind: instrument, id: retractor, label: retractor, x: 22.4, y: -20.45, z: 1.05}
+  - {kind: instrument, id: suture_scissors, label: suture scissors, x: 22.4, y: -20.45, z: 1.05}
+  - {kind: instrument, id: needle_holder, label: needle holder, x: 22.4, y: -20.45, z: 1.05}
 timeline:
   - {id: b1, at: "t+00:30", card: instrument_request_batch, target: S1, params: {instruments: "scalpel, forceps, retractor"}}
-  - {id: b2, at: "t+04:00", card: instrument_request_batch, target: S1, params: {instruments: "suture scissors, needle holder, forceps, scalpel"}}
+  - {id: b2, at: "t+04:00", card: instrument_request_batch, target: S1, params: {instruments: "suture scissors, needle holder"}}
 criteria:
   - {id: correct, label: Passes the instrument that was asked for, metric: instruments_correct_rate, op: ">=", threshold: 0.9, weight: 3}   # first guess
   - {id: latency, label: Instrument in hand within 3 seconds, metric: instrument_mean_latency_s, op: "<=", threshold: 3, weight: 3}   # first guess

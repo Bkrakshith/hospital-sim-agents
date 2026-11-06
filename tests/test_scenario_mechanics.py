@@ -163,12 +163,13 @@ def test_a_hand_over_from_too_far_fails_with_a_clear_reason(staged, tmp_path):
 def test_the_robot_approaches_the_surgeon_from_beside_her_and_can_pass_an_instrument(staged, tmp_path):
     s = sim(staged, "scrub_nurse", tmp_path)
     w = s.world
-    sc = w.objects.items["scalpel"]
-    sc.holder = "g1"
+    start = (w.robot.x, w.robot.y)
+    s.on_task_action({"id": "k1", "action": "take", "item": "scalpel"})  # the tray is beside it, on her side
     s.on_task_action({"id": "a1", "action": "approach", "track": track(s, "S1")})
-    outs = advance(s, 40.0)  # round the operating table, out of the theatre and back in
-    goals = [r for o in outs for r in o.task_results if r.get("kind") == "goal" and r["id"] == "a1"]
-    assert goals and goals[0]["reason"] == "arrived"
+    outs = advance(s, 0.2)
+    assert [(r["ok"], r["reason"]) for r in results(outs, "k1")] == [(True, "ok")]
+    assert [(r["ok"], r["reason"]) for r in results(outs, "a1")] == [(True, "already_there")]
+    assert math.hypot(w.robot.x - start[0], w.robot.y - start[1]) < 0.05, "no walk round the operating table"
     q = w.people["S1"]
     fwd = (w.robot.x - q.x) * math.cos(q.yaw) + (w.robot.y - q.y) * math.sin(q.yaw)
     assert fwd > -0.2, "not behind her"
@@ -176,6 +177,7 @@ def test_the_robot_approaches_the_surgeon_from_beside_her_and_can_pass_an_instru
     w.apply_intent(Intent(id="y", person="S1", t=s.t, kind="accept_item"))
     outs = advance(s, 1.0)
     assert [(r["ok"], r["reason"]) for r in results(outs, "h1")] == [(True, "ok")]
+    assert w.objects.items["scalpel"].holder == "S1"
 
 
 # ---------- fire ----------
