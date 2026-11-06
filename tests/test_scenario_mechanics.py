@@ -250,3 +250,58 @@ def test_a_fire_that_starts_mid_walk_sends_walkers_round_it(staged, tmp_path):
     for o in advance(s, 30.0):
         seen.append(min(math.hypot(n1.x - fire[0], n1.y - fire[1]), math.hypot(w.robot.x - fire[0], w.robot.y - fire[1])))
     assert min(seen) >= 0.85
+
+
+# ---------- arrivals ----------
+
+STAFF = {"staff", "ward_nurse", "receptionist", "surgeon", "porter", "companion", "custom"}
+
+
+def test_ward_presets_bring_arrivals_in_at_the_ward_entrance(staged):
+    assert PRESETS["visiting_rush"].arrival_entrance == "ward_entrance"
+    assert PRESETS["specimen_run"].arrival_entrance == "ward_entrance"
+    assert PRESETS["reception_guide"].arrival_entrance is None
+    assert staged("visiting_rush").scenario.arrival_entrance == "ward_entrance"
+    assert staged("reception_guide").scenario.arrival_entrance is None
+
+
+def test_an_unknown_arrival_entrance_is_a_config_error(tmp_path):
+    from wardzero_agents.config.loader import ConfigError
+    with pytest.raises(ConfigError, match="arrival_entrance"):
+        preset_to_scenario(PRESETS["visiting_rush"], CONFIG, tmp_path / "s",
+                           scenario_extra={"arrival_entrance": "narnia"})
+
+
+@pytest.mark.parametrize("preset_id", sorted(PRESETS))
+def test_arrivals_are_only_visitors_and_patients_up_and_about(staged, preset_id):
+    loaded = staged(preset_id)
+    in_bed = {i.persona_id for i in loaded.instances if i.start is not None and i.start.bed is not None}
+    for k in range(12):
+        ev = next(o for o in fire_card(loaded, "arrival", t=10.0 + k) if isinstance(o, WorldEvent))
+        if ev.persona is None:  # nobody fit to arrive in this scene
+            continue
+        p = loaded.personas[ev.persona]
+        assert p.role not in STAFF and ev.persona not in in_bed, (preset_id, ev.persona, p.role)
+
+
+def test_meal_round_has_nobody_to_arrive(staged):
+    ev = next(o for o in fire_card(staged("meal_round"), "arrival") if isinstance(o, WorldEvent))
+    assert ev.persona is None
+
+
+def test_arrivals_spawn_at_the_scenario_entrance_spread_out_on_free_floor(staged):
+    w = world(staged, "visiting_rush")
+    lm = w.site.landmarks["ward_entrance"]
+    persona = next(pid for pid, p in w.loaded.personas.items() if p.role == "ward_visitor")
+    ids = [w.spawn(persona, 1.0) for _ in range(4)]
+    pts = [(w.people[i].x, w.people[i].y) for i in ids]
+    for x, y in pts:
+        assert math.hypot(x - lm.x, y - lm.y) <= 2.0 and w.router.is_free(x, y)
+    assert min(math.hypot(a[0] - b[0], a[1] - b[1]) for k, a in enumerate(pts) for b in pts[k + 1:]) >= 0.5
+
+
+def test_an_arrival_with_no_persona_fit_to_arrive_is_ignored(staged):
+    w = world(staged, "meal_round")
+    n = len(w.people)
+    w.apply_world_event(WorldEvent(id="a", t=1.0, kind="arrival"))
+    assert len(w.people) == n

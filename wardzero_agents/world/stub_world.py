@@ -81,6 +81,7 @@ FOLLOW_FAR_M = 1.5
 FOLLOW_GAP_M = 1.25  # ... walking up to this far behind when they have fallen back
 FOLLOW_DONE_M = 1.75  # the robot has stopped and the follower is this close: the follow is done
 ROBOT_AVOID_M = 0.75  # people's routes keep this far from where the robot stands, when they can
+ARRIVAL_JITTER_M = 0.8  # people arriving mid-run appear up to this far from the entrance, so they do not stack
 STAFF_ROLES = frozenset({"receptionist", "ward_nurse", "staff", "nurse", "porter", "surgeon"})
 ROLE_KINDS = ("give_item", "take_item", "call_for_help", "call_bell", "accept_item", "refuse_item",
               "request_instrument", "reject_item", "take_instrument_self", "use_extinguisher",
@@ -1000,7 +1001,18 @@ class StubWorld:
         while f"N{self._spawned}" in self.people:  # never overwrite a cast person who has an N id
             self._spawned += 1
         pid = f"N{self._spawned}"
-        self.people[pid] = self._at_entrance(spawned_instance(self.loaded, pid, persona_id, t))
+        p = self._at_entrance(spawned_instance(self.loaded, pid, persona_id, t))
+        if self.loaded.scenario.arrival_entrance is not None and p.inst.entrance is None:
+            lm = self.site.landmarks[self.loaded.scenario.arrival_entrance]
+            p.x, p.y = lm.x, lm.y
+        # a spot of its own near the entrance: its own random stream, so the rest of the run's draws are unchanged
+        rng = np.random.default_rng((self.loaded.scenario.seed, self._spawned))
+        a, r = rng.uniform(0.0, 2 * math.pi), ARRIVAL_JITTER_M * math.sqrt(rng.uniform())
+        x, y = p.x + r * math.cos(a), p.y + r * math.sin(a)
+        if self.router.is_free(x, y) and self._los((p.x, p.y), (x, y)):
+            p.x, p.y = x, y
+        self.people[pid] = p
+        p.x, p.y = self.free_spot(p.x, p.y, pid)
         return pid
 
     def apply_world_event(self, ev: WorldEvent) -> list[AudioEvent]:
@@ -1034,10 +1046,16 @@ class StubWorld:
             self._log_objects(ev.t)
             return []
         if ev.kind == "arrival":
-            persona = ev.persona or (
-                "anxious_first_timer" if "anxious_first_timer" in self.loaded.personas
-                else next(iter(self.loaded.personas))
-            )
+            persona = ev.persona
+            if persona is None and "anxious_first_timer" in self.loaded.personas:
+                persona = "anxious_first_timer"
+            if persona is None:
+                from wardzero_agents.director.cards import arrival_persona
+                in_bed = {i.persona_id for i in self.loaded.instances if i.start is not None and i.start.bed}
+                persona = arrival_persona(self.loaded.personas, self.loaded.scenario.seed, ev.id, in_bed)
+            if persona is None:
+                log.warning("arrival ignored: nobody in this scenario could walk in")
+                return []
             try:
                 self.spawn(persona, ev.t)
             except ValueError:

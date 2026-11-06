@@ -237,7 +237,8 @@ def test_spawn_arrival_and_person_exit():
     pid = w.spawn("anxious_first_timer", 10.0)
     assert pid == "N1" and w.roster(10).people[-1].id == "N1"
     s = st(w, "N1")
-    assert (s.x, s.y) == pytest.approx((-1.24, -2.3)) and s.posture == "standing"
+    # at the main entrance, a little to one side so arrivals do not stack on one spot
+    assert math.hypot(s.x + 1.24, s.y + 2.3) <= 2.0 and s.posture == "standing"
     assert w.spawn("companion", 11.0) == "N2"
     assert inst(w, "N1").seed == 7 * 1000 + 100 + 1
     w.apply_world_event(WorldEvent(id="e", t=12, kind="arrival", persona="companion"))

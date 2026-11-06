@@ -155,6 +155,7 @@ class Scenario(_Model):
     campaign: bool = False  # trust carries across runs and word of mouth is rolled (Studio sets it)
     ladder: dict[int, str] = Field(default_factory=dict)  # what each trust stage looks like (0..4)
     forbidden_areas: list[ForbiddenArea] = Field(default_factory=list)  # the Studio's no-go rectangles
+    arrival_entrance: Optional[str] = None  # the landmark people arriving mid-run come in at (None: the main entrance)
     cast: list[CastEntry]
 
 

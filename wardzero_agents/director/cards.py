@@ -16,10 +16,16 @@ from .storyboard import CardFiring, WorldView
 _PLACEHOLDER = re.compile(r"\{([^{}]*)\}")
 
 
-def arrival_persona(personas: dict[str, Persona], seed: int, firing_id: str) -> Optional[str]:
-    """The persona for an arrival that names none: chosen from the run seed and the firing id
-    among the personas who come on their own (not companions). Same seed, same choice."""
-    ids = sorted(pid for pid, p in personas.items() if p.role != "companion")
+# who can walk in mid-run: visitors and patients, never staff, porters or companions (who come with someone)
+ARRIVAL_ROLES = ("patient", "ae_patient", "bed_patient", "visitor", "ward_visitor")
+
+
+def arrival_persona(personas: dict[str, Persona], seed: int, firing_id: str,
+                    in_bed: "set[str] | frozenset[str]" = frozenset()) -> Optional[str]:
+    """The persona for an arrival that names none: chosen from the run seed and the firing id among the visitor and
+    patient personas, less those of patients who start in a bed (in_bed: persona ids). Same seed, same choice; None
+    when nobody in the scene could walk in."""
+    ids = sorted(pid for pid, p in personas.items() if p.role in ARRIVAL_ROLES and pid not in in_bed)
     if not ids:
         return None
     h = hashlib.sha256(f"{seed}:{firing_id}".encode("utf-8")).digest()
@@ -113,7 +119,8 @@ class CardExecutor:
             kind = w["kind"]
             persona = w.get("persona") if kind == "arrival" else None
             if kind == "arrival" and persona is None and self.personas:
-                persona = arrival_persona(self.personas, self.seed, firing.id)
+                in_bed = {i.persona_id for i in self.instances.values() if i.start is not None and i.start.bed}
+                persona = arrival_persona(self.personas, self.seed, firing.id, in_bed)
             outs.append(WorldEvent(
                 id=firing.id, t=firing.t, kind=kind, text=text, x=w.get("x"), y=w.get("y"),
                 persona=persona,
