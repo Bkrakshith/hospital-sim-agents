@@ -57,8 +57,10 @@ def test_bed_head_directions(site):
 def test_seats_match_waiting_area_yaml(site):
     want = yaml.safe_load((ROOT / "config" / "waiting_area.yaml").read_text())
     got = {s["id"]: s for s in site["seats"]}
-    assert set(got) == {s["id"] for s in want["seats"]}
-    for s in want["seats"]:
+    seats = want["seats"] + want.get("staff_seats", [])
+    assert set(got) == {s["id"] for s in seats}
+    assert {s["id"] for s in site["seats"] if s.get("staff_only")} == {s["id"] for s in want["staff_seats"]} == {"R1"}
+    for s in seats:
         assert abs(got[s["id"]]["x"] - s["x"]) < 1e-6
         assert abs(got[s["id"]]["y"] - s["y"]) < 1e-6
     for k, v in want["landmarks"].items():
@@ -199,3 +201,39 @@ def test_check_place_rejects_sealed_pocket(model):
     assert pocket, "map has no sealed pocket"
     x, y = g.to_world(*pocket[0])
     assert model.check_place(x, y) == "not reachable from the entrance"
+
+
+def test_reception_staff_seat_and_landmarks(model):
+    """R1 sits behind the reception desk on the staff side (north of it; the G1's post is south, on the visitor side),
+    the counter is on the visitor side, and ward_entrance is 2 m past the compartment doors at x 11.2."""
+    desk = model.furniture["reception_desk"]
+    y_top = desk.y + desk.d / 2
+    r1 = model.seats["R1"]
+    assert r1.staff_only and not any(s.staff_only for sid, s in model.seats.items() if sid != "R1")
+    assert r1.y > y_top and desk.x - desk.w / 2 < r1.x < desk.x + desk.w / 2
+    assert abs(r1.yaw + math.pi / 2) < 1e-3  # faces south, over the desk to the lobby
+    g1 = model.landmarks["reception_g1"]
+    assert g1.y < desk.y - desk.d / 2 and (g1.x, g1.y) == (1.05, 1.62)
+    counter, staff = model.landmarks["reception_counter"], model.landmarks["reception_staff"]
+    assert counter.y < desk.y - desk.d / 2 and (staff.x, staff.y) == (r1.x, r1.y)
+    assert model.room_at(r1.x, r1.y) == "Lobby" and model.check_place(r1.x, r1.y) is None
+    we = model.landmarks["ward_entrance"]
+    door = next(d for d in model.doors if abs(d["a"][0] - 11.2) < 0.05 and d["a"][1] < 7.25 < d["b"][1])
+    assert we.x - door["a"][0] == pytest.approx(2.0, abs=0.05) and door["a"][1] < we.y < door["b"][1]
+    assert model.room_at(we.x, we.y) == "Ward_Entrance"
+    from wardzero_agents.site import Router
+    r = Router(model.grid)
+    for a, b in (("reception_counter", "ward_entrance"), ("reception_staff", "reception_front"),
+                 ("reception_g1", "reception_counter")):
+        assert r.route(model.resolve(a), model.resolve(b)) is not None, (a, b)
+
+
+def test_generator_staff_seats_and_landmarks_match_the_site(site):
+    """scripts/gen_waiting_area.py is the source of the staff seats and landmarks; the json and yaml carry them."""
+    import runpy
+    gen = runpy.run_path(str(ROOT / "scripts" / "gen_waiting_area.py"))
+    for k, (x, y, label) in {**gen["LANDMARKS"], **gen["SITE_LANDMARKS"]}.items():
+        assert (site["landmarks"][k]["x"], site["landmarks"][k]["y"], site["landmarks"][k]["label"]) == (x, y, label)
+    got = {s["id"]: s for s in site["seats"]}
+    for s in gen["STAFF_SEATS"]:
+        assert got[s["id"]] == s

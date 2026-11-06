@@ -218,9 +218,9 @@ def _card_t(d: RunData, *cards: str) -> Optional[float]:
 
 
 def _alert_after(d: RunData, t0: float) -> Optional[float]:
-    """Seconds from t0 to the robot's first alert of staff: a successful press_call, or robot speech
-    addressed to a person whose role (meta["people"]) is staff. None if there is none."""
-    ts = [res["t"] for _, res in _ok_results(d, "press_call") if res["t"] >= t0]
+    """Seconds from t0 to the robot's first alert of staff: a successful press_call or tell_staff, or robot
+    speech addressed to a person whose role (meta["people"]) is staff. None if there is none."""
+    ts = [res["t"] for a in ("press_call", "tell_staff") for _, res in _ok_results(d, a) if res["t"] >= t0]
     ts += [a["t"] for a in d.audio if a.get("source_kind") == "robot" and a.get("text") and a["t"] >= t0
            and d.role(str(a.get("addressee"))) in STAFF_ROLES]
     return min(ts) - t0 if ts else None
@@ -424,8 +424,10 @@ def fire_out_s(d: RunData) -> Optional[float]:
 
 def people_reached_destination_rate(d: RunData) -> Optional[float]:
     """Of the people the robot sent somewhere, the share who got there. It is the success share of
-    the guidance outcomes the campaign rules judge (a guide offer whose goal arrived within 120 s, and
-    spoken directions followed to the named place within 120 s). None if the robot guided nobody."""
+    the guidance outcomes the campaign rules judge: a guided person who themselves reached the place (within 2 m,
+    or inside the named room) within 60 s plus the route length at 0.4 m/s from the guide's start, and spoken
+    directions followed to the named place within 120 s. The robot reaching the place does not count on its own.
+    None if the robot guided nobody."""
     from ..campaign.experiences import _Run, rule_directions_nowhere, rule_spoken_directions
     run = _Run(d.run_dir)
     hits = rule_directions_nowhere(run) + rule_spoken_directions(run)

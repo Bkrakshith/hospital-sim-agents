@@ -163,6 +163,7 @@ class Seat(_Model):
     y: float
     yaw: float
     row: str
+    staff_only: bool = False  # a chair behind a desk: never snapped to or given to a visitor
 
 
 class Landmark(_Model):
@@ -173,7 +174,9 @@ class Landmark(_Model):
 
 class WaitingArea(_Model):
     seats: list[Seat]
+    staff_seats: list[Seat] = Field(default_factory=list)  # in the site's seats; not offered as waiting seats
     landmarks: dict[str, Landmark]
+    site_landmarks: dict[str, Landmark] = Field(default_factory=dict)  # in the site map only, not the area's places
     entrance: str
     exits: list[str]
     nurse_call_point: str

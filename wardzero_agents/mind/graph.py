@@ -84,10 +84,14 @@ def check_decision(data: Any, area: "WaitingArea", signs: Iterable["Sign"], rost
         return None, "invalid_decision"
     if not _is_number(delta):
         return None, "invalid_decision"
-    known = ({s.id for s in area.seats} | set(area.landmarks) | {s.id for s in signs}
+    known = ({s.id for s in area.seats + area.staff_seats} | set(area.landmarks) | {s.id for s in signs}
              | set(roster) | {robot_id})
     if kind == "leave" and target is None:
         target = area.entrance
+    if kind == "follow":  # only the robot leads: follow{who: robot}
+        target = robot_id if target in (None, "robot", robot_id) else target
+        if target != robot_id:
+            return None, "invalid_target"
     if kind in NEEDS_TARGET and target is None:
         return None, "invalid_target"
     if target is not None and target not in known:

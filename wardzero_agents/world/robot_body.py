@@ -40,6 +40,10 @@ class RobotBody:
         self.goal_event: Optional[str] = None  # "arrived" | "stuck", read once by take_goal_event
         self._anchor = (self.x, self.y)
         self._anchor_t = 0.0
+        # set by the task layer each step while a route is followed: 0 holds the robot (waiting for the person it
+        # guides; the stuck timer does not run), a cap slows it (near a person)
+        self.speed_scale = 1.0
+        self.speed_cap: Optional[float] = None
 
     def take_goal_event(self) -> Optional[str]:
         ev, self.goal_event = self.goal_event, None
@@ -70,12 +74,13 @@ class RobotBody:
         self._v = max(-self.max_speed, min(self.max_speed, float(v)))
         self._w = float(w)
 
-    def set_goal(self, x: float, y: float, yaw: Optional[float] = None) -> bool:
-        """Follow a Router route to (x, y) at max_speed. False when there is none."""
+    def set_goal(self, x: float, y: float, yaw: Optional[float] = None, avoid=()) -> bool:
+        """Follow a Router route to (x, y) at max_speed. False when there is none. avoid: (x, y, r) discs the route
+        keeps out of if it can (people standing in the way)."""
         self._v = self._w = 0.0
         if self.router is None:
             return False
-        route = self.router.route((self.x, self.y), (x, y))
+        route = self.router.route((self.x, self.y), (x, y), avoid) if avoid else self.router.route((self.x, self.y), (x, y))
         if route is None:
             return False
         self._path = [tuple(p) for p in route[1:]] or [(float(x), float(y))]
@@ -84,6 +89,13 @@ class RobotBody:
         self.goal_event = None
         self._anchor, self._anchor_t = (self.x, self.y), 0.0
         return True
+
+    def turn_to(self, yaw: float) -> None:
+        """Turn on the spot to yaw. Not a goal: no goal event when it is done."""
+        self._v = self._w = 0.0
+        self._path = []
+        self._final_yaw = float(yaw)
+        self._had_goal = False
 
     def cancel_goal(self) -> None:
         """Dropped on purpose (new command): no goal event."""
@@ -116,7 +128,10 @@ class RobotBody:
             tx, ty = self._path[0]
             err = _wrap(math.atan2(ty - self.y, tx - self.x) - self.yaw)
             w = max(-TURN_RATE, min(TURN_RATE, err / max(dt, 1e-3)))
-            v = self.max_speed * max(0.0, math.cos(err)) if abs(err) < 1.2 else 0.0
+            top = self.max_speed * max(0.0, min(1.0, self.speed_scale))
+            if self.speed_cap is not None:
+                top = min(top, self.speed_cap)
+            v = top * max(0.0, math.cos(err)) if abs(err) < 1.2 else 0.0
             dist = math.hypot(tx - self.x, ty - self.y)
             return min(v, dist / max(dt, 1e-3)), w
         if self._final_yaw is not None:
@@ -143,6 +158,8 @@ class RobotBody:
                 if not self.has_goal:
                     self._had_goal = False
                     self.goal_event = "arrived"
+                elif self.speed_scale <= 0.0:  # held on purpose: waiting is not being stuck
+                    self._anchor, self._anchor_t = (self.x, self.y), 0.0
                 else:
                     self._anchor_t += dt
                     if math.hypot(self.x - self._anchor[0], self.y - self._anchor[1]) >= STUCK_M:

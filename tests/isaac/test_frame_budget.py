@@ -8,11 +8,16 @@ moves; added after ``play()`` (what ``IsaacHost.add_robots`` does) it costs abou
 the G1 and five people, drives the G1's arm every frame and fails above 150 ms/frame. A failure means an Isaac or Kit
 update changed the Behavior System, or robot placement moved before ``play()``: re-read spike_r1_report.md.
 """
+import os
+
 import pytest
 
 from test_isaac_robot_smoke import OUT, isaac_free, run_demo  # noqa: F401  (the fixture and the runner)
 
-pytestmark = pytest.mark.isaac
+pytestmark = [
+    pytest.mark.isaac,
+    pytest.mark.skipif(os.environ.get("WARDZERO_ISAAC") != "1", reason="set WARDZERO_ISAAC=1 to boot Isaac Sim"),
+]
 LIMIT_MS = 150.0
 
 

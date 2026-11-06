@@ -5,6 +5,8 @@ The built-in g1_claude profile lives here; bring-your-own profiles are saved by 
 """
 from __future__ import annotations
 
+import dataclasses
+import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -48,6 +50,8 @@ class RobotProfile:
             f"Your hands reach between {lo:g} m and {hi:g} m above the floor, within arm's length of you.",
             "You can hand an item you are holding to a person, take an item lying within arm's length, "
             "spray a fire extinguisher at a small fire in range, press the staff call button, speak, and wait.",
+            "You can tell the staff that someone needs help (tell_staff): you go to the reception desk (or the "
+            "nurse base on a ward) and speak to the member of staff there.",
         ]
         if self.can_move:
             lines.append(f"You can walk (up to {self.max_speed:g} m/s, body radius {self.radius:g} m): "
@@ -70,6 +74,21 @@ G1_CLAUDE = RobotProfile(
         SensorSpec("speaker", "speaker", None, "head_link", params={"label": "speaker"})))
 
 PROFILES = {G1_CLAUDE.name: G1_CLAUDE}
+
+# THE SWITCH for the built-in G1's legs. In Quick 2D (the stub) the G1 walks as a simple moving body on the same routes.
+# In Isaac Sim it stays on its fixed post until the walking controller (NVIDIA GEAR-SONIC) lands in the host: then set
+# this True (or WARDZERO_G1_WALKS_IN_ISAAC=1 for a trial) and the G1 becomes can_move=True, base "legged" there too.
+G1_WALKS_IN_ISAAC = os.environ.get("WARDZERO_G1_WALKS_IN_ISAAC") == "1"
+
+
+def profile_for_sim(profile: RobotProfile, sim: str) -> RobotProfile:
+    """The profile the robot's mind works with in this simulator. Only the built-in G1 changes: it walks in Quick 2D,
+    and in Isaac only when G1_WALKS_IN_ISAAC is on. Other robots keep what their robot.yaml says."""
+    if profile.name != G1_NAME or profile.can_move:
+        return profile
+    if sim == "isaac" and not G1_WALKS_IN_ISAAC:
+        return profile
+    return dataclasses.replace(profile, can_move=True, base="legged")
 
 
 def get_profile(name: str) -> RobotProfile:

@@ -98,7 +98,7 @@ class Router:
                     best, bd = (y, x), dy * dy + dx * dx
         return best
 
-    def _los(self, p, q, allow) -> bool:
+    def _los(self, p, q, allow, extra=frozenset()) -> bool:
         """Walk every cell the segment touches (supercover) and refuse raw-blocked or out-of-band cells."""
         g = self.grid
         raw, near = self._raw, self._near
@@ -114,7 +114,7 @@ class Router:
         mx = ((ix + (1 if dx > 0 else 0)) - fx) / dx if dx else inf
         my = ((iy + (1 if dy > 0 else 0)) - fy) / dy if dy else inf
         for _ in range(abs(ex - ix) + abs(ey - iy) + 2):
-            if not g.in_grid(iy, ix) or raw[iy][ix]:
+            if not g.in_grid(iy, ix) or raw[iy][ix] or (iy, ix) in extra:
                 return False
             if near[iy][ix] and (iy, ix) not in allow:
                 return False
@@ -136,7 +136,7 @@ class Router:
                 my += tdy
         return True
 
-    def _astar(self, s, g):
+    def _astar(self, s, g, extra=frozenset()):
         b, near = self._raw, self._near
         h, w = len(b), len(b[0])
         gy, gx = g
@@ -164,7 +164,7 @@ class Router:
             cc = cost[cur]
             for dy, dx, step in _NB:
                 ny, nx = cy + dy, cx + dx
-                if not (0 <= ny < h and 0 <= nx < w) or b[ny][nx]:
+                if not (0 <= ny < h and 0 <= nx < w) or b[ny][nx] or (ny, nx) in extra:
                     continue
                 if dy and dx and (b[cy + dy][cx] or b[cy][cx + dx]):
                     continue  # no corner cutting
@@ -176,9 +176,29 @@ class Router:
                     heapq.heappush(heap, (nc + hf(ny, nx), n))
         return None
 
-    def route(self, a: tuple, b: tuple) -> Optional[list[tuple[float, float]]]:
+    def _discs(self, avoid, keep) -> frozenset:
+        """Cells within r of each (x, y, r) in avoid, less the cells in keep and their neighbours (the route's ends)."""
+        g = self.grid
+        keep = {(y + dy, x + dx) for y, x in keep for dy in (-1, 0, 1) for dx in (-1, 0, 1)}
+        out: set = set()
+        for x, y, r in avoid:
+            iy, ix = g.to_cell(x, y)
+            n = int(math.ceil(r / g.res))
+            disc = set()
+            for dy in range(-n, n + 1):
+                for dx in range(-n, n + 1):
+                    cx, cy = g.to_world(iy + dy, ix + dx)
+                    if math.hypot(cx - x, cy - y) <= r:
+                        disc.add((iy + dy, ix + dx))
+            out |= disc - keep
+        return frozenset(out)
+
+    def route(self, a: tuple, b: tuple, avoid=()) -> Optional[list[tuple[float, float]]]:
         """Waypoints from a to b. An endpoint in a wall is moved to the nearest free cell centre (within 1 m);
-        None if there is none or no route. Cached on the (cell_a, cell_b) pair."""
+        None if there is none or no route. Cached on the (cell_a, cell_b) pair.
+
+        avoid: (x, y, radius) discs to keep out of, for this route only (people standing in the way). The cells at
+        either end stay open; with no route around the discs, the plain route is returned. Not cached."""
         ca, cb = self._snap(self.grid.to_cell(*a)), self._snap(self.grid.to_cell(*b))
         if ca is None or cb is None:
             return None
@@ -187,27 +207,35 @@ class Router:
             return tuple(p) if self.grid.to_cell(*p) == c else self.grid.to_world(*c)
 
         ea, eb = endpoint(a, ca), endpoint(b, cb)
+        extra = self._discs(avoid, (ca, cb)) if avoid else frozenset()
+        if extra:
+            mid = self._plan(ca, cb, extra)
+            if mid is not None:
+                return [ea] + list(mid) + [eb]
         key = (ca, cb)
         if key in self._cache:
             self._cache.move_to_end(key)
             mid = self._cache[key]
         else:
-            cells = self._astar(ca, cb)
-            if cells is None:
-                mid = None
-            else:
-                allow = {(y + dy, x + dx) for y, x in cells for dy in (-1, 0, 1) for dx in (-1, 0, 1)}
-                pts = [self.grid.to_world(*c) for c in cells]
-                out = [pts[0]]
-                i = 0
-                while i < len(pts) - 1:
-                    j = len(pts) - 1
-                    while j > i + 1 and not self._los(pts[i], pts[j], allow):
-                        j -= 1
-                    out.append(pts[j])
-                    i = j
-                mid = out[1:-1]
+            mid = self._plan(ca, cb)
             self._cache[key] = mid
             if len(self._cache) > self._size:
                 self._cache.popitem(last=False)
         return None if mid is None else [ea] + list(mid) + [eb]
+
+    def _plan(self, ca, cb, extra=frozenset()) -> Optional[list]:
+        """A* over cells, then string-pulled: the inner waypoints, or None."""
+        cells = self._astar(ca, cb, extra)
+        if cells is None:
+            return None
+        allow = {(y + dy, x + dx) for y, x in cells for dy in (-1, 0, 1) for dx in (-1, 0, 1)}
+        pts = [self.grid.to_world(*c) for c in cells]
+        out = [pts[0]]
+        i = 0
+        while i < len(pts) - 1:
+            j = len(pts) - 1
+            while j > i + 1 and not self._los(pts[i], pts[j], allow, extra):
+                j -= 1
+            out.append(pts[j])
+            i = j
+        return out[1:-1]

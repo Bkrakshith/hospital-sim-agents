@@ -4909,6 +4909,21 @@
    "y": 3.0,
    "label": "Where a nurse is called from (placeholder position)"
   },
+  "reception_staff": {
+   "x": 2.0,
+   "y": 4.75,
+   "label": "Behind the reception desk, where the receptionist sits"
+  },
+  "reception_counter": {
+   "x": 2.0,
+   "y": 1.55,
+   "label": "Reception counter, the visitor side of the desk"
+  },
+  "ward_entrance": {
+   "x": 13.2,
+   "y": 7.25,
+   "label": "Ward entrance, through the doors to the wards"
+  },
   "B1_centre": {
    "x": 23.86,
    "y": 26.86,
@@ -5294,6 +5309,14 @@
    "y": 1.112,
    "yaw": 1.5708,
    "row": "SM_Chair_02a7"
+  },
+  {
+   "id": "R1",
+   "x": 2.0,
+   "y": 4.75,
+   "yaw": -1.5708,
+   "row": "reception_desk",
+   "staff_only": true
   }
  ],
  "compartments": [

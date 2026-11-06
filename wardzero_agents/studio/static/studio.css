@@ -146,6 +146,7 @@ main { flex: 1; min-height: 0; display: flex; }
 .card-detail p { font-size: 14px; }
 .chips { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; }
 .chip { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px 3px 8px; border-radius: 14px; background: var(--bg); font-size: 13px; }
+.chip.auto { margin-left: 6px; padding: 1px 7px; font-size: 11px; vertical-align: middle; }
 .dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; flex: none; }
 .dot.static { background: var(--static); }
 .crit { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; font-size: 14px; }

@@ -38,6 +38,7 @@ IntentKind = Literal[
     "use_extinguisher",
     "sit_up_in_bed",
     "lie_back",
+    "follow",  # target: the robot (g1). Keep 1.0-1.5 m behind it until it stops at the place it is guiding to
 ]
 
 

@@ -471,7 +471,7 @@ def _start_live(args, loaded, overrides: dict, meta: dict, out: Optional[dict] =
     bot = _baseline_bot(args, staged) if baseline else _bot(args, staged)
     rd, sp = str(run_dir), str(staged.scenario_path)
     robot_domain = getattr(args, "robot_domain", None)
-    rcfg = str(write_robot_config(run_dir, staged, domain=robot_domain, budget_usd=rb.robot))
+    rcfg = str(write_robot_config(run_dir, staged, domain=robot_domain, budget_usd=rb.robot, sim=sim))
     children = [
         _sim_child(args, rd, sp, ts, ready),
         Child("agents", _module("wardzero_agents.ros.agent_node", "--run-dir", rd, "--scenario", sp),

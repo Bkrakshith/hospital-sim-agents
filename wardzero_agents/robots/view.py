@@ -32,12 +32,14 @@ class RobotView:
     site: Any = None
     waiting_area: Any = None
     signs: list = field(default_factory=list)
+    sim: str = "stub"  # "stub" (Quick 2D) or "isaac": the built-in G1 walks only where its body can (profile_for_sim)
 
 
-def write_robot_config(run_dir: "str | Path", loaded, *, domain: Optional[int], budget_usd: float) -> Path:
+def write_robot_config(run_dir: "str | Path", loaded, *, domain: Optional[int], budget_usd: float,
+                       sim: str = "stub") -> Path:
     from ..site.areas import task_brief
     sc = loaded.scenario
-    data = {"root": str(loaded.root), "site": sc.site, "area": sc.area,
+    data = {"root": str(loaded.root), "site": sc.site, "area": sc.area, "sim": sim,
             "robot": sc.robot.model_dump(mode="json"), "known_places": list(sc.known_places),
             "provider": sc.provider, "models": sc.models.model_dump(mode="json") if sc.models else None,
             "budget_usd": float(budget_usd), "robot_brief": task_brief(sc.robot_brief, getattr(sc, "forbidden_areas", None)),
@@ -61,4 +63,4 @@ def load_robot_view(path: "str | Path") -> RobotView:
                      robot=RobotConfig(**data["robot"]), known_places=list(data.get("known_places") or []),
                      models=models, provider=data["provider"], budget_usd=float(data["budget_usd"]),
                      brief=data.get("robot_brief"), domain=data.get("domain"), site=site, waiting_area=area,
-                     signs=signs)
+                     signs=signs, sim=data.get("sim") or "stub")

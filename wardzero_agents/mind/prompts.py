@@ -15,6 +15,9 @@ INTENT_KINDS: list[str] = [k for k in ALL_INTENT_KINDS if k in BASIC_INTENTS]  #
 MOODS: list[str] = ["calm", "happy", "sad", "anxious", "stressed", "excited", "relieved", "frustrated",
                     "distressed"]
 MAX_MEMORIES = 3
+# where the robot and the receptionist work: not offered to people as places of their own (a scenario can still name them)
+WORK_SPOTS = frozenset({"reception_staff", "reception_counter"})
+STAFF_PERSONA_ROLES = frozenset({"receptionist", "ward_nurse", "staff", "nurse", "porter", "surgeon"})
 SEAT_MATCH_M = 0.6  # a seated person this close to a seat is "at" that seat
 NEAR_LANDMARK_M = 1.5
 
@@ -53,6 +56,7 @@ _INTENT_HELP = {
     "use_extinguisher": "put out a fire close to you with an extinguisher",
     "sit_up_in_bed": "sit up in your bed",
     "lie_back": "lie back down flat in your bed",
+    "follow": "follow the robot when it offers to walk you somewhere (target: g1); you stop when it stops there",
 }
 
 SYSTEM_FIXED = (
@@ -263,7 +267,7 @@ def _known_places(inst: PersonInstance, site, known_places) -> list[str]:
     lines = ["Places you know (id: description):"]
     seen: set[str] = set()
     for lid, lm in site.landmarks.items():
-        if lid.endswith("_centre") or lid in seen:
+        if lid.endswith("_centre") or lid in seen or lid in WORK_SPOTS:
             continue
         if here and site.room_at(lm.x, lm.y) == here:
             lines.append(f"- {lid}: {lm.label}")
@@ -283,7 +287,9 @@ def _known_places(inst: PersonInstance, site, known_places) -> list[str]:
         lines.append(f"- {key}: {label}")
         seen.add(name)
         seen.add(key)
-    seats = [q.id for q in site.seats.values() if site.room_at(q.x, q.y) in rooms]
+    staff = inst.role in STAFF_PERSONA_ROLES
+    seats = [q.id for q in site.seats.values() if site.room_at(q.x, q.y) in rooms
+             and (staff or not getattr(q, "staff_only", False))]
     if seats:
         lines.append("Seat ids: " + ", ".join(seats) + ".")
     return lines
@@ -345,7 +351,7 @@ def _where_pos(status: Status, area: Optional[WaitingArea]) -> str:
     if area is None:
         return f"You are {status.posture}."
     if status.posture == "seated":
-        seat = min(area.seats, key=lambda s: math.hypot(s.x - status.x, s.y - status.y), default=None)
+        seat = min(area.seats + area.staff_seats, key=lambda s: math.hypot(s.x - status.x, s.y - status.y), default=None)
         if seat is not None and math.hypot(seat.x - status.x, seat.y - status.y) <= SEAT_MATCH_M:
             return f"You are seated at seat {seat.id}."
     near = min(area.landmarks.items(), key=lambda kv: math.hypot(kv[1].x - status.x, kv[1].y - status.y),

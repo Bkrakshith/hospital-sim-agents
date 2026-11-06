@@ -179,7 +179,13 @@ def listed_presets(ctx: Ctx) -> list:
 
 
 def _project(ctx: Ctx, request) -> Project:
-    return ctx.projects.get(request.match_info["id"])
+    """The project, with the auto characters of its scenario (the receptionist) added and saved if missing."""
+    from . import auto_staff
+    p = ctx.projects.get(request.match_info["id"])
+    q = auto_staff.ensure(p, ctx.presets.get(p.scenario_id), ctx.site)
+    if q is not p and not ctx.runner.busy():
+        ctx.projects.save(q)
+    return q
 
 
 def _robot_name(request) -> str:
@@ -412,7 +418,9 @@ def make_app(ctx: Ctx) -> web.Application:
     # projects
     @r.get("/api/projects")
     async def list_projects(request):
-        return j([p.model_dump(mode="json") for p in ctx.projects.list()])
+        from . import auto_staff
+        return j([auto_staff.ensure(p, ctx.presets.get(p.scenario_id), ctx.site).model_dump(mode="json")
+                  for p in ctx.projects.list()])
 
     @r.post("/api/projects")
     async def create_project(request):
@@ -439,6 +447,10 @@ def make_app(ctx: Ctx) -> web.Application:
         if "characters" in d:
             await _not_while_running(ctx, "Edit the characters")
         merged = {**old.model_dump(mode="json"), **d, "id": old.id}
+        if "characters" in d and isinstance(d["characters"], list):  # an auto character left out stays out
+            from .auto_staff import removed_after
+            kept = {c.get("id") for c in d["characters"] if isinstance(c, dict)}
+            merged["removed_auto"] = removed_after(old, [c for c in old.characters if c.id in kept])
         if d.get("scenario_id") not in (None, old.scenario_id):
             if d["scenario_id"] not in ctx.presets:
                 raise BadRequest("'scenario_id' must be one of: " + ", ".join(ctx.presets) + ".")
@@ -499,7 +511,9 @@ def make_app(ctx: Ctx) -> web.Application:
         cid = request.match_info["cid"]
         if not any(c.id == cid for c in p.characters):
             raise ApiError(404, f"no character '{cid}'")
-        ctx.projects.save(p.model_copy(update={"characters": [c for c in p.characters if c.id != cid]}))
+        from .auto_staff import removed_after
+        rest = [c for c in p.characters if c.id != cid]
+        ctx.projects.save(p.model_copy(update={"characters": rest, "removed_auto": removed_after(p, rest)}))
         return j({"ok": True})
 
     # forbidden areas: rectangles the robot must keep out of
@@ -700,7 +714,9 @@ def make_app(ctx: Ctx) -> web.Application:
         pid = d.get("project_id")
         if not isinstance(pid, str):
             raise BadRequest("'project_id' is required.")
+        from . import auto_staff
         project = ctx.projects.get(pid)
+        project = auto_staff.ensure(project, ctx.presets.get(project.scenario_id), ctx.site)
         check_sim(ctx, project)
         await asyncio.to_thread(check_isaac_start, ctx, project)
         conn = read_connection(ctx.data)

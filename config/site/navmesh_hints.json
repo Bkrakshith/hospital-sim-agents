@@ -1,7 +1,8 @@
 {
  "reception_guide": {
   "focus_rooms": [
-   "Lobby"
+   "Lobby",
+   "Ward_Entrance"
   ],
   "route_rooms": [
    "AE_Waiting",
@@ -105,10 +106,10 @@
  "ae_waiting": {
   "focus_rooms": [
    "AE_Waiting",
-   "AE_Triage"
+   "AE_Triage",
+   "Lobby"
   ],
   "route_rooms": [
-   "Lobby",
    "Main_Corridor"
   ]
  }
