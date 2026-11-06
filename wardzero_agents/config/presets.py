@@ -236,9 +236,14 @@ STAFF_PRESET_ROLES = frozenset({"ward_nurse", "receptionist", "porter", "surgeon
 
 
 def robot_duty_line(job: str) -> str:
-    """What a member of staff is told about the robot's job, so the robot does the scenario's main tasks, not them."""
-    return (f"The robot on this shift is here to do this: {job.strip()} Leave that work to the robot and get on with "
-            f"your own. Step in only when the robot asks you to, or when someone is in danger. [scenario brief]")
+    """What a member of staff is told about the robot's job, so the robot does the scenario's main tasks, not them.
+    The job is written to the robot ("you ..."), so it is quoted as the robot's instructions, on one line and with
+    no '[' (the goal line is cut at its last '[', the source tag)."""
+    job = " ".join(job.split()).replace("[", "(").replace("]", ")")
+    return (f"The robot on this shift has been given these instructions (written to the robot, not to you): \"{job}\" "
+            f"Leave that work to the robot and get on with your own; your habit of doing things yourself is for your "
+            f"own work, not the robot's. Step in only when the robot calls you or asks you to, or when someone is in "
+            f"danger and the robot cannot help them. [scenario brief]")
 
 
 def _persona_dict(c: CharacterSpec, role: RolePreset, mood: MoodPreset, robot_job: Optional[str] = None) -> dict:
