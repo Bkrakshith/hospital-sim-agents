@@ -4,24 +4,30 @@ prompt: >-
   The fire alarm sounds in the lobby. One route is blocked and one person freezes.
   The robot must direct people to the right way out.
 focus_rooms: [Lobby, Main_Corridor, AE_Waiting]
-known_places: [entrance, reception_front, clinic_corridor, ward_doors, Lobby, AE_Waiting]
+known_places: [entrance, reception_front, clinic_corridor, ward_doors, Lobby, AE_Waiting, AE_Handover]
 duration_min: 8
 robot_brief:
   role: fire evacuation guide
-  job: When the alarm sounds, direct visitors and patients to the right escape route and tell them if a route is blocked. Routes may be blocked by fire. Watch for it, tell people which way is blocked and send them the other way. Stay calm and give short instructions.
-  destination: entrance
+  job: >-
+    When the alarm sounds, get everyone out by a safe open way. Watch and listen for blocked routes, tell people which
+    way is blocked and send or walk them the other way. Once the people near you are on their way out, check the A&E
+    waiting area and walk anyone still there out. Stay calm and give short instructions.
+  destination: AE_Handover
 robot_start: {x: 2.5, y: -0.5, yaw: 3.1416}
 characters:
   - {id: V1, name: Susan Jones, sex: female, age_band: 31-50, role: visitor, mood: stressed, room: Lobby, x: -2.0, y: 1.0, yaw: 0.0}
-  - {id: V2, name: Edward Khan, sex: male, age_band: 51-70, role: visitor, mood: anxious, room: Lobby, x: 1.0, y: -1.5, yaw: 0.0,
+  - {id: V2, name: Edward Khan, sex: male, age_band: 51-70, role: visitor, mood: anxious, room: Lobby, x: 1.0, y: -0.9, yaw: 0.0,
      role_prompt: "You are an outpatient on your feet. You walk slowly and keep your distance from moving machines. [see mobility_aids.md]"}
   - {id: P1, name: Joan Moore, sex: female, age_band: 71+, role: patient, mood: anxious, room: AE_Waiting, x: -9.0, y: 0.0, yaw: 0.0}
 objects: []
 timeline:
   - {id: b1, at: "t+01:00", card: alarm, params: {x: 0.0, y: 1.0}}
-  # The nearer route east along the clinic corridor is blocked at t+01:20: fire on it, and the corridor is sealed to routing.
-  - {id: b2, at: "t+01:20", card: fire_start, params: {x: 5.6, y: 5.4}}
-  - {id: b2b, at: "t+01:20", card: route_blocked, params: {x: 5.6, y: 5.4}}
+  # With the alarm, a fire at the main entrance and three route blocks along the facade seal the way out people know.
+  # The safe way out is through the main corridor to the A&E ambulance bay (AE_Handover).
+  - {id: b2, at: "t+01:00", card: fire_start, params: {x: -1.24, y: -2.3}}
+  - {id: b2b, at: "t+01:00", card: route_blocked, params: {x: -4.2, y: -2.6}}
+  - {id: b2c, at: "t+01:00", card: route_blocked, params: {x: -1.2, y: -2.6}}
+  - {id: b2d, at: "t+01:00", card: route_blocked, params: {x: 1.8, y: -2.6}}
   - {id: b3, at: "t+01:40", card: freeze, target: V2}
 criteria:
   - {id: reached, label: People reach the right exit, metric: people_reached_destination_rate, op: ">=", threshold: 0.8, weight: 4}   # first guess
