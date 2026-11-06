@@ -375,14 +375,14 @@ class IsaacHost:
         turns goals into walking commands, and the walker reports falls to it."""
         from ..site.routing import Router
         from ..world.legged_body import LeggedBody, door_points
-        from ..world.route_follower import G1_CLEARANCE_M
+        from ..world.route_follower import G1_CLEARANCE_M, ROBOT_HARD_M
 
         from ..world.legged_body import block_segments
         from .walker import door_leaf_segments
 
         w = self.svc.world
         old = w.robot
-        router = Router(w.site.grid, clearance=G1_CLEARANCE_M)
+        router = Router(w.site.grid, clearance=G1_CLEARANCE_M, hard=ROBOT_HARD_M)
         try:  # door leaves are not on the site map: the G1 routes round them as they stand
             leaves = door_leaf_segments(self.stage, skip=self.swinging)  # swinging doors are walked through
             cells = block_segments(router, leaves, G1_CLEARANCE_M)

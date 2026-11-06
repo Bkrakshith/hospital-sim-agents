@@ -53,7 +53,7 @@ def test_criteria_metrics_known(presets):
             assert c.metric in METRIC_NAMES, (p.id, c.metric)
             assert c.op in (">=", "<=", "==")
             assert c.weight > 0
-    assert len(set(METRIC_NAMES)) == 24
+    assert len(set(METRIC_NAMES)) == 26
     with pytest.raises(ValueError):
         Criterion(id="x", label="x", metric="no_such_metric", op=">=", threshold=1, weight=1)
 

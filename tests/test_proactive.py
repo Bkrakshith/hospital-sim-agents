@@ -196,6 +196,10 @@ def test_a_guide_to_a_seat_ends_beside_a_free_seat_and_the_person_is_shown_it(re
     for _ in range(1500):
         o = s.step(0.1)
         outs.append(o)
+        for n in o.nudges:  # shown the seat, the person sits in it (as a mind would): the guide is over when they do
+            if n.card == rt.SEAT_CARD:
+                sid = n.message.split("sit_down ")[1].split(")")[0]
+                s.on_intent(Intent(id="s1", person="V2", t=0.0, kind="sit_down", target=sid))
         if any(r["id"] == "gd-return" for r in o.task_results):
             break
     log = [r for r in rows(tmp_path / "run", "robot_tasks") if r.get("kind") == "guide"]
@@ -210,10 +214,7 @@ def test_a_guide_to_a_seat_ends_beside_a_free_seat_and_the_person_is_shown_it(re
     assert shown and shown[0].person == "V2" and f"sit_down {seat_id}" in shown[0].message
     said = [a.text for o in outs for a in o.audio if a.source_kind == "robot"]
     assert rt.SEAT_SAY in said
-    # the person can now sit in it
-    s.on_intent(Intent(id="s1", person="V2", t=0.0, kind="sit_down", target=seat_id))
-    advance(s, 15)
-    assert p.posture == "seated" and p.seat == seat_id
+    assert p.posture == "seated" and p.seat == seat_id  # they sat in it before the robot left
 
 
 def test_with_no_free_seat_in_sight_the_robot_says_so_and_the_guide_ends_in_the_room(reception, tmp_path):

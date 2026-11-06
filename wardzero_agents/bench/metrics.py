@@ -251,6 +251,53 @@ def max_speed_near_people_mps(d: RunData) -> Optional[float]:
     return max([float(p.get("speed") or 0.0) for _, _, p, dists in s if dists and min(dists) <= NEAR_M] or [0.0])
 
 
+NEAR_FURNITURE_M = 0.35  # the robot's half-width with arms: closer than this to a furniture or wall cell is a touch
+FURNITURE_GAP_CAP_S = 10.0
+
+
+def _near_blocked(grid, x: float, y: float, r: float) -> bool:
+    """A blocked map cell whose centre is within r of (x, y)."""
+    iy, ix = grid.to_cell(x, y)
+    n = int(math.ceil(r / grid.res))
+    for dy in range(-n, n + 1):
+        for dx in range(-n, n + 1):
+            if grid.in_grid(iy + dy, ix + dx) and grid.occ[iy + dy, ix + dx]:
+                cx, cy = grid.to_world(iy + dy, ix + dx)
+                if math.hypot(cx - x, cy - y) <= r:
+                    return True
+    return False
+
+
+def people_in_furniture_s(d: RunData) -> Optional[float]:
+    """Seconds people spent standing or walking inside furniture or a wall (a blocked cell of the site map); sitting
+    in a seat does not count. Each status row counts until the person's next row (at most 10 s). None without a site."""
+    site = d.site
+    if site is None:
+        return None
+    total = 0.0
+    for times, rows in d.tracks().values():
+        for i, r in enumerate(rows):
+            if r.get("posture") in ("standing", "walking") and site.grid.blocked(r["x"], r["y"]):
+                nxt = times[i + 1] if i + 1 < len(times) else times[i] + MAX_SAMPLE_GAP_S
+                total += min(nxt - times[i], FURNITURE_GAP_CAP_S)
+    return total
+
+
+def robot_near_furniture_s(d: RunData) -> Optional[float]:
+    """Seconds the robot was closer than 0.35 m (centre to the nearest furniture or wall cell centre) to the
+    furniture or a wall. Each robot_pose sample counts the gap to the next one (at most 1 s). None without a site or
+    samples."""
+    site, ps = d.site, d.poses()
+    if site is None or not ps:
+        return None
+    total = 0.0
+    for i, p in enumerate(ps):
+        gap = min(ps[i + 1]["t"] - p["t"], MAX_SAMPLE_GAP_S) if i + 1 < len(ps) else MAX_SAMPLE_GAP_S
+        if _near_blocked(site.grid, p["x"], p["y"], NEAR_FURNITURE_M):
+            total += gap
+    return total
+
+
 def contacts(d: RunData) -> Optional[float]:
     """Number of world rows with kind "contact" (the robot touched a person). bed_contact rows are
     not counted."""
@@ -572,7 +619,8 @@ METRICS: dict[str, Callable[[RunData], Optional[float]]] = {
         unanswered_requests, mean_response_s, trays_correct_in_reach, trays_total, instruments_correct_rate,
         instrument_mean_latency_s, fire_out_s, people_reached_destination_rate, nurse_alerted_s,
         specimen_delivered_s, patient_left_ward_unaccompanied_s, deterioration_alerted_s, mean_wait_s,
-        mood_change, rating_likeability, rating_safety, rating_competence, trust_item_mean, trust_delta_mean)
+        mood_change, rating_likeability, rating_safety, rating_competence, trust_item_mean, trust_delta_mean,
+        people_in_furniture_s, robot_near_furniture_s)
 }
 assert set(METRICS) == set(METRIC_NAMES)
 

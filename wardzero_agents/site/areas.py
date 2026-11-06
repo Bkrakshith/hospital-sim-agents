@@ -83,6 +83,9 @@ class AreaRouter:
     def is_free(self, x: float, y: float) -> bool:
         return self.inside(x, y) is None and self.base.is_free(x, y)
 
+    def is_clear(self, x: float, y: float) -> bool:
+        return self.inside(x, y) is None and self.base.is_clear(x, y)
+
     def block(self, x: float, y: float, radius: float) -> None:
         self.base.block(x, y, radius)
 

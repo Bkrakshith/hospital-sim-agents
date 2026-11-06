@@ -44,6 +44,7 @@ from wardzero_agents.world.reach import giver_reach_ok, receiver_zone_ok
 from wardzero_agents.world.oracle import Entity, Pose, visible
 from wardzero_agents.world.perception import Tracks
 from wardzero_agents.world.robot_body import CONTACT_MARGIN_M, RobotBody
+from wardzero_agents.world.route_follower import ROBOT_HARD_M
 
 ROBOT_ID = "g1"
 ROUTE_BLOCK_RADIUS_M = 1.5  # a route_blocked event seals this radius for routing
@@ -66,6 +67,12 @@ TAKE_RANGE_M = 1.2
 BELL_DB = 55.0
 ALARM_DB = 100.0
 APPROACH_KINDS = ("approach", "attend")
+# where a person is sent to stand (walking up to someone, following the robot) is moved to free floor: out of the
+# furniture's clearance band, this far from the robot and from other people, within SPOT_SEARCH_M of the first choice
+SPOT_ROBOT_M = 0.95
+SPOT_PEOPLE_M = 0.6
+SPOT_SEARCH_M = 1.6
+KEEP_SIT = ("sit_idle", "use_phone", "read_sign", "gesture")  # quick things that do not cancel sitting down
 ESCORT_GAP_M = 1.0  # the escorted person trails this far behind the one leading
 ADJACENT_M = 0.6  # compartments whose boxes are this close count as neighbours
 FOLLOW_NEAR_M = 1.0  # a person following the robot keeps between these two distances behind it
@@ -149,10 +156,12 @@ class StubWorld:
         self._omni: set[str] = set()
         self.site = loaded.site
         self.router = Router(self.site.grid)
+        # the robot's own router: the same map with a hard band, so its routes keep its body off the furniture
+        self.robot_router = Router(self.site.grid, hard=ROBOT_HARD_M)
         self._sight = self._wall_cells()
         self._seats = dict(self.site.seats)
         r = loaded.scenario.robot
-        self.robot = RobotBody(r.x, r.y, r.yaw, r.radius, r.max_speed, self.router)
+        self.robot = RobotBody(r.x, r.y, r.yaw, r.radius, r.max_speed, self.robot_router)
         self.robot_reach = tuple(r.reach)
         self.tracks = Tracks()
         self._bed_touch: set[str] = set()
@@ -336,6 +345,8 @@ class StubWorld:
         path = self.router.route((p.x, p.y), goal, self._robot_disc(p))
         if path is None:
             return None
+        if self.site.grid.blocked(p.x, p.y) and tuple(path[0]) != (p.x, p.y):
+            path = [(p.x, p.y)] + list(path)  # in a chair: step out to the route's free start first, not across the row
         return _Phase("walk", dest=None if follow else goal, follow=follow, speed=speed, path=path, i=1, goal=goal)
 
     def apply_intent(self, intent: Intent) -> list[AudioEvent]:
@@ -366,6 +377,12 @@ class StubWorld:
             return [self.say(intent.person, intent.text or "", intent.addressee, intent.t)]
 
         speed = intent.speed if intent.speed else p.inst.walk_speed
+        if kind in KEEP_SIT and p.claim is not None and any(ph.kind == "sit" for ph in p.plan):
+            # sitting down: a quick look at a sign or a phone does not cancel it (in Isaac a cancelled sit left the
+            # character standing inside the chair). The mind hears this intent is done; the sit carries on.
+            p.intent_id, p.intent_kind = intent.id, intent.kind
+            p.state, p.reason, p.progress = "done", None, 1.0
+            return []
         if kind in INSTANT:
             self._begin(p, intent)
             if kind == "read_sign" and intent.target is not None:
@@ -475,12 +492,46 @@ class StubWorld:
             if d <= FOLLOW_FAR_M:
                 return p.x, p.y
             k = FOLLOW_GAP_M / d
-            return tp[0] + (p.x - tp[0]) * k, tp[1] + (p.y - tp[1]) * k
+            return self.free_spot(tp[0] + (p.x - tp[0]) * k, tp[1] + (p.y - tp[1]) * k, p.inst.person_id)
         d = math.hypot(p.x - tp[0], p.y - tp[1])
         if d <= APPROACH_GAP_M:
             return p.x, p.y
         k = APPROACH_GAP_M / d
-        return tp[0] + (p.x - tp[0]) * k, tp[1] + (p.y - tp[1]) * k
+        return self.free_spot(tp[0] + (p.x - tp[0]) * k, tp[1] + (p.y - tp[1]) * k, p.inst.person_id)
+
+    def _spot_ok(self, x: float, y: float, pid: str) -> bool:
+        if not self.router.is_free(x, y):
+            return False
+        if self.loaded.scenario.robot.enabled and math.hypot(x - self.robot.x, y - self.robot.y) < SPOT_ROBOT_M:
+            return False
+        return all(math.hypot(x - q.x, y - q.y) >= SPOT_PEOPLE_M for qid, q in self.people.items()
+                   if qid != pid and q.posture != "gone")
+
+    def free_spot(self, x: float, y: float, pid: str) -> tuple[float, float]:
+        """(x, y) if a person can stand there (free floor clear of furniture, of the robot and of other people), else
+        the nearest such spot within SPOT_SEARCH_M that can be seen from (x, y); else (x, y) unchanged."""
+        if self._spot_ok(x, y, pid):
+            return x, y
+        key = (round(x, 1), round(y, 1), pid)
+        cache = self.__dict__.setdefault("_spots", {})
+        if key in cache:
+            return cache[key]
+        cache[key] = self._search_spot(x, y, pid)
+        return cache[key]
+
+    def _search_spot(self, x: float, y: float, pid: str) -> tuple[float, float]:
+        res = self.site.grid.res
+        best, bd = None, math.inf
+        n = int(SPOT_SEARCH_M / res)
+        for dy in range(-n, n + 1):
+            for dx in range(-n, n + 1):
+                d = math.hypot(dx, dy) * res
+                if d >= bd or d > SPOT_SEARCH_M:
+                    continue
+                cx, cy = x + dx * res, y + dy * res
+                if self._spot_ok(cx, cy, pid) and self._los((x, y), (cx, cy)):
+                    best, bd = (cx, cy), d
+        return best if best is not None else (x, y)
 
     def _lead(self, p: _Person, ph: _Phase) -> None:
         """The person being escorted (or wheeled, in a bed) trails the leader."""
@@ -558,6 +609,8 @@ class StubWorld:
         else:
             seat = self._seats[p.claim]
             p.x, p.y, p.yaw, p.posture = seat.x, seat.y, seat.yaw, "seated"
+            if p.state != "running":  # the sit outlived its intent (a quick intent came meanwhile): the seat is theirs
+                p.seat, p.claim = p.claim, None
 
     def _settle(self, p: _Person) -> None:
         """After a phase ends: the intent is done when the plan is empty, else its progress moves on."""
@@ -796,6 +849,7 @@ class StubWorld:
         p.posture = "walking"
 
     def step(self, t: float) -> None:
+        self.__dict__.pop("_spots", None)  # free spots depend on where everyone is: found again each step
         if t <= self.last_t:
             return  # time never runs backwards; last_t is unchanged
         dt = t - self.last_t

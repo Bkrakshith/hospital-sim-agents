@@ -110,7 +110,7 @@ class SimService:
         self.world = StubWorld(loaded, loaded.scenario.seed if seed is None else seed)
         if getattr(loaded.scenario, "forbidden_areas", None):  # the robot routes round the user's no-go areas
             from ..site.areas import robot_router
-            self.world.robot.router = robot_router(self.world.router, loaded.scenario.forbidden_areas)
+            self.world.robot.router = robot_router(self.world.robot_router, loaded.scenario.forbidden_areas)
         self.bodies: Bodies = bodies if bodies is not None else StubBodies()
         self.robot = loaded.scenario.robot.enabled
         self.tasks = RobotTasks(self.world)

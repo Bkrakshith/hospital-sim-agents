@@ -60,6 +60,19 @@ SEAT_SAY = "This seat is free. Please take a seat."
 NO_SEAT_SAY = "I'm sorry, I can't see a free seat here."
 SEAT_BESIDE_M = 0.9  # the robot stands this far from the seat it shows
 APPROACH_M = 1.2  # how close the robot comes to a person it walks up to
+SEAT_ASIDE_M = 1.0  # showing a seat, the robot stands this far to the side of the seat's front, out of the way in
+# keeping clear of people while it walks (any goal, its own or a task's):
+PERSON_KEEP_M = 0.7  # centre to centre: body radius 0.3 + a person's 0.25 + 0.15 m
+STOP_AHEAD_M = 1.2  # someone this close ahead of it (and nearer than its goal) holds it
+LATERAL_M = 0.6  # ... "ahead" is within this of its line of travel
+REPLAN_S = 2.0  # held this long: it routes round the people in the way
+AVOID_R_M = 0.9  # the discs its new route keeps out of
+GIVE_UP_S = 8.0  # held this long in all: the walk is given up (a seat is shown from where it stands)
+BACK_OFF_M = 0.6  # standing still, someone this close for BACK_OFF_S: it steps back
+BACK_OFF_S = 0.5
+BACK_OFF_STEP_M = 0.7
+BACK_OFF_COOLDOWN_S = 4.0
+SAFETY = "safety"  # goal ids of its own safety moves: their results are not reported to the brain
 DESK_M = 1.5  # the receptionist reads the desk computer when she is this close to her chair
 
 GUIDE_HOLD_M = 2.5  # the robot waits while the guided person is further behind than this ...
@@ -80,6 +93,13 @@ RECEPTION_ROLES = ("receptionist",)
 WARD_STAFF_ROLES = ("ward_nurse", "nurse", "staff")
 
 
+def _seg_dist(x: float, y: float, a, b) -> float:
+    dx, dy = b[0] - a[0], b[1] - a[1]
+    L2 = dx * dx + dy * dy
+    u = 0.0 if L2 < 1e-12 else max(0.0, min(1.0, ((x - a[0]) * dx + (y - a[1]) * dy) / L2))
+    return math.hypot(x - (a[0] + u * dx), y - (a[1] + u * dy))
+
+
 @dataclass
 class TaskOutputs:
     results: list[dict] = field(default_factory=list)
@@ -94,6 +114,12 @@ class RobotTasks:
         self._guide: Optional[dict] = None
         self._tell: Optional[dict] = None
         self._notes: list[dict] = []  # desk notes not read yet
+        self._goal_xy: Optional[tuple] = None  # (x, y, yaw, exempt) of the goal in flight, for a re-route
+        self._held_s = 0.0
+        self._replanned_at = -1e9
+        self._close_s = 0.0
+        self._backed_at = -1e9
+        self._n_safety = 0
         self.goal_id = ""
         self._goal_n = 0
         self._out = TaskOutputs()
@@ -237,6 +263,8 @@ class RobotTasks:
         p = self.world.people.get(g["pid"])
         if p is None or p.posture == "gone":
             return False
+        if g.get("seat_id"):  # shown a seat: arrived once they sit in it (or in any seat), or after the wait
+            return p.posture == "seated"
         if math.hypot(p.x - g["goal"][0], p.y - g["goal"][1]) <= NEAR_PLACE_M:
             return True
         return g["room"] is not None and self.world.site.room_at(p.x, p.y) == g["room"]
@@ -286,28 +314,86 @@ class RobotTasks:
         inside = [c for c in seen if room is not None and w.site.room_at(c.x, c.y) == room]
         return min(inside or seen, key=lambda c: math.hypot(c.x - r.x, c.y - r.y)).id
 
+    def aside_of_seat(self, c, pid: Optional[str]) -> tuple[float, float]:
+        """Where the robot stands to show seat c: beside the seat's front, out of the way the person walks in (the
+        free spot furthest from the line from them to the seat's front), never in the chairs."""
+        w = self.world
+        fx, fy = c.x + 0.85 * math.cos(c.yaw), c.y + 0.85 * math.sin(c.yaw)
+        px, py = -math.sin(c.yaw), math.cos(c.yaw)
+        q = w.people.get(pid or "")
+        r_ = w.robot.router
+        for free in (getattr(r_, "is_clear", None), getattr(r_, "is_free", None)):  # strict first, then the soft band
+            if free is None:
+                continue
+            spot = self._aside(c, q, fx, fy, px, py, free)
+            if spot is not None:
+                return spot
+        # nowhere beside it: back off along the line from the seat through the robot, past the seat's front
+        d = max(math.hypot(w.robot.x - c.x, w.robot.y - c.y), 1e-6)
+        return c.x + (w.robot.x - c.x) / d * (SEAT_BESIDE_M + 1.0), c.y + (w.robot.y - c.y) / d * (SEAT_BESIDE_M + 1.0)
+
+    def _aside(self, c, q, fx, fy, px, py, free) -> Optional[tuple[float, float]]:
+        w = self.world
+        best, score = None, -math.inf
+        for out in (0.4, 0.9, 1.4):
+            for aside in (SEAT_ASIDE_M, 1.5 * SEAT_ASIDE_M):
+                for side in (1.0, -1.0):
+                    x = fx + out * math.cos(c.yaw) + side * aside * px
+                    y = fy + out * math.sin(c.yaw) + side * aside * py
+                    if w.site.grid.blocked(x, y) or not free(x, y):
+                        continue
+                    lane = _seg_dist(x, y, (q.x, q.y), (fx, fy)) if q is not None else 1.0
+                    them = math.hypot(x - q.x, y - q.y) if q is not None else 2.0
+                    if them < 1.0:
+                        continue  # where they stand now
+                    sc = min(lane, 1.5) + 0.5 * min(them, 2.0) - 0.2 * math.hypot(x - w.robot.x, y - w.robot.y) / 5.0
+                    if sc > score and self._clean_route(x, y):
+                        best, score = (x, y), sc
+        return best
+
+    def _clean_route(self, x: float, y: float) -> bool:
+        """The robot's route to (x, y) exists and stays out of the clearance band past its first 0.3 m."""
+        w = self.world
+        r = w.robot
+        route = r.router.route((r.x, r.y), (x, y))
+        soft = getattr(r.router, "is_free", None)
+        if route is None or soft is None:
+            return route is not None
+        pts = [(r.x, r.y)] + [tuple(q) for q in route]
+        for (x0, y0), (x1, y1) in zip(pts, pts[1:]):
+            k = max(1, int(math.hypot(x1 - x0, y1 - y0) / 0.1))
+            for i in range(k + 1):
+                px, py = x0 + (x1 - x0) * i / k, y0 + (y1 - y0) * i / k
+                if math.hypot(px - r.x, py - r.y) > 0.3 and not soft(px, py):
+                    return False
+        return True
+
     def _to_seat(self, g: dict, t: float) -> bool:
-        """At the place of a guide to a seat: walk on to a free seat and show it. False when none is in sight."""
+        """At the place of a guide to a seat: pick a free seat and step aside of it first (so the person's way to it is
+        clear), then show it (``_show_seat``, when that walk ends). False when no free seat is in sight."""
         w = self.world
         sid = self.free_seat(g["room"])
         if sid is None:
             ev = w.robot_say(NO_SEAT_SAY, t).model_copy(update={"addressee": g["pid"]})
             self._out.audio.append(ev)
             return False
-        c, r = w.site.seats[sid], w.robot
-        d = max(math.hypot(r.x - c.x, r.y - c.y), 1e-6)
-        x, y = c.x + (r.x - c.x) / d * SEAT_BESIDE_M, c.y + (r.y - c.y) / d * SEAT_BESIDE_M
+        c = w.site.seats[sid]
+        g["seat_id"], g["goal"], g["room"], g["shown"] = sid, (c.x, c.y), None, False
+        x, y = self.aside_of_seat(c, g["pid"])
         if not self._set_goal(g["id"], x, y, math.atan2(c.y - y, c.x - x), t, exempt=g["pid"]):
-            x, y = c.x, c.y  # nowhere to stand beside it: show it from here
-            r.turn_to(math.atan2(c.y - r.y, c.x - r.x))
-        g["seat_id"], g["goal"], g["room"] = sid, (c.x, c.y), None
+            w.robot.turn_to(math.atan2(c.y - w.robot.y, c.x - w.robot.x))  # nowhere to stand aside: show it from here
+            self._show_seat(g, t)
+            g["phase"], g["t_arrive"] = "waiting", t
+        return True
+
+    def _show_seat(self, g: dict, t: float) -> None:
+        w = self.world
+        sid = g["seat_id"]
+        g["shown"] = True
         self._out.audio.append(w.robot_say(SEAT_SAY, t).model_copy(update={"addressee": g["pid"]}))
         self._out.nudges.append(Nudge(person=g["pid"], t=t, card=SEAT_CARD, message=(
             f"The robot is showing you a free seat, seat {sid}. If you want it, sit down there (sit_down {sid}).")))
         self._log({"t": t, "kind": "guide", "event": "seat", "id": g["id"], "person": g["pid"], "seat": sid})
-        if (x, y) == (c.x, c.y):  # no walk: wait for them here
-            g["phase"], g["t_arrive"] = "waiting", t
-        return True
 
     def _guide_stop(self, aid, msg, t) -> None:
         if self.world.robot.has_goal and self.world.robot._had_goal:
@@ -442,6 +528,105 @@ class RobotTasks:
                 f"({name}), in {room} at x {p.x:.1f}, y {p.y:.1f}. If you can help, go to them (approach {pid}), "
                 f"help them, then {back}.")
 
+    # ---- keeping clear of people -------------------------------------------------------------
+    def _others(self) -> list:
+        w = self.world
+        return [(pid, q) for pid, q in w.people.items() if q.posture != "gone" and q.kind != "static"]
+
+    def _blocker(self) -> Optional[str]:
+        """Someone ahead of the walking robot, nearer than its goal, or anyone inside PERSON_KEEP_M in front."""
+        w = self.world
+        r = w.robot
+        c, s_ = math.cos(r.yaw), math.sin(r.yaw)
+        left = math.inf
+        if self._goal_xy is not None:
+            left = math.hypot(self._goal_xy[0] - r.x, self._goal_xy[1] - r.y)
+        for pid, q in self._others():
+            dx, dy = q.x - r.x, q.y - r.y
+            ahead, lat = dx * c + dy * s_, abs(-dx * s_ + dy * c)
+            if ahead <= 0.0:
+                continue
+            if self._guide is not None and pid == self._guide["pid"]:  # the person it leads: only when really close
+                if math.hypot(dx, dy) < PERSON_KEEP_M:
+                    return pid
+                continue
+            if math.hypot(dx, dy) < PERSON_KEEP_M or (ahead < STOP_AHEAD_M and lat < LATERAL_M and ahead < left + 0.3):
+                return pid
+        return None
+
+    def _give_up(self, t: float) -> None:
+        """Held too long by someone who stays in the way: stop. A guide stepping aside to show a seat shows it from
+        here; any other walk ends ``blocked_by_person`` so the brain can decide what to do."""
+        w = self.world
+        self._held_total, self._held_s = 0.0, 0.0
+        w.robot.cancel_goal()
+        w.robot.speed_scale = 1.0
+        g = self._guide
+        if g is not None and g.get("seat_id") and not g.get("shown"):
+            c = w.site.seats[g["seat_id"]]
+            w.robot.turn_to(math.atan2(c.y - w.robot.y, c.x - w.robot.x))
+            self._show_seat(g, t)
+            g["phase"], g["t_arrive"] = "waiting", t
+            return
+        gid = self.goal_id
+        if not str(gid).startswith(SAFETY):
+            self._goal(gid, False, "blocked_by_person", t)
+        if g is not None:
+            self._end_guide(t, "blocked_by_person")
+        if self._tell is not None:
+            self._result(self._tell["id"], "tell_staff", False, "blocked_by_person", t)
+            self._tell = None
+
+    def _safety(self, t: float, dt: float) -> None:
+        """Every step: hold the robot for someone in its way, route round them if they stay, and step back from
+        someone standing too close to it. Pure geometry on the world's people: the same in Quick 2D and Isaac."""
+        w = self.world
+        r = w.robot
+        held_by_guide = self._guide is not None and self._guide["phase"] == "walking" and self._guide["held"]
+        moving = r.has_goal and r._had_goal and self.mobile
+        hold = moving and self._blocker() is not None
+        if hold:
+            r.speed_scale, self._holding = 0.0, True
+        elif getattr(self, "_holding", False):  # release only a hold of its own (a guide holds the robot too)
+            self._holding = False
+            r.speed_scale = 0.0 if held_by_guide else 1.0
+        if hold:
+            self._held_s += dt
+            self._held_total = getattr(self, "_held_total", 0.0) + dt
+            if self._held_total >= GIVE_UP_S:
+                self._give_up(t)
+                return
+            if self._held_s >= REPLAN_S and t - self._replanned_at >= REPLAN_S and self._goal_xy is not None:
+                x, y, yaw, exempt = self._goal_xy
+                discs = [(q.x, q.y, AVOID_R_M) for _, q in self._others() if math.hypot(q.x - r.x, q.y - r.y) < 4.0]
+                self._replanned_at, self._held_s = t, 0.0
+                r.set_goal(x, y, yaw, discs)  # the same goal (and goal id), a new way round
+        else:
+            self._held_s = 0.0
+            if not moving:
+                self._held_total = 0.0
+        if moving or not self.mobile or self._guide is not None or self._tell is not None:
+            self._close_s = 0.0
+            return
+        near = [(math.hypot(q.x - r.x, q.y - r.y), q) for _, q in self._others()]
+        near = [(d, q) for d, q in near if d < BACK_OFF_M]
+        self._close_s = self._close_s + dt if near else 0.0
+        if not near or self._close_s < BACK_OFF_S or t - self._backed_at < BACK_OFF_COOLDOWN_S:
+            return
+        d, q = min(near, key=lambda e: e[0])
+        ux, uy = ((r.x - q.x) / d, (r.y - q.y) / d) if d > 1e-6 else (math.cos(r.yaw + math.pi), math.sin(r.yaw + math.pi))
+        free = getattr(r.router, "is_clear", None) or getattr(r.router, "is_free", None)
+        for k in (1.0, 0.7, 0.45):
+            for turn in (0.0, 0.6, -0.6, 1.2, -1.2):
+                a = math.atan2(uy, ux) + turn
+                x, y = r.x + math.cos(a) * BACK_OFF_STEP_M * k, r.y + math.sin(a) * BACK_OFF_STEP_M * k
+                if (free is None or free(x, y)) and not w.site.grid.blocked(x, y):
+                    self._n_safety += 1
+                    self._backed_at, self._close_s = t, 0.0
+                    face = math.atan2(q.y - y, q.x - x)
+                    self._set_goal(f"{SAFETY}-{self._n_safety}", x, y, face, t, exempt=None)
+                    return
+
     # ---- goals ---------------------------------------------------------------------------
     def goal_pose(self, x, y, yaw, t) -> None:
         """A goal_pose command; no route is reported as a goal result."""
@@ -463,6 +648,7 @@ class RobotTasks:
         in_flight = w.robot.has_goal and w.robot._had_goal
         if not w.robot.set_goal(x, y, yaw, self._avoid(exempt)):
             return False
+        self._goal_xy, self._held_s = (x, y, yaw, exempt), 0.0
         if in_flight:
             self._goal(self.goal_id, False, "superseded", t)
         if self._tell is not None and self._tell["id"] != gid:
@@ -510,11 +696,16 @@ class RobotTasks:
         ev = w.robot.take_goal_event()
         if ev is not None:
             gid = self.goal_id
-            self._goal(gid, ev == "arrived", ev, t)
+            if not str(gid).startswith(SAFETY):
+                self._goal(gid, ev == "arrived", ev, t)
             g = self._guide
             if g is not None and g["id"] == gid and g["phase"] == "walking":
                 if ev == "arrived" and g["seat"] and g["seat_id"] is None and self._to_seat(g, t):
-                    pass  # walking on to the seat
+                    pass  # stepping aside of the seat it picked
+                elif ev == "arrived" and g.get("seat_id") and not g.get("shown"):
+                    self._show_seat(g, t)  # aside now: show the seat
+                    g["phase"], g["t_arrive"] = "waiting", t
+                    w.robot.speed_scale = 1.0
                 elif ev == "arrived":
                     g["phase"], g["t_arrive"] = "waiting", t
                     w.robot.speed_scale = 1.0
@@ -530,6 +721,7 @@ class RobotTasks:
             self._guide_step(t, dt)
         if self._notes:
             self._read_notes(t)
+        self._safety(t, dt)
         w.robot.speed_cap = self._near_cap() if w.robot.has_goal else None
         for r in w.robot_results:
             self._out.results.append({**r, "t": t})

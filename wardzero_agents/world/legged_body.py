@@ -52,10 +52,8 @@ def block_segments(router, segments, clearance: float, step_m: float = 0.05) -> 
             if g.in_grid(iy, ix):
                 raw[iy, ix] = True
     router._raw = raw.tolist()
-    router._b = router._raw
     router.clearance = float(clearance)
-    router._near = router._inflate(raw, clearance).tolist()
-    router._cache.clear()
+    router.rebuild_bands()  # the soft band and the hard one (the G1's body)
     router.version = getattr(router, "version", 0) + 1  # an AreaRouter over it rebuilds its copy
     return int(raw.sum()) - n0
 

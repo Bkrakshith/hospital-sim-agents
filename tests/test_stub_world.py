@@ -42,11 +42,14 @@ def test_initial_seated():
 
 def test_walk_speed_after_stand_up():
     w = make()
-    s0 = st(w, "P5")
     w.apply_intent(I("walk_to", target="clinic_corridor"))
-    step_until(w, 5.0)
+    moved, prev = 0.0, (st(w, "P5").x, st(w, "P5").y)
+    for k in range(1, 51):  # the distance walked along the way (it steps out of the front of the chair first)
+        w.step(k * 0.1)
+        cur = (st(w, "P5").x, st(w, "P5").y)
+        moved += math.hypot(cur[0] - prev[0], cur[1] - prev[1])
+        prev = cur
     s1 = st(w, "P5")
-    moved = math.hypot(s1.x - s0.x, s1.y - s0.y)
     i = inst(w, "P5")
     assert moved == pytest.approx((5.0 - i.sit_to_stand_s) * i.walk_speed, rel=0.05)
     assert s1.posture == "walking" and s1.state == "running"
@@ -86,7 +89,9 @@ def test_approach_person_reaims_moving_target():
         w.step(t)
     a, b = st(w, "P4"), st(w, "P5")
     assert b.state == "done" and t < 120
-    assert math.hypot(a.x - b.x, a.y - b.y) == pytest.approx(1.0, abs=0.1)
+    # about 1 m from them, on free floor and a metre clear of the robot (which stands by the desk here)
+    assert 0.9 <= math.hypot(a.x - b.x, a.y - b.y) <= 1.8
+    assert math.hypot(b.x - w.robot.x, b.y - w.robot.y) >= 0.9
 
 
 def test_seat_occupied_fails():

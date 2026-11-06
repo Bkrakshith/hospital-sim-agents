@@ -52,6 +52,9 @@ LOOKAHEAD_M = 0.8  # pure-pursuit point ahead on the route segment (cross-track 
 # route clearance band for the walking G1 (half-width with arms ~0.35 m). The band is soft and the map's cells are
 # 0.2 m, so a 0.45 m band still let the route pass 0.31 m from the end of the reception desk; 0.6 keeps it >= 0.44 m
 G1_CLEARANCE_M = 0.6
+# a robot's route keeps out of every cell within this of furniture or a wall where the map has room (Router hard):
+# body radius 0.3 m + 0.2 m. Only a doorway narrower than that falls back to the soft band.
+ROBOT_HARD_M = 0.5
 
 FOLLOWING, TURNING, ARRIVED, STUCK, FELL, NO_GOAL = "following", "turning", "arrived", "stuck", "fell", "no_goal"
 RESULTS = (ARRIVED, STUCK, FELL)

@@ -20,15 +20,21 @@ _NB = [(-1, 0, 1.0), (1, 0, 1.0), (0, -1, 1.0), (0, 1, 1.0),
 
 class Router:
     """Raw-blocked cells are impassable. Cells within `clearance` of a blocked cell are passable but cost
-    more, so routes keep clear of walls where the map allows and still squeeze through tight doorways."""
+    more, so routes keep clear of walls where the map allows and still squeeze through tight doorways.
 
-    def __init__(self, grid: OccGrid, clearance: float = CLEARANCE, cache_size: int = 4096):
+    hard (metres, 0 = off): a stricter band for a robot's body. A route first keeps out of every cell within ``hard`` of
+    a blocked cell (except near its two ends, so it can start or stop beside furniture), and only where no such route
+    exists (a doorway narrower than the band) falls back to the soft band."""
+
+    def __init__(self, grid: OccGrid, clearance: float = CLEARANCE, cache_size: int = 4096, hard: float = 0.0):
         self.grid = grid
         self.clearance = float(clearance)  # kept: block() and with_rects_blocked() rebuild the band with it
+        self.hard = float(hard)
         occ = grid.occ.astype(bool)
         near = self._inflate(occ, clearance)
         self._raw = occ.tolist()
         self._near = near.tolist()
+        self._hard = self._inflate(occ, self.hard).tolist() if self.hard > 0 else None
         self._b = self._raw
         self._cache: "OrderedDict[tuple, Optional[list]]" = OrderedDict()
         self._size = cache_size
@@ -56,9 +62,17 @@ class Router:
             for dx in range(-n, n + 1):
                 if dy * dy + dx * dx <= (radius / g.res) ** 2 and g.in_grid(iy + dy, ix + dx):
                     self._raw[iy + dy][ix + dx] = True
-        self._near = self._inflate(np.array(self._raw, dtype=bool), self.clearance).tolist()
-        self._cache.clear()
+        self.rebuild_bands()
         self.version += 1
+
+    def rebuild_bands(self) -> None:
+        """Rebuild the soft band (and the hard one) from the raw cells, after cells were blocked."""
+        raw = np.array(self._raw, dtype=bool)
+        self._b = self._raw
+        self._near = self._inflate(raw, self.clearance).tolist()
+        self._hard = self._inflate(raw, self.hard).tolist() if getattr(self, "hard", 0.0) > 0 else None
+        self._hard_cells = None
+        self._cache.clear()
 
     def with_rects_blocked(self, rects) -> "Router":
         """A new router with this one's blocked cells (anything block_segments or block put in, door leaves
@@ -77,15 +91,22 @@ class Router:
         out = copy.copy(self)  # keeps any other settings; the cell tables and the cache are its own
         out.version = 0
         out._raw = raw.tolist()
-        out._near = out._inflate(raw, self.clearance).tolist()
-        out._b = out._raw
         out._cache = OrderedDict()
+        out.rebuild_bands()
         return out
 
     def is_free(self, x: float, y: float) -> bool:
         """Free of walls and of the clearance band."""
         iy, ix = self.grid.to_cell(x, y)
         return self.grid.in_grid(iy, ix) and not self._near[iy][ix]
+
+    def is_clear(self, x: float, y: float) -> bool:
+        """Free of walls and of the hard band (the soft band when there is no hard one): room for a robot's body."""
+        iy, ix = self.grid.to_cell(x, y)
+        if not self.grid.in_grid(iy, ix) or self._raw[iy][ix]:
+            return False
+        band = self._hard if getattr(self, "_hard", None) is not None else self._near
+        return not band[iy][ix]
 
     def _snap(self, c):
         """The cell itself, else the nearest raw-free cell within 1 m, else None."""
@@ -209,6 +230,10 @@ class Router:
             return tuple(p) if self.grid.to_cell(*p) == c else self.grid.to_world(*c)
 
         ea, eb = endpoint(a, ca), endpoint(b, cb)
+        if getattr(self, "_hard", None) is not None:
+            strict = self._strict(ca, cb, avoid)
+            if strict is not None:
+                return [ea] + list(strict) + [eb]
         extra = self._discs(avoid, (ca, cb)) if avoid else frozenset()
         if extra:
             mid = self._plan(ca, cb, extra)
@@ -224,6 +249,27 @@ class Router:
             if len(self._cache) > self._size:
                 self._cache.popitem(last=False)
         return None if mid is None else [ea] + list(mid) + [eb]
+
+    def _strict(self, ca, cb, avoid) -> Optional[list]:
+        """The inner waypoints of a route that keeps out of the hard band (and of the avoid discs if it can), or None.
+        Band cells within ``hard`` + 0.5 m of either end stay open, so a route can leave or reach a spot by furniture."""
+        g = self.grid
+        hard = self._hard
+        h, w = len(hard), len(hard[0])
+        open_r = int(math.ceil((self.hard + 0.5) / g.res))
+        ends = {(c[0] + dy, c[1] + dx) for c in (ca, cb) for dy in range(-open_r, open_r + 1)
+                for dx in range(-open_r, open_r + 1) if dy * dy + dx * dx <= open_r * open_r}
+        base = getattr(self, "_hard_cells", None)
+        if base is None or base[0] != self.version:  # the band's cells, once per change of the map
+            base = (self.version, frozenset((y, x) for y in range(h) for x in range(w) if hard[y][x] and not self._raw[y][x]))
+            self._hard_cells = base
+        band = base[1] - ends
+        discs = self._discs(avoid, (ca, cb)) if avoid else frozenset()
+        if discs:
+            mid = self._plan(ca, cb, band | discs)
+            if mid is not None:
+                return mid
+        return self._plan(ca, cb, band)
 
     def _plan(self, ca, cb, extra=frozenset()) -> Optional[list]:
         """A* over cells, then string-pulled: the inner waypoints, or None."""
