@@ -10,6 +10,19 @@ unanswered requests, response time and mood changes.
 Bring your own robot (its URDF, its sensors and a ROS 2 controller), or start with the built-in Unitree G1. Run a
 scenario in a quick 2D simulator, or in the 3D hospital in Isaac Sim 6.0.
 
+### New in v3.1
+
+- **The G1 walks in Isaac Sim.** NVIDIA's GEAR-SONIC whole-body controller drives the built-in G1. It walks people
+  to where they need to go and comes back to its post. Quick 2D runs need no controller.
+- **Doors swing by physics.** People and the robot push the hinged doors open; a door closer shuts them again.
+- **A receptionist at the desk.** Reception scenes add a live receptionist, seated behind the desk. The robot can
+  walk over and tell her about a person who needs staff (`tell_staff`). She can be removed from the cast.
+- **Placement in the Studio.** Drag people and the robot on the map, turn them, and tick **Start seated** to put a
+  person in a waiting-area seat at the start.
+- **Forbidden areas.** Draw rectangles the robot must keep out of. The robot's route avoids them, and the report
+  counts any entry.
+- **The camera follows the robot** in every Isaac scenario.
+
 The Python package is `wardzero_agents` and the command is `hhumans`. This repository is part of
 [WardZero](https://github.com/Bkrakshith/hospital-sim) (project page: <https://bkrakshith.github.io/wardzero/>).
 
@@ -21,13 +34,14 @@ The Python package is `wardzero_agents` and the command is `hhumans`. This repos
 - For real runs, an API account with pay-as-you-go billing: a Claude Console account (the default) or an OpenAI
   Platform account. A Claude Pro or Max subscription does not work for API calls. You can try the Studio for free
   first, without a key (step 3).
-- For 3D runs only: Isaac Sim 6.0 and an NVIDIA RTX GPU (step 6). Quick 2D runs need no GPU.
+- For 3D runs only: Isaac Sim 6.0 and an NVIDIA RTX GPU with 16 GB of graphics memory (RTX 4080 or better)
+  (step 6). Quick 2D runs need no GPU.
 
 ### 1. Install
 
 ```bash
 sudo apt install ros-humble-desktop ros-humble-vision-msgs ros-humble-rmw-cyclonedds-cpp python3-venv git
-git clone --recurse-submodules -b v3 https://github.com/Bkrakshith/hospital-sim.git WardZero
+git clone --recurse-submodules -b v3.1 https://github.com/Bkrakshith/hospital-sim.git WardZero
 cd WardZero
 python3 -m venv --system-site-packages .venv   # system site-packages make ROS 2's rclpy visible
 source env.sh                                  # ROS 2 and the venv; do this in every new terminal
@@ -64,7 +78,8 @@ hhumans studio
 In the Studio:
 
 1. **Scene.** Choose **Reception and guide**. The people, their roles and moods, and their start positions are on
-   the map. Change them if you like.
+   the map. Drag them to move them, tick **Start seated** for anyone who should start in a waiting-area seat, and
+   use **Draw area** to mark places the robot must keep out of.
 2. **Robot.** Choose **Built-in G1 (Claude)**. Its camera, microphone and speaker are already set up.
 3. **Run.** Choose **Quick 2D**, a duration of 1 minute and a **Spending limit** of $5. Leave **Word of mouth**
    on. Press Start. The live cost shows during the run; a one-minute run with the defaults costs well under $1.
@@ -74,9 +89,9 @@ In the Studio:
 Then set **Repeats** to 2 or more and tick **Carry memory between repeats**. The people now remember the earlier
 run, so a robot that let someone down starts the next run with less trust.
 
-The built-in G1 is a placeholder. It can see, hear and talk, but it has no walking controller, so it cannot walk
-anyone to a room or press a call button, and tasks that need that fail. That is expected: the Studio is there to
-test your robot.
+The built-in G1 is an example robot. It can see, hear and talk. In Quick 2D it moves along its route directly, and
+in Isaac Sim it walks with NVIDIA's GEAR-SONIC controller (step 6). It can walk a person to a room, or walk over
+and tell the receptionist. The Studio is there to test your robot, so replace it with yours when you are ready.
 
 ### 5. Test your own robot
 
@@ -103,10 +118,21 @@ The built-in robot (`--bot claude`) uses the same contract, so it is a worked ex
    python hospital-sim-agents/scripts/build_collision_usd.py   # writes hospital-sim-agents/assets/hospital_collision.usd
    ```
 
-4. Run `hhumans doctor` again, then choose **Isaac Sim** on the Run page. A window or headless with a live preview
+4. Download the walking controller for the built-in G1 (about 1 GB, NVIDIA Open Model License; the weights are
+   kept outside this repository):
+
+   ```bash
+   python hospital-sim-agents/scripts/fetch_sonic.py
+   ```
+
+   Without it the G1 stands still in Isaac Sim. Your own robot does not need it.
+5. Run `hhumans doctor` again, then choose **Isaac Sim** on the Run page. A window or headless with a live preview
    are both available.
 
-Isaac Sim starts slowly the first time, because it compiles shaders and loads the hospital. Wait for it.
+Isaac Sim starts slowly the first time, because it compiles shaders and loads the hospital. Wait for it. Recorded
+runs with a walking robot are slower than real time (physics runs at 200 Hz for the robot's balance); the
+recorded video plays back at normal speed. Isaac Sim keeps a large cache of derived data (tens of GB); to keep it on another disk, set
+`WARDZERO_KIT_ARGS="--/UJITSO/datastore/localCachePath=<folder>"` before you start the Studio.
 
 ### For developers
 
