@@ -78,7 +78,7 @@
     const st = node.state ? h("span.fstate.s-" + node.state, FLOW_STATE[node.state] || node.state) : null;
     const tip = node.reason ? h("div.freason", node.reason) : null;
     const row = h("div.frow", h("span.fkind.k-" + node.kind, FLOW_KIND[node.kind] || node.kind),
-      h("span.flabel", node.label), st, node.t != null ? h("span.ft", Math.round(node.t) + " s") : null);
+      h("span.ftext", node.label), st, node.t != null ? h("span.ft", Math.round(node.t) + " s") : null);
     const li = h("li.fnode.n-" + node.kind, row, tip, kids.length ? h("ul.ftree", kids) : null);
     return root ? h("ul.ftree.froot", li) : li;
   };
@@ -91,13 +91,13 @@
       adapted: "Adapted to your prompt.",
       needs_adapting: "Your prompt has changed: the flow will be adapted to it when the run starts. This shows the scenario's own flow until then." };
     const body = h("div.flow-body");
-    const fill = (d) => body.replaceChildren(
+    const fill = (d) => body.replaceChildren(...[  // replaceChildren would print a null as "null"
       h("p.muted", SRC[d.source] || ""), d.notes ? h("p.small", d.notes) : null,
-      d.flow && d.flow.summary ? h("p", d.flow.summary) : null, WZ.flowTree(d.tree));
+      d.flow && d.flow.summary ? h("p", d.flow.summary) : null, WZ.flowTree(d.tree)].filter(Boolean));
     fill(data);
-    const adapt = h("button.btn", { type: "button", hidden: data.source !== "needs_adapting", onclick: async () => {
+    const adapt = h("button.btn", { type: "button", style: data.source === "needs_adapting" ? null : "display:none", onclick: async () => {
       adapt.disabled = true; adapt.textContent = "Adapting…";
-      try { data = await API.post("/api/projects/" + encodeURIComponent(projectId) + "/flow", {}); fill(data); adapt.hidden = true; }
+      try { data = await API.post("/api/projects/" + encodeURIComponent(projectId) + "/flow", {}); fill(data); adapt.style.display = "none"; }
       catch (e) { WZ.toast(e.message, "bad"); adapt.disabled = false; adapt.textContent = "Adapt now"; }
     } }, "Adapt now");
     const dlg = h("dialog.dlg.flow-dlg", { "aria-labelledby": "flow-title" },

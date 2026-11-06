@@ -426,7 +426,9 @@ body:has(.coord-chip) .toasts { bottom: 110px; }
 .field.check small { display: block; color: var(--muted); font-size: 12.5px; }
 
 /* scenario flow (behaviour tree) */
-.flow-dlg { width: min(760px, 94vw); }
+.flow-dlg { width: min(760px, 94vw); padding: 22px 26px 18px; }
+.flow-dlg h2 { margin: 0 0 6px; }
+.flow-body p { margin: 4px 0 10px; }
 .flow-body { max-height: 66vh; overflow: auto; }
 .ftree { list-style: none; margin: 0; padding-left: 18px; border-left: 1px solid var(--line, #d6d9de); }
 .ftree.froot { padding-left: 0; border-left: 0; }
@@ -434,7 +436,7 @@ body:has(.coord-chip) .toasts { bottom: 110px; }
 .frow { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
 .fkind { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted, #667085); min-width: 92px; }
 .k-fire { color: #b54708; } .k-expect { color: #175cd3; }
-.flabel { flex: 1 1 240px; }
+.ftext { flex: 1 1 240px; }  /* not .flabel: that class is every settings label's row */
 .fstate { font-size: 11px; padding: 1px 6px; border-radius: 8px; background: #eef0f3; color: #344054; }
 .s-running { background: #fef0c7; color: #93370d; } .s-met, .s-done, .s-fired { background: #d1fadf; color: #05603a; }
 .s-timed_out { background: #fee4e2; color: #912018; } .s-not_needed, .s-skipped { background: #f2f4f7; color: #667085; }

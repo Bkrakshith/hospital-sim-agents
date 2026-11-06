@@ -257,9 +257,20 @@ def intersects(box: Box, rects: Mapping[str, Rect], margin: float = MARGIN_M) ->
     return False
 
 
+# Prims never culled, wherever their bounds say they are. The hospital's floor is one infinite physics plane
+# (/World/Hospital/GroundPlane/CollisionPlane, purpose "guide"): its bounds come out empty, so it was placed at its
+# origin by the lobby and culled from every ward scenario, and the walking G1 fell through the floor.
+NEVER_CULL = ("GroundPlane",)
+
+
+def never_culled(path: str) -> bool:
+    return path.rstrip("/").rsplit("/", 1)[-1] in NEVER_CULL
+
+
 def select_off(boxes: Mapping[str, Optional[Box]], rects: Mapping[str, Rect], margin: float = MARGIN_M) -> list[str]:
-    """The prim paths to deactivate: those with bounds that touch no kept rectangle."""
-    return sorted(p for p, b in boxes.items() if b is not None and not intersects(b, rects, margin))
+    """The prim paths to deactivate: those with bounds that touch no kept rectangle (never the floor)."""
+    return sorted(p for p, b in boxes.items()
+                  if b is not None and not never_culled(p) and not intersects(b, rects, margin))
 
 
 # ---- the wrapper layer (pxr) ------------------------------------------------------------------

@@ -172,7 +172,7 @@ async def test_a_new_run_gets_a_new_token(client):
 
 def test_default_command_asks_isaac_for_a_headless_preview_only_when_isaac(monkeypatch, tmp_path):
     from wardzero_agents.studio.project import Project
-    proj = Project(id="p1", name="n", scenario_id="ae_waiting")
+    proj = Project(id="p1", name="n", scenario_id="ae_waiting", headed=False)
     monkeypatch.delenv("WARDZERO_STUDIO_SIM", raising=False)
     argv = runner_mod.default_command(proj, tmp_path, "none", None)
     assert argv[argv.index("--sim") + 1] == "stub" and "--preview" not in argv

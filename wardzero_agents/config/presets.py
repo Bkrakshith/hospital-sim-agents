@@ -232,10 +232,21 @@ def _clamp(v: float, lo: float = 0.0, hi: float = 1.0) -> float:
     return max(lo, min(hi, v))
 
 
-def _persona_dict(c: CharacterSpec, role: RolePreset, mood: MoodPreset) -> dict:
+STAFF_PRESET_ROLES = frozenset({"ward_nurse", "receptionist", "porter", "surgeon"})
+
+
+def robot_duty_line(job: str) -> str:
+    """What a member of staff is told about the robot's job, so the robot does the scenario's main tasks, not them."""
+    return (f"The robot on this shift is here to do this: {job.strip()} Leave that work to the robot and get on with "
+            f"your own. Step in only when the robot asks you to, or when someone is in danger. [scenario brief]")
+
+
+def _persona_dict(c: CharacterSpec, role: RolePreset, mood: MoodPreset, robot_job: Optional[str] = None) -> dict:
     walk, sit, age = _BAND[c.age_band]
     pat, anx, soc = _ROLE_BASE.get(role.id, _ROLE_BASE["custom"])
     role_text = (c.role_prompt if c.role_prompt is not None else role.prompt).strip()
+    if robot_job and role.id in STAFF_PRESET_ROLES:
+        role_text = robot_duty_line(robot_job) + "\n" + role_text  # first, so it is among the persona's goals
     mood_text = (c.mood_prompt if c.mood_prompt is not None else mood.prompt).strip()
     aid = "stick" if c.age_band == "71+" and c.bed is None else "none"
     return {
@@ -280,7 +291,7 @@ def preset_to_scenario(preset: ScenarioPreset, root: "str | Path", dest: "str | 
     site = load_site(root)
     personas, cast = {}, []
     for c in (preset.characters if characters is None else characters):
-        personas[c.id] = _persona_dict(c, roles[c.role], moods[c.mood])
+        personas[c.id] = _persona_dict(c, roles[c.role], moods[c.mood], (preset.robot_brief or {}).get("job"))
         entry: dict = {"id": c.id, "persona": c.id, "name": c.name}
         seat = next((s.id for s in site.seats.values() if abs(s.x - c.x) < 0.05 and abs(s.y - c.y) < 0.05), None)
         if c.bed:

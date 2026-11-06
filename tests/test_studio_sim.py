@@ -31,9 +31,9 @@ def test_defaults_are_the_quick_2d_sim(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("fields,flags,absent", [
-    (dict(sim="isaac"), ["--headless", "--preview"], ["--headed", "--record"]),
+    (dict(sim="isaac", headed=False), ["--headless", "--preview"], ["--headed", "--record"]),
     (dict(sim="isaac", headed=True), ["--headed"], ["--headless", "--preview", "--record"]),  # the window is the preview
-    (dict(sim="isaac", record=True), ["--headless", "--preview", "--record"], ["--headed"]),
+    (dict(sim="isaac", headed=False, record=True), ["--headless", "--preview", "--record"], ["--headed"]),
     (dict(sim="isaac", headed=True, record=True), ["--headed", "--record"], ["--headless", "--preview"]),
 ])
 def test_isaac_argv(tmp_path, monkeypatch, fields, flags, absent):
@@ -81,7 +81,7 @@ async def new_project(c):
 
 async def test_a_new_project_has_the_defaults_and_the_page_learns_whether_isaac_is_there(client):
     p = await new_project(client)
-    assert (p["sim"], p["headed"], p["record"], p["record_res"]) == ("stub", False, False, "1280x720")
+    assert (p["sim"], p["headed"], p["record"], p["record_res"]) == ("stub", True, False, "1280x720")  # Isaac opens a window
     assert (await (await client.get("/api/presets")).json())["isaac_available"] is True
     client.state["isaac"] = False
     assert (await (await client.get("/api/presets")).json())["isaac_available"] is False

@@ -89,3 +89,11 @@ def test_select_off_culls_boxes_outside_and_keeps_inside_and_unbounded():
 def test_cull_plan_is_a_plain_record(v1):
     plan = cull_plan(v1)
     assert isinstance(plan, CullPlan) and plan.rooms == sorted(plan.rooms)
+
+
+def test_the_floor_plane_is_never_culled_even_for_a_ward_scenario():
+    from wardzero_agents.isaac_host.stage import select_off
+    ward = {"B4": (20.9, 6.5, 26.9, 10.5), "Ward_Corridor": (17.0, 5.0, 20.5, 25.0)}
+    boxes = {"/World/Hospital/GroundPlane": ((0.0, 0.0), (0.0, 0.0)),  # an empty bound placed at its origin
+             "/World/Hospital/Lobby_Desk": ((0.0, 2.0), (4.0, 4.0))}
+    assert select_off(boxes, ward) == ["/World/Hospital/Lobby_Desk"]

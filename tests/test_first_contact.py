@@ -244,3 +244,18 @@ def test_someone_coming_in_the_main_entrance_reads_check_in_with_the_robot(recep
     assert "robot" in signs["sign_checkin"].lower() and "robot" in signs["sign_desk_robot"].lower()
     put(w, "V1", 1.0, 0.57, yaw=math.pi / 2)  # in front of the reception desk, facing it
     assert "sign_desk_robot" in [v.id for v in w.observation("V1", 0.0, []).visible if v.kind == "sign"]
+
+
+def test_staff_are_told_the_robot_does_the_scenarios_main_task(tmp_path):
+    p = PRESETS["meal_round"]
+    loaded = preset_to_scenario(p, CONFIG, tmp_path)
+    nurse = loaded.personas["N1"]
+    text = " ".join(nurse.goals) + " " + nurse.backstory
+    assert "Leave that work to the robot" in text and p.robot_brief["job"].split(".")[0] in text
+    patient = loaded.personas["M1"]
+    assert "Leave that work to the robot" not in " ".join(patient.goals) + patient.backstory
+
+
+def test_a_new_project_shows_isaac_in_a_window():
+    from wardzero_agents.studio.project import Project
+    assert Project(id="p1", name="x", scenario_id="ae_waiting").headed is True
