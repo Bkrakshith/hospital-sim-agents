@@ -118,6 +118,25 @@ def check_voices(voices: Path) -> list[Check]:
     return [Check(NOTE, "Voices are not installed: recorded runs will be silent.", tuple(fix))]
 
 
+def check_sonic(weights_dir: Optional[Path] = None, have_ort: Optional[Callable[[], bool]] = None) -> list[Check]:
+    """The NVIDIA GEAR-SONIC weights that make the G1 walk in Isaac Sim (Quick 2D does not need them)."""
+    from .isaac_host.sonic.weights import missing_files, onnxruntime_available, resolve_dir
+    root = resolve_dir(weights_dir)
+    gaps = missing_files(root)
+    if gaps:
+        return [Check(NOTE, f"The GEAR-SONIC walking controller weights are not in {root}: in Isaac Sim the G1 stands "
+                            "still (Quick 2D is not affected).",
+                      ("Run `python scripts/fetch_sonic.py` in hospital-sim-agents (about 1 GB, NVIDIA Open Model "
+                       "License), or `python scripts/fetch_sonic.py --use-existing <folder>` for a folder you "
+                       "already downloaded.", "To keep them elsewhere, set WARDZERO_SONIC_DIR to that folder."))]
+    out = [Check(OK, f"GEAR-SONIC walking controller weights: {root}.")]
+    if not (have_ort or onnxruntime_available)():
+        out.append(Check(NOTE, "onnxruntime is not installed in this Python; Isaac Sim's own Python has it, so "
+                               "Isaac runs still walk. The SONIC replay test with the real weights is skipped.",
+                         ("Optional: `pip install onnxruntime` in the venv.",)))
+    return out
+
+
 def check_robots(data: Path, problem: Callable) -> list[Check]:
     from .robots.profile import load_profile
     out = []
@@ -148,6 +167,7 @@ def run_checks() -> list[Check]:
             *check_isaac(cli.ISAAC_ROOT, missing_for_isaac, isaac_busy_problem),
             *check_disk(cli.runs_dir()),
             *check_voices(voices_dir()),
+            *check_sonic(),
             *check_robots(data_dir(), robot_problem)]
 
 
