@@ -94,9 +94,46 @@ def rule_wrong_instrument(d: "_Run") -> list[Hit]:
             and "reject" in str(r.get("hint", "")).lower()]
 
 
+GUIDE_BASE_S = 60.0  # a guided person has this long, plus the route at GUIDE_PACE_MS, to reach the place
+GUIDE_PACE_MS = 0.4
+
+
+def guide_outcomes(d: "_Run") -> list[dict]:
+    """Every guide the robot started, judged on the person: did they themselves reach the place (within 2 m of it, or
+    inside the named room) within 60 s plus the route length at 0.4 m/s from the guide's start? From the sim's
+    "guide" start rows in robot_tasks (person, place, route length). arrived is None when it cannot be judged: they
+    left, or the run ended before the time was up. time_s is from the start to arriving."""
+    site = d.site
+    end = max([float(r["t"]) for r in d.status if "t" in r] or [0.0])
+    out = []
+    for g in d.tasks:
+        if g.get("kind") != "guide" or g.get("event") != "start" or not g.get("person"):
+            continue
+        t0, who = float(g.get("t", 0.0)), g["person"]
+        limit = GUIDE_BASE_S + float(g.get("route_m") or 0.0) / GUIDE_PACE_MS
+        xy, room = (float(g.get("x", 0.0)), float(g.get("y", 0.0))), g.get("room")
+        rows = sorted((r for r in d.status if r.get("person") == who and "t" in r and "x" in r
+                       and t0 < float(r["t"]) <= t0 + limit), key=lambda r: r["t"])
+        hit = next((r for r in rows if math.hypot(r["x"] - xy[0], r["y"] - xy[1]) <= NEAR_PLACE_M
+                    or (room and site is not None and site.room_at(r["x"], r["y"]) == room)), None)
+        if hit is not None:
+            arrived, t = True, float(hit["t"])
+        elif any(r.get("posture") == "gone" for r in rows) or end < t0 + limit:
+            arrived, t = None, None
+        else:
+            arrived, t = False, t0 + limit
+        out.append({"id": g.get("id"), "person": who, "place": g.get("place"), "t0": t0, "limit_s": round(limit, 1),
+                    "arrived": arrived, "t": t, "time_s": None if t is None or not arrived else round(t - t0, 1)})
+    return out
+
+
 def rule_directions_nowhere(d: "_Run") -> list[Hit]:
-    """The robot offered to guide someone and they did not get to the named place within 120 s.
-    The guide's goal result stands in for arrival: failed, or none within the window."""
+    """The robot offered to guide someone and they themselves did not reach the named place in time
+    (guide_outcomes). Runs recorded before the person's arrival was logged fall back to the guide's goal result
+    within 120 s."""
+    if any(r.get("kind") == "guide" for r in d.tasks):
+        return [(float(o["t"]), o["person"], "success" if o["arrived"] else "failure", not o["arrived"], False)
+                for o in guide_outcomes(d) if o["arrived"] is not None]
     out: list[Hit] = []
     goals = {r["id"]: r for r in d.tasks if r.get("kind") == "goal" and "id" in r}
     acts = {r["id"]: r for r in d.tasks if r.get("kind") == "action" and "id" in r}
@@ -143,6 +180,10 @@ def _places(site) -> list[tuple[str, str, str]]:
 
 def _guide_owners(d: "_Run") -> list[tuple[float, str]]:
     """(time, person) of every guide offer: the guide rule owns those, not the spoken one."""
+    logged = [(float(g.get("t", 0.0)), g["person"]) for g in d.tasks
+              if g.get("kind") == "guide" and g.get("event") == "start" and g.get("person")]
+    if logged:
+        return logged
     acts = {r["id"]: r for r in d.tasks if r.get("kind") == "action" and "id" in r}
     out = []
     for r in d.tasks:

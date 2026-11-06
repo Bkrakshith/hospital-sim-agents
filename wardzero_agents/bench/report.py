@@ -248,9 +248,25 @@ def build_facts(run_dir: Path, preset, narrative: Optional[dict] = None) -> dict
                    "criteria_passed": sum(1 for r in res.rows if r["passed"]),
                    "criteria_failed": sum(1 for r in res.rows if not r["passed"])},
         "moments": moments, "ratings": ratings, "ratings_mean": rating_mean, "trust": trust,
+        "guides": _guides(run_dir, names, d.site),
         "tokens": _tokens(d), "narrative": "", "suggestions": [],
         "video": _video(Path(run_dir)),
     }
+
+
+def _guides(run_dir: Path, names: dict, site) -> list[dict]:
+    """Each guide: who, where to, whether they arrived (None: not judged, they left or the run ended) and how long."""
+    from ..campaign.experiences import _Run, guide_outcomes
+    out = []
+    for o in guide_outcomes(_Run(Path(run_dir))):
+        place = o["place"] or ""
+        lm = site.landmarks.get(place) if site is not None else None
+        label = (lm.label.split(",")[0] if lm is not None and lm.label else
+                 site.rooms[place].label if site is not None and place in site.rooms else place.replace("_", " "))
+        out.append({"person": o["person"], "who": names.get(o["person"], o["person"]), "place": place,
+                    "where": label, "arrived": o["arrived"], "time_s": o["time_s"], "limit_s": o["limit_s"],
+                    "t": _r(o["t0"])})
+    return out
 
 
 def _video(run_dir: Path) -> Optional[dict]:
@@ -340,6 +356,15 @@ def render_html(facts: dict) -> str:
                           _e(_fmt(c["weight"])), tag])
     criteria = (_table(["Criterion", "Measured", "Needed", "Weight", "Result"], crit_rows, num=(1, 2, 3))
                 if crit_rows else '<p class="note">This run has no success criteria.</p>')
+    if facts.get("guides"):
+        grows = [[_e(g["who"]), _e(g["where"]), _e(clock(g["t"] or 0)),
+                  '<span class="tag none">not judged</span>' if g["arrived"] is None else
+                  '<span class="tag pass">arrived</span>' if g["arrived"] else '<span class="tag fail">did not arrive</span>',
+                  _e(f"{_fmt(g['time_s'])} s" if g["time_s"] is not None else "-"), _e(f"{_fmt(g['limit_s'])} s")]
+                 for g in facts["guides"]]
+        criteria += ("<h3>People the robot guided</h3>"
+                     + _table(["Who", "Where to", "Started", "Arrived?", "Time taken", "Time allowed"], grows, num=(4, 5))
+                     + '<p class="note">A person counts as arrived only when they themselves reached the place.</p>')
     moments = facts["moments"][:MAX_TIMELINE]
     timeline = ('<ol class="tl">' + "".join(
         f'<li><time>{_e(m["clock"])}</time><div><span class="k">{_e(m["kind"])}</span>{_e(m["text"])}</div></li>'
