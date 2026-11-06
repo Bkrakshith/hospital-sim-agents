@@ -1,6 +1,8 @@
-# hospital-sim-agents: WardZero Studio
+# WardZero Studio
 
 Test your robot against simulated hospital patients, visitors and staff before a real trial.
+
+Part of [WardZero](https://bkrakshith.github.io/wardzero/), a simulated hospital for testing robots before they meet patients. Start from the main repository, [hospital-sim](https://github.com/Bkrakshith/hospital-sim).
 
 Each person is run by an AI model (Claude or OpenAI). They have a role, a mood and a memory. They ask the robot
 for help, get impatient when it does not help, and tell each other how it went. After a run, a report scores the
