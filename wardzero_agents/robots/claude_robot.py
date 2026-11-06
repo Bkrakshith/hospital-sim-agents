@@ -644,9 +644,14 @@ class RobotMind:
         free = sorted((math.hypot(c["x"] - x, c["y"] - y), c) for c in self._objects.get("seats", []) if c.get("free"))
         for dist, c in free[:SEATS_LISTED]:
             L.append(f"- seat {c['id']}: free, {dist:.1f} m, {_direction_words(_rel_deg(self.pose, c['x'], c['y']))}")
-        for s in self._objects.get("blocked", []):
-            L.append(f'- route blocked sign: "{s.get("text") or "route blocked"}", '
-                     f"{math.hypot(s['x'] - x, s['y'] - y):.1f} m, {_direction_words(_rel_deg(self.pose, s['x'], s['y']))}")
+        for s in self._objects.get("blocked") or []:
+            sign = f'- route blocked sign: "{s.get("text") or "route blocked"}"'
+            try:  # a sign without a position is listed without distance and direction
+                sx, sy = float(s["x"]), float(s["y"])
+                sign += f", {math.hypot(sx - x, sy - y):.1f} m, {_direction_words(_rel_deg(self.pose, sx, sy))}"
+            except (KeyError, TypeError, ValueError):
+                pass
+            L.append(sign)
         for c in self._objects.get("call_lights", []):
             L.append(f"- call light on at bed {c['bed']}, {math.hypot(c['x'] - x, c['y'] - y):.1f} m, "
                      f"{_direction_words(_rel_deg(self.pose, c['x'], c['y']))}")

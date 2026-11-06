@@ -228,6 +228,16 @@ async def test_blocked_sign_is_listed_and_remembered():
     assert f'saw sign "{text}"' in events
 
 
+async def test_a_sign_without_a_position_does_not_stop_the_robot_thinking():
+    gw = Recorder()
+    m = mind(gw=gw)
+    await m.tick(0.0)
+    m.on_objects({"items": [], "blocked": [{"id": "route_blocked_1", "text": "Route blocked"}]})
+    await m.tick(2.5)
+    line = next(ln for ln in gw.reqs[-1].user.splitlines() if ln.startswith("- route blocked sign"))
+    assert line == '- route blocked sign: "Route blocked"'
+
+
 async def test_heard_bearing_names_the_matching_track():
     gw = Recorder()
     m = mind(gw=gw)
