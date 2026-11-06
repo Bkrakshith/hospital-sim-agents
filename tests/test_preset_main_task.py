@@ -122,6 +122,9 @@ def test_evacuation_main_entrance_is_sealed_and_the_ambulance_bay_is_reachable()
             if dy * dy + dx * dx <= n * n and site.grid.in_grid(ey + dy, ex + dx) and not r._raw[ey + dy][ex + dx]]
     assert not free, "a free cell within 1 m of the main entrance"
     chars = {c.id: c for c in p.characters}
+    for c in chars.values():  # nobody stands inside a sealed area when the alarm goes
+        for b in blocks:
+            assert math.hypot(c.x - b.params["x"], c.y - b.params["y"]) > ROUTE_BLOCK_RADIUS_M, (c.id, b.id)
     out = r.route((chars["V1"].x, chars["V1"].y), (e.x, e.y))
     assert out is None or math.hypot(out[-1][0] - e.x, out[-1][1] - e.y) > 1.0, "a way out through the entrance"
     goal = site.resolve("AE_Handover")
@@ -203,7 +206,9 @@ def test_specimen_robot_reaches_the_porter_with_traffic(staged, tmp_path):
         ends += [r["reason"] for r in o.task_results if r.get("kind") == "goal"]
         if "arrived" in ends or tries > 3:
             break
+    # The bed at the lobby door is the real obstacle: a first walk may stop short of it, and the robot must try again.
     assert ends and ends[-1] == "arrived" and len(ends) <= 2, ends
+    assert all(e == "blocked_by_person" for e in ends[:-1]), ends
     assert s.t <= 40.0
     po1 = w.people["PO1"]
     assert math.hypot(w.robot.x - po1.x, w.robot.y - po1.y) <= 1.1

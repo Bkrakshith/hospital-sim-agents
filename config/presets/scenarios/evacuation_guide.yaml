@@ -16,7 +16,7 @@ robot_brief:
 robot_start: {x: 2.5, y: -0.5, yaw: 3.1416}
 characters:
   - {id: V1, name: Susan Jones, sex: female, age_band: 31-50, role: visitor, mood: stressed, room: Lobby, x: -2.0, y: 1.0, yaw: 0.0}
-  - {id: V2, name: Edward Khan, sex: male, age_band: 51-70, role: visitor, mood: anxious, room: Lobby, x: 1.0, y: -1.5, yaw: 0.0,
+  - {id: V2, name: Edward Khan, sex: male, age_band: 51-70, role: visitor, mood: anxious, room: Lobby, x: 1.0, y: -0.9, yaw: 0.0,
      role_prompt: "You are an outpatient on your feet. You walk slowly and keep your distance from moving machines. [see mobility_aids.md]"}
   - {id: P1, name: Joan Moore, sex: female, age_band: 71+, role: patient, mood: anxious, room: AE_Waiting, x: -9.0, y: 0.0, yaw: 0.0}
 objects: []
