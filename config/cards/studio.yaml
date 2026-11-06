@@ -29,6 +29,13 @@ cards:
     nudge: "You need a nurse and press the call bell by your bed. If nobody comes, say so to whoever is near."
     tests: Whether the robot answers a call bell, reassures the patient and fetches a nurse.
 
+  - id: ring_bell
+    label: Bell rings
+    channels: [world]
+    target_kind: person
+    world: {kind: ring_bell}
+    tests: Whether the robot notices a ringing call bell and answers it, whatever the patient decides to do.
+
   - id: patient_gets_up
     label: Patient gets up
     channels: [nudge]

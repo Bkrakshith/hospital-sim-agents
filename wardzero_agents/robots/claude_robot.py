@@ -446,6 +446,8 @@ class RobotMind:
             self._addressed = True
         elif h.get("source_kind") == "person" and h.get("text") and self._min_person_dist() <= NEAR_SPEECH_M:
             self._speech = True
+        elif h.get("source_kind") == "person" and not h.get("text"):
+            self._speech = True  # a chime (a call bell): worth a look at once, wherever it comes from
 
     # ---- prompt --------------------------------------------------------------------------
     def card(self) -> str:
@@ -492,6 +494,8 @@ class RobotMind:
             who = "someone speaking to you" if h.get("addressed_to_me") else {
                 "person": "someone nearby", "cough": "a cough", "alarm": "an alarm", "pa": "an announcement",
                 "robot": "your own voice"}.get(h.get("source_kind"), "a sound")
+            if h.get("source_kind") == "person" and not h.get("text") and not h.get("addressed_to_me"):
+                who = "a chime, like a patient's call bell"  # the only sound without words from that source
             text = f': "{h["text"]}"' if h.get("text") else ""
             part = " (only part heard)" if h.get("partial") else ""
             L.append(f"- {t - ht:.0f} s ago, {who}, {float(h.get('received_db', 0)):.0f} dB{part}{text}")

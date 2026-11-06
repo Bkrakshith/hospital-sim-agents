@@ -16,6 +16,7 @@ from .robot_body import RobotBody
 BOX_STANDING = (0.5, 0.5, 1.7)
 BOX_SEATED = (0.6, 0.6, 1.2)
 BOX_LYING = (1.8, 0.6, 0.5)
+DOOR_LIGHT_OUT_M = 0.3  # a call light over a door shows this far outside the room
 
 
 class Tracks:
@@ -44,6 +45,36 @@ def _in_view(world, body: RobotBody, x: float, y: float) -> bool:
     if d > 1e-6 and abs(bearing_deg(Pose(*body.pose), x, y)) > cfg.fov_deg / 2:
         return False
     return world._los((body.x, body.y), (x, y))
+
+
+def call_light_points(site, bed_id: str) -> list[tuple[float, float]]:
+    """Where a bed's call light shows: at the bed, and over each door of its room that opens on to the ward (not an
+    en-suite or a WC), on the outside, as on a real ward. So a lit bell is seen from the corridor, not only from inside
+    the room."""
+    bed = site.beds.get(bed_id)
+    if bed is None:
+        return []
+    out = [(bed.x, bed.y)]
+    room = site.rooms.get(bed.room)
+    if room is None:
+        return out
+    for d in site.doors:
+        (ax, ay), (bx, by) = d["a"], d["b"]
+        mx, my = (ax + bx) / 2, (ay + by) / 2
+        n = math.hypot(bx - ax, by - ay)
+        if n < 1e-6:
+            continue
+        nx, ny = -(by - ay) / n * DOOR_LIGHT_OUT_M, (bx - ax) / n * DOOR_LIGHT_OUT_M
+        sides = [(mx + nx, my + ny), (mx - nx, my - ny)]
+        inside = [room.contains(x, y) for x, y in sides]
+        if inside.count(True) != 1:
+            continue  # not a door of this room
+        ox, oy = sides[inside.index(False)]
+        rid = site.room_at(ox, oy)
+        if rid is not None and site.rooms[rid].use in ("ensuite", "wc"):
+            continue
+        out.append((ox, oy))
+    return out
 
 
 def _visible(world, body: RobotBody):
@@ -89,7 +120,8 @@ def perceive_objects(world, body: RobotBody) -> dict:
     lights = []
     for b in world.objects.bells.values():
         bed = world.site.beds.get(b.bed_id)
-        if b.active and bed is not None and _in_view(world, body, bed.x, bed.y):
+        if b.active and bed is not None and any(_in_view(world, body, x, y)
+                                                for x, y in call_light_points(world.site, b.bed_id)):
             lights.append({"bed": b.bed_id, "x": round(bed.x, 3), "y": round(bed.y, 3)})
     taken = {q.seat for q in world.people.values() if q.posture != "gone" and q.seat}
     taken |= {q.claim for q in world.people.values() if q.posture != "gone" and getattr(q, "claim", None)}

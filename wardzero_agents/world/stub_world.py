@@ -42,7 +42,7 @@ from wardzero_agents.world.objects import (
 )
 from wardzero_agents.world.reach import giver_reach_ok, receiver_zone_ok
 from wardzero_agents.world.oracle import Entity, Pose, visible
-from wardzero_agents.world.perception import Tracks
+from wardzero_agents.world.perception import Tracks, call_light_points
 from wardzero_agents.world.robot_body import CONTACT_MARGIN_M, RobotBody
 from wardzero_agents.world.route_follower import ROBOT_HARD_M
 
@@ -64,7 +64,7 @@ STATIC_PERSONA = "static_patient"
 PERSON_REACH_Z = (0.5, 1.6)
 GIVE_RANGE_M = 1.5
 TAKE_RANGE_M = 1.2
-BELL_DB = 55.0
+BELL_DB = 65.0  # carries the length of the ward corridor (heard in full to about 28 m)
 ALARM_DB = 100.0
 APPROACH_KINDS = ("approach", "attend")
 # where a person is sent to stand (walking up to someone, following the robot) is moved to free floor: out of the
@@ -974,13 +974,22 @@ class StubWorld:
                 size = "small" if f.size < 0.34 else "medium" if f.size < 0.67 else "large"
                 text[f"fire:{f.id}"] = ("fire", f"a {size} fire (id {f.id})")
         for b in self.objects.bells.values():
-            bed = self.site.beds.get(b.bed_id)
-            if b.active and bed is not None:
-                ents.append(Entity("seat", f"bell:{b.bed_id}", bed.x, bed.y))
-                text[f"bell:{b.bed_id}"] = ("call_light", f"call light on at bed {b.bed_id}")
-        return [SeenObject(kind=text[s.id][0], id=s.id.split(":", 1)[1], distance=s.distance,
-                           bearing_deg=s.bearing_deg, detail=text[s.id][1])
-                for s in visible(me, ents, [], los=self._los)]
+            if not b.active:
+                continue
+            for k, (lx, ly) in enumerate(call_light_points(self.site, b.bed_id)):
+                ents.append(Entity("seat", f"bell:{b.bed_id}:{k}", lx, ly))
+                text[f"bell:{b.bed_id}:{k}"] = ("call_light", f"call light on at bed {b.bed_id}")
+        out, lit = [], set()
+        for s in sorted(visible(me, ents, [], los=self._los), key=lambda s: s.distance):
+            kind, detail = text[s.id]
+            if kind == "call_light":  # one line per bell, however many of its lights are in view
+                bed_id = s.id.split(":")[1]
+                if bed_id in lit:
+                    continue
+                lit.add(bed_id)
+            out.append(SeenObject(kind=kind, id=s.id.split(":")[1], distance=s.distance,
+                                  bearing_deg=s.bearing_deg, detail=detail))
+        return out
 
     # ---- world events and spawning -------------------------------------------------------
     def spawn(self, persona_id: str, t: float) -> str:
@@ -1032,6 +1041,13 @@ class StubWorld:
             except ValueError:
                 log.warning("arrival ignored: unknown persona '%s'", persona)
             return []
+        if ev.kind == "ring_bell":
+            # the scenario rings the bell itself, so it does not hang on the patient's model choosing to ring
+            q = self.people.get(ev.person or "")
+            if q is None or q.posture != "lying" or q.bed is None:
+                log.warning("ring_bell ignored: '%s' is not a patient in bed", ev.person)
+                return []
+            return self._ring_bell(q, ev.t)
         if ev.kind == "person_exit" and ev.person:
             q = self.people.get(ev.person)
             if q is None or q.posture == "gone":
@@ -1164,6 +1180,17 @@ class StubWorld:
         bases = [r.centre for r in self.site.rooms.values() if r.use == "nurse_base"]
         return min(bases, key=lambda c: math.hypot(c[0] - x, c[1] - y)) if bases else (x, y)
 
+    def _ring_bell(self, p: _Person, t: float) -> list[AudioEvent]:
+        """Light p's call bell and chime it at the bed and at the nearest nurse base, so whoever is on the ward
+        (the robot included) can hear it, not only the nurses at their base."""
+        self.objects.ring(p.bed, t)
+        bed = self.site.beds.get(p.bed or "")
+        bx, by = (bed.x, bed.y) if bed is not None else (p.x, p.y)
+        nx, ny = self._nurse_base(p.x, p.y)
+        self._log_objects(t)
+        return [self._event(t, "person", f"bell_{p.bed}", bx, by, 1.0, BELL_DB),
+                self._event(t, "person", f"bell_{p.bed}", nx, ny, 2.0, BELL_DB)]
+
     def _held(self, who: str) -> list:
         return [i for i in self.objects.items.values() if i.holder == who]
 
@@ -1207,10 +1234,7 @@ class StubWorld:
         elif kind == "lie_back":
             p.sitting_up = False
         elif kind == "call_bell":
-            self.objects.ring(p.bed, t)
-            bx, by = self._nurse_base(p.x, p.y)
-            out.append(self._event(t, "person", f"bell_{p.bed}", bx, by, 2.0, BELL_DB))
-            self._log_objects(t)
+            out += self._ring_bell(p, t)
         elif kind in ("accept_item", "refuse_item"):
             self._responses[pid] = (kind, t)
         elif kind == "call_for_help":

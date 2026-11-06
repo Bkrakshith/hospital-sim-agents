@@ -175,7 +175,9 @@ def test_call_bell_only_from_bed(tmp_path):
     bell = w.objects.bells["B2"]
     assert bell.active and bell.since == 3.0
     assert w.people["P1"].state == "done"
-    assert len(evs) == 1 and evs[0].loudness_db == 55
+    b = w.site.beds["B2"]  # chimed at the bed and at the nurse base
+    assert len(evs) == 2 and all(e.loudness_db == 65 for e in evs)
+    assert (evs[0].x, evs[0].y) == (b.x, b.y)
     snap = {o.id: o for o in w.objects.snapshot()}
     assert snap["bell_B2"].kind == "call_bell" and snap["bell_B2"].active is True
 

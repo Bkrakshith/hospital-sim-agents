@@ -117,5 +117,5 @@ class CardExecutor:
             outs.append(WorldEvent(
                 id=firing.id, t=firing.t, kind=kind, text=text, x=w.get("x"), y=w.get("y"),
                 persona=persona,
-                person=target if kind == "person_exit" else None))
+                person=target if kind in ("person_exit", "ring_bell") else None))
         return outs

@@ -326,6 +326,9 @@ def _heard_line(h: Heard) -> str:
         prefix = "ROBOT SAID TO YOU" if h.addressed_to_me else "ROBOT SAID NEARBY"
         return f"{prefix}: {h.text}{part}"
     if h.source_kind == "person":
+        if not h.text and h.source_id.startswith("bell_"):
+            bed = h.source_id[len("bell_"):]
+            return "A staff call chime sounds." if bed == "robot" else f"A call bell is ringing (bed {bed})."
         if not h.text:
             return f"{h.source_id} said something you could not make out."
         to = " to you" if h.addressed_to_me else ""
