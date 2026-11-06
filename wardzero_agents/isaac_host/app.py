@@ -134,12 +134,6 @@ def parse_args(argv=None) -> argparse.Namespace:
     return a
 
 
-def physx_fabric() -> bool:
-    """Experimental (WARDZERO_PHYSX_FABRIC=1): PhysX writes body poses to Fabric instead of USD every step. A walking
-    G1's ~70 links written to USD 8 times a frame cost about 80 ms a frame in the first recorded walks."""
-    return os.environ.get("WARDZERO_PHYSX_FABRIC") == "1"
-
-
 def host_profile(loaded):
     """The robot's profile as this host runs it (the built-in G1 walks here with the GEAR-SONIC weights), or None."""
     from ..robots.profile import get_profile, profile_for_sim
@@ -222,10 +216,7 @@ class IsaacHost:
         import omni.kit.app
 
         em = omni.kit.app.get_app().get_extension_manager()
-        extra = ("omni.videoencoding",) if self.args.record else ()
-        if physx_fabric():
-            extra += ("omni.physx.fabric",)
-        for ext in EXTENSIONS + extra:
+        for ext in EXTENSIONS + (("omni.videoencoding",) if self.args.record else ()):
             em.set_extension_enabled_immediate(ext, True)
             self._updates(3)
         self._mark("extensions")
@@ -251,13 +242,7 @@ class IsaacHost:
             from .walking import MIN_FRAME_RATE
             carb.settings.get_settings().set("/persistent/simulation/minFrameRate", MIN_FRAME_RATE)  # never drop substeps
             self.startup["physics_hz"] = hz
-        if physx_fabric():
-            import carb
 
-            st = carb.settings.get_settings()
-            st.set_bool("/physics/updateToUsd", False)
-            st.set_bool("/physics/updateVelocitiesToUsd", False)
-            self.startup["physx_fabric"] = True
         stage_mod.add_collision(self.stage, self.args.collision)
         self._updates(2)
         self._mark("physics")

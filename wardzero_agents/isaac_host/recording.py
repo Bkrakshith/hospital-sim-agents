@@ -170,9 +170,9 @@ def start_view(robot_pose: Optional[tuple]) -> Optional[tuple[tuple, tuple, floa
 
 
 # ---- the headed window's follow camera (pure) ----------------------------------------------------
-# behind and above the robot, looking past it: (back, height, look-ahead, target z, focal mm). High enough to see over
-# the reception desk the G1 stands behind.
-CHASE = (2.6, 2.3, 1.2, 0.9, 16.0)
+# behind and above the robot, looking past it: (back, height, look-ahead, target z, focal mm). At its post the G1 stands
+# in front of the reception desk, so the camera is behind the counter: high and steep enough to look over it.
+CHASE = (1.8, 2.4, 0.6, 0.7, 14.0)
 CHASE_POS_ALPHA = 0.12  # per frame: how far the camera's anchor moves towards the robot (smoothing)
 CHASE_YAW_ALPHA = 0.06  # ... and its heading towards the robot's
 HEADED_CAMS = ("view_follow", "view_desk", "view_overhead")  # under CAMERAS_PATH; Kit's camera menu lists them
