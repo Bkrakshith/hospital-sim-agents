@@ -97,6 +97,9 @@ class Heard(_Envelope):
     received_db: float
     partial: bool
     addressed_to_me: bool
+    # where the sound came from, in degrees in the listener's frame (positive = left); set only for what the robot
+    # hears from a person or a cough, else None
+    bearing_deg: Optional[float] = None
 
 
 class SeenObject(_Envelope):

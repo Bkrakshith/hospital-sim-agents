@@ -41,7 +41,7 @@ from wardzero_agents.world.objects import (
     ACCEPT_WINDOW_S, EXTINGUISH_RANGE_M, PERSON_EXTINGUISH_PER_S, ROBOT_EXTINGUISH_PER_S, SURGEON_WINDOW_S, CallBell, Item, WorldObjects,
 )
 from wardzero_agents.world.reach import giver_reach_ok, receiver_zone_ok
-from wardzero_agents.world.oracle import Entity, Pose, visible
+from wardzero_agents.world.oracle import Entity, Pose, bearing_deg, visible, wrap_deg
 from wardzero_agents.world.perception import Tracks, call_light_points
 from wardzero_agents.world.robot_body import CONTACT_MARGIN_M, RobotBody
 from wardzero_agents.world.route_follower import ROBOT_HARD_M
@@ -152,6 +152,7 @@ class StubWorld:
     def __init__(self, loaded: LoadedScenario, seed: int):
         self.loaded = loaded
         self.rng = np.random.default_rng(seed)
+        self._ear_rng = np.random.default_rng([seed, 1])  # the noise on the direction of what the robot hears
         self.signs: list[Sign] = list(loaded.signs)
         self.last_t = 0.0
         self._wet = 0
@@ -303,9 +304,19 @@ class StubWorld:
 
     def robot_heard(self, ev: AudioEvent) -> Optional[Heard]:
         """What the robot's microphone hears. A microphone cannot tell who spoke, so the source
-        id (P1, N2, ...) is replaced by "unknown"; the kind of sound is kept."""
-        h = audio.route(ev, self.robot_pose, ROBOT_ID, 0.0, self.rng)
-        return None if h is None else h.model_copy(update={"source_id": "unknown"})
+        id (P1, N2, ...) is replaced by "unknown"; the kind of sound is kept. A person's voice or cough also
+        carries the direction it came from (bearing_deg in the robot's frame, positive = left), give or take
+        BEARING_NOISE_DEG, so the robot can tell which of the people it sees made it."""
+        r = self.robot_pose
+        h = audio.route(ev, r, ROBOT_ID, 0.0, self.rng)
+        if h is None:
+            return None
+        upd: dict = {"source_id": "unknown"}
+        if ev.source_kind in ("person", "cough"):
+            # its own random stream: the world's draws (and so the rest of a seeded run) are unchanged
+            noise = float(self._ear_rng.uniform(-BEARING_NOISE_DEG, BEARING_NOISE_DEG))
+            upd["bearing_deg"] = round(wrap_deg(bearing_deg(r, ev.x, ev.y) + noise), 1)
+        return h.model_copy(update=upd)
 
     # ---- intents -------------------------------------------------------------------------
     def _fail(self, p: _Person, intent: Intent, reason: str) -> None:

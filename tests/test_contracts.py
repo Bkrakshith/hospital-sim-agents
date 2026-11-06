@@ -224,6 +224,17 @@ def test_heard_rejects_unknown_source_kind():
         )
 
 
+def test_heard_round_trips_with_and_without_a_bearing():
+    plain = Heard(source_kind="cough", source_id="unknown", received_db=50.0, partial=False, addressed_to_me=False)
+    assert plain.bearing_deg is None and from_json(Heard, to_json(plain)) == plain
+    aimed = plain.model_copy(update={"bearing_deg": 31.5})
+    back = from_json(Heard, to_json(aimed))
+    assert back == aimed and back.bearing_deg == 31.5
+    with pytest.raises(ValidationError):
+        Heard(source_kind="cough", source_id="unknown", received_db=50.0, partial=False, addressed_to_me=False,
+              direction="left")
+
+
 def test_observation_defaults_to_empty_lists():
     obs = Observation(person="P1", t=0.0)
     assert obs.visible == []
