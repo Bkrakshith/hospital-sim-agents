@@ -39,7 +39,7 @@ CAMERAS_PATH = "/World/WardZeroCams"
 CEILING_CUT_M = 2.3  # the overhead near plane sits this far above the floor: the ceiling is clipped, not deactivated
 APERTURE_MM = 20.955  # Kit's default horizontal aperture
 OVERHEAD_FOCAL_MM = 12.0
-OVERHEAD_MARGIN = 1.06
+OVERHEAD_MARGIN = 1.03  # around the rooms' bounding box at the height of the wall tops the near plane leaves
 FOLLOW_AHEAD_M, FOLLOW_SIDE_M, FOLLOW_HEIGHT_M, FOLLOW_TARGET_Z, FOLLOW_FOCAL_MM = 2.8, 1.0, 1.7, 1.0, 16.0
 # WARDZERO_FOLLOW_FRAMING=desk: a wider, higher camera well in front of a fixed robot, so the people at its desk are in
 # the frame too (the default follow camera is so close that they are cut off). (ahead, side, height, target z, focal mm)
@@ -122,20 +122,36 @@ class OverheadView:
     aperture: float
     near: float
     far: float
+    rotated: bool = False  # True: the floor's y axis runs across the image (the image's top is -x), not x
+
+
+ROTATE_GAIN = 1.1  # turn the camera only when that brings it at least this much closer (no flip-flop near square)
 
 
 def overhead_view(rects: Sequence[tuple], aspect: float) -> OverheadView:
-    """A camera straight above the kept rooms that sees all of them: every rect is inside the image, with a margin.
-    The near plane cuts the ceiling away (S1b) so the floor is visible from above."""
+    """A camera straight above the kept rooms that sees all of them, as large as the frame allows: the rooms' bounding
+    box (up to the wall tops at the cut height) fills the image's width or its height, with a small margin. An area
+    much longer in y than in x (a ward along its corridor) would be a thin strip down the middle of a wide frame, so
+    the camera then turns 90 degrees about the vertical and the long side runs across the image. The near plane cuts
+    the ceiling away (S1b) so the floor is visible from above."""
     if not rects:
         raise ValueError("no rooms to frame")
     x0, y0 = min(r[0] for r in rects), min(r[1] for r in rects)
     x1, y1 = max(r[2] for r in rects), max(r[3] for r in rects)
-    need_w = max(x1 - x0, (y1 - y0) * aspect) * OVERHEAD_MARGIN  # floor width the image must span
-    height = max(need_w * OVERHEAD_FOCAL_MM / APERTURE_MM, CEILING_CUT_M + 1.0)
+    w, h = x1 - x0, y1 - y0
+    need_w = max(w, h * aspect)  # floor width the image must span with x across it
+    need_rot = max(h, w * aspect)  # ... with y across it
+    rotated = need_rot * ROTATE_GAIN < need_w
+    span = (need_rot if rotated else need_w) * OVERHEAD_MARGIN
+    # the box is fitted at the cut height, not the floor: the outer walls' tops (the highest thing the near plane
+    # leaves) are nearer the camera, so they reach further out in the image than the floor does
+    height = max(span * OVERHEAD_FOCAL_MM / APERTURE_MM + CEILING_CUT_M, CEILING_CUT_M + 1.0)
     cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
-    return OverheadView((cx, cy, height), (cx, cy + 0.01, 0.0), OVERHEAD_FOCAL_MM, APERTURE_MM,
-                        height - CEILING_CUT_M, height + 50.0)
+    # straight down; the tiny offset of the target sets which floor direction is the image's top: +y, or -x when turned
+    # (then +y runs left to right)
+    target = (cx - 0.01, cy, 0.0) if rotated else (cx, cy + 0.01, 0.0)
+    return OverheadView((cx, cy, height), target, OVERHEAD_FOCAL_MM, APERTURE_MM, height - CEILING_CUT_M,
+                        height + 50.0, rotated)
 
 
 def follow_framing(env=None) -> str:

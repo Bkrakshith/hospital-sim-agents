@@ -508,12 +508,14 @@ class IsaacHost:
 
     def _check_steps(self, walker) -> None:
         """Once, a few frames in: the physics steps a frame must be 200 Hz / fps, or SONIC's PD runs at the wrong rate."""
-        if "steps_per_frame" in self.startup or len(walker.frame_steps) < 6:
+        # frames with no physics step are the timeline held while the agents start up: they say nothing about the rate
+        played = [n for n in walker.frame_steps if n > 0]
+        if "steps_per_frame" in self.startup or len(played) < 6:
             return
         from .walking import steps_per_frame
 
         want = steps_per_frame(self.args.fps, self.args.physics_hz)
-        got = sorted(walker.frame_steps[2:6])
+        got = sorted(played[2:6])
         self.startup["steps_per_frame"] = got[len(got) // 2]
         (log.info if all(n == want for n in got) else log.error)(
             "physics steps a frame: %s (want %s: %s Hz physics at %d fps)", got, want, self.args.physics_hz, self.args.fps)
