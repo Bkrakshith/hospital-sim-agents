@@ -303,6 +303,23 @@ def test_robot_speech_goes_to_the_named_track(tmp_path):
     assert s.step(0.01).audio[0].addressee == "P3"
 
 
+def test_a_name_that_arrives_after_its_words_still_addresses_them(tmp_path):
+    """Over ROS the say callback often runs before the toward callback: the words wait for the step and take the
+    name that arrived by then. A name that comes only after its words were sent is dropped, not kept for the next."""
+    s, w = _staged_people(tmp_path)
+    s.on_say(Say(person="P3", t=s.t, text="Excuse me, robot?", addressee="g1"))
+    s.step(0.01)
+    s.on_robot_say("Hello, can I help you?")
+    s.on_robot_toward(w.tracks.track("P2"))
+    assert s.step(0.01).audio[0].addressee == "P2"
+    s.on_robot_say("Over there.")  # no name: nearest within reach
+    assert s.step(0.01).audio[0].addressee == "P3"
+    s.on_robot_toward(w.tracks.track("P2"))  # too late for "Over there."
+    s.step(0.01)
+    s.on_robot_say("Anything else?")  # a line with no name of its own
+    assert s.step(0.01).audio[0].addressee == "P3"
+
+
 def test_overheard_speech_does_not_capture_the_reply(tmp_path):
     s, w = _staged_people(tmp_path)
     s.on_say(Say(person="P2", t=s.t, text="Shall we sit down?", addressee="P3"))

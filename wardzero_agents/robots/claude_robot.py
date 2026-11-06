@@ -38,6 +38,7 @@ BEARING_MATCH_DEG = 12.0  # a heard sound is put down to a track only when exact
 SEATS_LISTED = 6  # the nearest free seats in view shown in the prompt
 EVENTS_KEPT = 20
 HEARD_KEPT_S = 60.0
+HEARD_MATCH_S = 5.0  # a sound is put down to a track only this soon after it: the robot and the people move
 LLM_OFF_AFTER = 3  # permanent failures in a row (bad key, bad model) before the mind stops calling
 ROBOT_BUDGET_SHARE = 0.25  # of the scenario's budget_usd: the robot has its own budget
 MAX_SAY_CHARS = 400
@@ -330,7 +331,7 @@ def decision_outputs(d: RobotDecision, mind: "RobotMind", aid: str) -> Outputs:
         out.action = {"id": aid, "action": "extinguish", "fire": d.target}
     elif a == "press_call":
         out.action = {"id": aid, "action": "press_call"}
-        if d.target:  # the person who needs the staff, so the call can name them
+        if d.target and d.target in mind._tracks:  # the person who needs the staff, so the call can name them
             out.action["track"] = d.target
     elif a == "tell_staff":
         out.action = {"id": aid, "action": "tell_staff", "about": d.target}
@@ -582,15 +583,16 @@ class RobotMind:
             return s
         return f"{v:g}"
 
-    def _where_heard(self, h: dict, yaw_then: float) -> str:
-        """Where a sound came from, when the microphone gives a bearing: the one track in that direction, else the
-        angle. Empty without a bearing."""
+    def _where_heard(self, h: dict, yaw_then: float, age: float = 0.0) -> str:
+        """Where a sound came from, when the microphone gives a bearing: the one track in that direction (only for a
+        sound under HEARD_MATCH_S old), else the angle. Empty without a bearing."""
         b = h.get("bearing_deg")
         if not isinstance(b, (int, float)) or isinstance(b, bool) or not math.isfinite(b):
             return ""
         rel = (b + math.degrees(yaw_then - self.pose[2]) + 180.0) % 360.0 - 180.0  # into the robot's frame now
-        hits = [(tid, tr) for tid, tr in self._tracks.items()
-                if abs((_rel_deg(self.pose, tr.x, tr.y) - rel + 180.0) % 360.0 - 180.0) <= BEARING_MATCH_DEG]
+        hits = [] if age > HEARD_MATCH_S else [
+            (tid, tr) for tid, tr in self._tracks.items()
+            if abs((_rel_deg(self.pose, tr.x, tr.y) - rel + 180.0) % 360.0 - 180.0) <= BEARING_MATCH_DEG]
         if len(hits) == 1:
             tid, tr = hits[0]
             return f", from the direction of {tid} ({math.hypot(tr.x - self.pose[0], tr.y - self.pose[1]):.1f} m)"
@@ -617,7 +619,7 @@ class RobotMind:
             text = f': "{h["text"]}"' if h.get("text") else ""
             part = " (only part heard)" if h.get("partial") else ""
             L.append(f"- {t - ht:.0f} s ago, {who}, {float(h.get('received_db', 0)):.0f} dB{part}"
-                     f"{self._where_heard(h, hy)}{text}")
+                     f"{self._where_heard(h, hy, t - ht)}{text}")
         if not recent:
             L.append("- nothing")
         L.append("People your camera sees (anonymous tracks):")

@@ -35,7 +35,7 @@ from ..world import audio
 from ..world.bodies import Bodies, StubBodies
 from ..world.oracle import Pose
 from ..world.perception import _in_view, bbox_3d, perceive_objects
-from ..world.robot_tasks import RobotTasks
+from ..world.robot_tasks import RECEPTION_ROLES, RobotTasks
 from ..world.stub_world import ROBOT_ID as ROBOT_ADDRESSEE, StubWorld
 from . import topics
 
@@ -52,6 +52,7 @@ MAX_WALL_DT = 0.5  # a stalled loop does not make the sim jump further than this
 REPLY_WINDOW_S = 20.0  # a robot reply goes to whoever it last heard speak, if that was this recent
 ROBOT_ADDRESS_M = 2.5  # robot speech is addressed to the nearest person within this distance
 TOWARD_WINDOW_S = 3.0  # a track named on speech/toward applies to robot speech this soon after it
+LATE_TOWARD_S = 0.5  # a name this soon after an unnamed line was sent belongs to that line: dropped, not kept
 TOWARD_M = 4.0  # ... when that person is in the robot's view and this close
 READY_TIMEOUT_S = 600.0  # the first knowledge base build can be slow
 PENDING_SILENT_S = 5.0  # wall seconds without a pending heartbeat before lockstep stops waiting
@@ -141,6 +142,10 @@ class SimService:
         # itself sees source "unknown"; the sim uses the true id to route the reply.
         self._last_robot_listener: Optional[tuple[float, str]] = None
         self._robot_toward: Optional[tuple[float, str]] = None  # (sim time, track) from <ns>/speech/toward
+        # Robot lines wait for the next step: over ROS the say callback can run before the toward sent just ahead
+        # of it, so a line takes the name that has arrived by then.
+        self._robot_lines: list[str] = []
+        self._unnamed_line_t: Optional[float] = None  # when the last line went out with no name
         self._scripted = _scripted_lines()
         self._scripted_people: set[str] = set()  # test hook: people the script moves; their minds' intents are ignored
 
@@ -229,8 +234,14 @@ class SimService:
         self._emit([self.world.say(say.person, say.text, say.addressee, self.t)])
 
     def on_robot_toward(self, track: str) -> None:
-        """<ns>/speech/toward: the track the robot's next speech/say is for."""
+        """<ns>/speech/toward: the track the robot's next speech/say is for. It may arrive just after that say (the
+        line waits for the step to pick it up); one that comes after its line was already sent is dropped."""
         track = (track or "").strip()
+        if track and not self._robot_lines and self._unnamed_line_t is not None \
+                and self.t - self._unnamed_line_t <= LATE_TOWARD_S:
+            log.info("speech/toward %s came after its line was sent; dropped", track)
+            self._robot_toward = None
+            return
         self._robot_toward = (self.t, track) if track else None
 
     def _toward_person(self) -> Optional[str]:
@@ -257,17 +268,26 @@ class SimService:
         if not self.robot:
             log.warning("robot speech ignored: this scenario has no robot")
             return
-        ev = self.world.robot_say(text, self.t)
         if addressee is not _AUTO:
             self._last_robot_listener = self._robot_toward = None
-            self._emit([ev.model_copy(update={"addressee": addressee})])
+            self._emit([self.world.robot_say(text, self.t).model_copy(update={"addressee": addressee})])
             return
+        self._robot_lines.append(text)  # sent at the next step, with any name that has come by then
+
+    def _flush_robot_speech(self) -> None:
+        lines, self._robot_lines = self._robot_lines, []
+        for text in lines:
+            self._robot_say_now(text)
+
+    def _robot_say_now(self, text: str) -> None:
+        ev = self.world.robot_say(text, self.t)
         r = self.world.robot_pose
         named = self._toward_person()
         if named is not None:
-            self._last_robot_listener = None
+            self._last_robot_listener = self._unnamed_line_t = None
             self._emit([ev.model_copy(update={"addressee": named})])
             return
+        self._unnamed_line_t = self.t
         # The reply goes to the person the robot just heard, not to whoever stands nearest.
         last, self._last_robot_listener = self._last_robot_listener, None
         if last is not None and self.t - last[0] <= REPLY_WINDOW_S:
@@ -294,7 +314,7 @@ class SimService:
             brief = brief.model_dump(mode="json")
         out = task_brief(brief, getattr(self.loaded.scenario, "forbidden_areas", None))
         if out is not None:  # deployment knowledge: is anyone at the reception desk computer to read a note?
-            out["desk_staffed"] = any(p.kind != "static" and p.posture != "gone" and p.inst.role == "receptionist"
+            out["desk_staffed"] = any(p.kind != "static" and p.posture != "gone" and p.inst.role in RECEPTION_ROLES
                                       for p in self.world.people.values())
         return out
 
@@ -392,12 +412,14 @@ class SimService:
 
     def step(self, wall_dt: float) -> SimOutputs:
         wall_dt = min(max(0.0, wall_dt), MAX_WALL_DT)
+        self._flush_robot_speech()  # before the clock moves: the lines keep the time they were said
         held = self.held
         t0 = self.t
         if not held and not self._stop:
             self.t = min(self.duration_s, self.t + self.time_scale * wall_dt)
             self.bodies.step(self.world, self.t)
         self._speak_scripted()
+        self._flush_robot_speech()
         self._flush_world()
         out = SimOutputs(clock=self.t)
         if self.robot:

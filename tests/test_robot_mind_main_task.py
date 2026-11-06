@@ -250,6 +250,19 @@ async def test_heard_bearing_names_the_matching_track():
     assert "degrees" not in line and "direction" not in line  # no bearing: as before
 
 
+async def test_an_old_sound_is_not_put_down_to_a_track():
+    """Tracks are where they are now; a sound heard a while ago (the robot may have walked since) gets only its
+    angle."""
+    gw = Recorder()
+    m = mind(gw=gw)
+    m.on_people([det("t1", *at(POSE, -32, 2.0), z=1.2)], 0.0)
+    await m.on_heard({"source_kind": "cough", "source_id": "unknown", "text": None, "received_db": 50.0,
+                      "partial": False, "addressed_to_me": False, "bearing_deg": -32.0}, 0.0)
+    m.on_people([det("t1", *at(POSE, -32, 2.0), z=1.2)], 6.0)
+    line = next(ln for ln in m._situation(6.0).splitlines() if "a cough" in ln)
+    assert "from the direction of" not in line and "32 degrees to your right" in line
+
+
 def test_wait_cancels_is_explained():
     s = system_prompt(WALKING)
     assert "cancels any walk, guide or tell_staff" in s
@@ -264,8 +277,12 @@ def test_wait_cancels_is_explained():
 # ---- the wire ---------------------------------------------------------------------------------------------------------
 def test_press_call_names_the_track_and_speech_names_its_listener():
     m = mind()
+    m.on_people([det("t3", *at(POSE, 0, 2.0))], 0.0)
     d = parse_decision({**NONE, "action": "press_call", "target": "t3"}, WALKING, m)
     assert decision_outputs(d, m, "rb1").action == {"id": "rb1", "action": "press_call", "track": "t3"}
+    for target in ("nurse", "N1", "t9"):  # not a track the robot sees: no name to pass on
+        d = parse_decision({**NONE, "action": "press_call", "target": target}, WALKING, m)
+        assert decision_outputs(d, m, "rb5").action == {"id": "rb5", "action": "press_call"}, target
     d = parse_decision({**NONE, "action": "press_call"}, WALKING, m)
     assert decision_outputs(d, m, "rb2").action == {"id": "rb2", "action": "press_call"}
     d = parse_decision({**NONE, "say": "Hello there.", "toward_track": "t2"}, WALKING, m)
