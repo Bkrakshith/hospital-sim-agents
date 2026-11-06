@@ -32,6 +32,11 @@ blockquote{margin:.2rem 0;padding:.2rem .8rem;border-left:3px solid var(--line);
 footer{margin-top:2.5rem;color:var(--muted);font-size:.85rem}
 footer dl{display:grid;grid-template-columns:max-content 1fr;gap:.2rem .8rem;margin:.5rem 0}footer dt{font-weight:600}footer dd{margin:0}
 .note{color:var(--muted);font-size:.9rem}
+.amapbox{margin:.5rem 0 1rem}.amap{display:block;width:100%;max-height:60vh;background:var(--panel);border:1px solid var(--line);border-radius:.5rem}
+.amap .room{fill:var(--bg);stroke:var(--line);stroke-width:.04}.amap .walls{stroke:var(--muted);fill:none;stroke-linecap:round}
+.amap .forbid{fill:rgba(211,47,47,.18);stroke:#d32f2f}.amap .forbid-l{fill:#d32f2f;font-weight:600}
+.amap .path{fill:none;stroke:var(--accent);stroke-linejoin:round;stroke-linecap:round;opacity:.85}.amap .start{fill:var(--accent)}
+.amap .entry{fill:#d32f2f;stroke:#fff;stroke-width:.06}.amap .entry-n{fill:#fff;font-weight:700}
 video{display:block;width:100%;max-height:70vh;background:#000;border-radius:.5rem}
 </style>
 </head>
@@ -43,6 +48,7 @@ video{display:block;width:100%;max-height:70vh;background:#000;border-radius:.5r
 {{video}}
 <section id="criteria"><h2>Success criteria</h2>{{criteria}}</section>
 <section id="timeline"><h2>Key moments</h2>{{timeline}}</section>
+{{areas}}
 <section id="ratings"><h2>What the people said afterwards</h2>{{ratings}}</section>
 <section id="trust"><h2>Trust in the robot</h2>{{trust}}</section>
 <section id="narrative"><h2>Assessment and suggestions</h2>{{narrative}}</section>

@@ -35,11 +35,13 @@ class RobotView:
 
 
 def write_robot_config(run_dir: "str | Path", loaded, *, domain: Optional[int], budget_usd: float) -> Path:
+    from ..site.areas import task_brief
     sc = loaded.scenario
     data = {"root": str(loaded.root), "site": sc.site, "area": sc.area,
             "robot": sc.robot.model_dump(mode="json"), "known_places": list(sc.known_places),
             "provider": sc.provider, "models": sc.models.model_dump(mode="json") if sc.models else None,
-            "budget_usd": float(budget_usd), "robot_brief": sc.robot_brief, "domain": domain}
+            "budget_usd": float(budget_usd), "robot_brief": task_brief(sc.robot_brief, getattr(sc, "forbidden_areas", None)),
+            "domain": domain}
     dest = Path(run_dir) / ROBOT_CONFIG
     with tempfile.NamedTemporaryFile("w", dir=dest.parent, prefix=".robot_config.", suffix=".tmp", delete=False,
                                      encoding="utf-8") as f:
