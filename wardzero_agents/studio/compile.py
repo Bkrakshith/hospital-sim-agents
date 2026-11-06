@@ -47,6 +47,8 @@ def compile_project(project: Project, root: "str | Path", dest: "str | Path | No
     extra = {"seed": project.seed, "duration_min": project.duration_min, "budget_usd": project.budget_usd,
              "static_patients": project.static_patients, "campaign": True,
              "word_of_mouth_p": project.word_of_mouth_p}
+    if project.forbidden_areas:
+        extra["forbidden_areas"] = [a.model_dump(mode="json") for a in project.forbidden_areas]
     loaded = preset_to_scenario(
         preset, root, dest, characters=project.characters, scenario_extra=extra, robot_extra=robot,
         cast_extra={c.id: {"memory_key": memory_key(project.id, c.id)} for c in project.characters})

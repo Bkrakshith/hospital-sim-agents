@@ -106,6 +106,7 @@
     function drawAll() {
       const p = P();
       S.map.setCharacters(p.characters, { names: false });
+      S.map.setAreas(p.forbidden_areas || []);
       S.map.setStaticPatients(p.static_patients ? WZ.site.beds.filter((b) => /^B[1-9][0-9]*$/.test(b.id) && !p.characters.some((c) => c.bed === b.id)) : []);
       drawRobot();
     }

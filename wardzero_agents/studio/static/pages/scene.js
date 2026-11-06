@@ -24,6 +24,7 @@
     fit: '<path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" />',
     minus: '<path d="M5 12h14" />',
     check: '<path d="M5 12.5l4.5 4.5L19 7.5" />',
+    area: '<rect x="4" y="5" width="16" height="14" rx="1.5" stroke-dasharray="3.2 2.4" /><path d="M9 9.5l6 5M15 9.5l-6 5" />',
   };
   function icon(name, size) {
     const s = h("span.ico");
@@ -87,10 +88,13 @@
     svg.setAttribute("role", "img"); svg.setAttribute("aria-label", "Top-down map of the hospital with the characters placed on it");
     const chip = h("div.map-chip");
     const legend = h("div.legend");
+    const drawBtn = iconBtn("area", "Draw a forbidden area: drag a rectangle the robot must keep out of", () => setDrawing(!S.drawing));
+    drawBtn.setAttribute("aria-pressed", "false");
     const tools = h("div.map-tools",
       iconBtn("fit", "Show the whole hospital", () => S.map.fit()),
-      iconBtn("plus", "Zoom in", () => zoomBy(0.7)), iconBtn("minus", "Zoom out", () => zoomBy(1.4)));
-    mapBox.append(svg, chip, tools, legend, h("div.map-hint", "Scroll to zoom, drag to pan"));
+      iconBtn("plus", "Zoom in", () => zoomBy(0.7)), iconBtn("minus", "Zoom out", () => zoomBy(1.4)), drawBtn);
+    const hintEl = h("div.map-hint", "Scroll to zoom, drag to pan. Drag a person to move them.");
+    mapBox.append(svg, chip, tools, legend, hintEl);
     root.append(h("div.scene", side, mapBox));
 
     function zoomBy(f) {
@@ -99,6 +103,94 @@
     }
 
     S.map = new HospitalMap(svg, WZ.site, {});
+    const busy = () => !!(WZ.state && WZ.state.running);
+
+    // ---- forbidden areas: drag a rectangle on the map, then name it ----
+    function setDrawing(on) {
+      if (on && busy()) { WZ.toast("Not while a run is going", "bad"); return; }
+      S.drawing = on; S.area = null; S.map.setDraft(null);
+      mapBox.classList.toggle("drawing", on);
+      drawBtn.classList.toggle("on", on); drawBtn.setAttribute("aria-pressed", String(on));
+      hintEl.textContent = on ? "Drag a rectangle the robot must keep out of. Esc to cancel." : "Scroll to zoom, drag to pan. Drag a person to move them.";
+    }
+    mapBox.addEventListener("pointerdown", (ev) => {   // capture: before the map starts panning
+      if (!S.drawing || ev.button !== 0 || !svg.contains(ev.target)) return;
+      ev.stopPropagation(); ev.preventDefault();
+      const w = S.map._toWorld(ev);
+      S.area = { x0: w.x, y0: w.y, x1: w.x, y1: w.y };
+      svg.setPointerCapture(ev.pointerId);
+    }, true);
+    document.addEventListener("keydown", S.onKey = (ev) => { if (ev.key === "Escape" && S.drawing && !document.querySelector("dialog[open]")) setDrawing(false); });
+    async function finishArea() {
+      const a = S.area; S.area = null;
+      const r = { x0: +Math.min(a.x0, a.x1).toFixed(2), y0: +Math.min(a.y0, a.y1).toFixed(2), x1: +Math.max(a.x0, a.x1).toFixed(2), y1: +Math.max(a.y0, a.y1).toFixed(2) };
+      if (r.x1 - r.x0 < 0.3 || r.y1 - r.y0 < 0.3) { S.map.setDraft(null); WZ.toast("Drag a bigger rectangle (at least 0.3 m on each side)."); return; }
+      const room = S.map.roomAt((r.x0 + r.x1) / 2, (r.y0 + r.y1) / 2);
+      const name = await WZ.ask({ title: "Name this forbidden area", text: "The robot must keep out of it. The report counts every time it goes in.", ok: "Add area", input: { value: room ? room.label.split(/\s*[,(]/)[0] : "Staff only", label: "Area name" } });
+      S.map.setDraft(null);
+      setDrawing(false);
+      if (!name) return;
+      try { await API.post(WZ.projectRoutes() + "/areas", Object.assign({ name }, r)); await reload(); WZ.toast("Added forbidden area " + name); }
+      catch (e) { WZ.toast(e.message, "bad"); }
+    }
+
+    // ---- dragging characters (and turning the selected one), like the robot on the Robot page ----
+    function grab(c, E, mode) {
+      return (ev) => {
+        if (ev.button !== 0 || S.drawing) return;
+        ev.stopPropagation(); ev.preventDefault();
+        S.drag = { c, E, mode, cx: ev.clientX, cy: ev.clientY, moved: false, pose: { x: c.x, y: c.y, yaw: c.yaw || 0 }, bed: c.bed || null };
+        svg.setPointerCapture(ev.pointerId);
+      };
+    }
+    svg.addEventListener("pointermove", (ev) => {
+      if (S.area) { const w = S.map._toWorld(ev); S.area.x1 = w.x; S.area.y1 = w.y; S.map.setDraft(S.area); return; }
+      const D = S.drag; if (!D) return;
+      if (!D.moved && Math.hypot(ev.clientX - D.cx, ev.clientY - D.cy) < 4) return;
+      if (!D.moved && busy()) { S.drag = null; WZ.toast("Not while a run is going", "bad"); return; }
+      D.moved = true; D.E.g.classList.add("dragging");
+      const w = S.map._toWorld(ev);
+      if (D.mode === "turn") D.pose.yaw = Math.atan2(w.y - D.pose.y, w.x - D.pose.x);
+      else {
+        const others = P().characters.filter((o) => o.id !== D.c.id);
+        const sp = snapPoint(w.x, w.y, D.c.role, takenBeds(others));
+        D.pose.x = +sp.x.toFixed(2); D.pose.y = +sp.y.toFixed(2); D.bed = sp.bed; D.snap = sp.snap;
+      }
+      S.map.movePerson(D.E, D.pose.x, D.pose.y, D.pose.yaw);
+      const room = S.map.roomAt(D.pose.x, D.pose.y);
+      chip.textContent = (D.c.name || "").split(" ")[0] + ": " + (room ? room.label + " · " : "") + "x " + D.pose.x.toFixed(1) + ", y " + D.pose.y.toFixed(1) + (D.snap ? " · " + D.snap : "");
+    });
+    const endDrag = async (ev) => {
+      if (S.area) { try { svg.releasePointerCapture(ev.pointerId); } catch (e) { /* released */ } if (ev.type === "pointerup") finishArea(); else { S.area = null; S.map.setDraft(null); } return; }
+      const D = S.drag; if (!D) return;
+      S.drag = null;
+      try { svg.releasePointerCapture(ev.pointerId); } catch (e) { /* already released */ }
+      if (!D.moved) { if (ev.type === "pointerup") pickChar(D.c); return; }
+      const body = D.mode === "turn" ? { yaw: +D.pose.yaw.toFixed(3) } : { x: D.pose.x, y: D.pose.y, bed: D.bed };
+      try {
+        const saved = await API.put(WZ.projectRoutes() + "/characters/" + D.c.id, body);
+        S.sel = saved.id;
+        await reload();
+        if (D.c.start_seated && !saved.start_seated) WZ.toast(saved.name + " is standing now (moved off the waiting seat).");
+      } catch (e) { WZ.toast(e.message, "bad"); if (!S.dead) drawMap(); }
+    };
+    svg.addEventListener("pointerup", endDrag);
+    svg.addEventListener("pointercancel", endDrag);
+
+    function pickChar(c) {
+      S.sel = c.id; setTab("characters"); drawMap();
+      const r = body.querySelector('[data-cid="' + c.id + '"]'); if (r) r.scrollIntoView({ block: "nearest" });
+    }
+
+    async function setSeated(c, on, box) {
+      try {
+        const saved = await API.put(WZ.projectRoutes() + "/characters/" + c.id, { start_seated: on });
+        S.sel = saved.id;
+        await reload();
+        const seat = WZ.site.seats.find((q) => Math.hypot(q.x - saved.x, q.y - saved.y) < 0.05);
+        WZ.toast(on ? saved.name + " starts seated on seat " + (seat ? seat.id : "") : saved.name + " now starts standing");
+      } catch (e) { WZ.toast(e.message, "bad"); if (box) box.checked = !on; }
+    }
 
     // ---- left panel ----
     const segChars = h("button.seg-btn", { type: "button", role: "tab", onclick: () => setTab("characters") });
@@ -121,7 +213,14 @@
     // ---- rendering ----
     function drawMap() {
       const p = P();
-      S.map.setCharacters(p.characters, { selected: S.sel, hover: S.hover, onPick: (c) => { S.sel = c.id; setTab("characters"); drawMap(); const r = body.querySelector('[data-cid="' + c.id + '"]'); if (r) r.scrollIntoView({ block: "nearest" }); } });
+      if (S.drag) return;  // never rebuild a marker that is being dragged
+      const marks = S.map.setCharacters(p.characters, { selected: S.sel, hover: S.hover, draggable: true, handle: S.sel });
+      for (const c of p.characters) {
+        const E = marks.get(c.id);
+        E.g.addEventListener("pointerdown", grab(c, E, "move"));
+        if (E.handle) E.handle.addEventListener("pointerdown", grab(c, E, "turn"));
+      }
+      S.map.setAreas(p.forbidden_areas || []);
       const st = staticBeds(p);
       S.map.setStaticPatients(st);
       S.map.setRobot(p.robot_start);
@@ -130,7 +229,8 @@
       legend.replaceChildren(
         ...roles.map((r) => h("span.lg", h("i.dot", { style: "background:" + WZMap.roleColor(r) }), roleLabel(r))),
         st.length ? h("span.lg", h("i.dot.static")) : null, st.length ? h("span.lg-t", "In bed") : null,
-        h("span.lg", h("i.tri")), h("span.lg-t", "Robot start"));
+        h("span.lg", h("i.tri")), h("span.lg-t", "Robot start"),
+        ...((p.forbidden_areas || []).length ? [h("span.lg", h("i.farea-sw")), h("span.lg-t", "Forbidden area")] : []));
       legend.querySelectorAll(".lg-t").forEach((n) => n.previousSibling && n.previousSibling.classList.add("solo"));
       chip.textContent = p.characters.length + (p.characters.length === 1 ? " character" : " characters") + (st.length ? " and " + st.length + " in bed" : "");
       staticSwitch.checked = !!p.static_patients;
@@ -162,7 +262,8 @@
         h("div.cbody",
           h("div.cname", c.name),
           h("div.cmeta", roleLabel(c.role) + " · " + moodLabel(c.mood)),
-          h("div.cmeta.dim", roomLabel(c.room) + (c.bed ? ", bed " + c.bed : "")),
+          h("div.cmeta.dim", roomLabel(c.room) + (c.bed ? ", bed " + c.bed : "") + (seatAt(c) ? ", seat " + seatAt(c).id : "")),
+          c.bed ? null : seatedBox(c),
           m ? h("span.trust", { title: "Trust " + m.trust.toFixed(2) + ", stage " + m.stage + ". " + m.runs + " runs, " + m.violations + " violations, " + m.repairs + " repairs." },
             h("i.tdot.s" + Math.min(4, m.stage)), "Stage " + m.stage + " · trust " + m.trust.toFixed(2)) : null),
         h("div.cacts",
@@ -181,6 +282,34 @@
       return row;
     }
 
+    function seatAt(c) { return WZ.site.seats.find((q) => Math.hypot(q.x - c.x, q.y - c.y) < 0.05) || null; }
+    function seatedBox(c) {
+      const box = h("input", { type: "checkbox", checked: !!c.start_seated, "aria-label": "Start seated: " + c.name,
+        onclick: (e) => e.stopPropagation(), onchange: (e) => setSeated(c, e.target.checked, e.target) });
+      return h("label.seat-chk", { title: "Sit on a free A&E waiting seat at the start", onclick: (e) => e.stopPropagation() }, box, "Start seated");
+    }
+
+    function areaRow(a) {
+      const room = S.map.roomAt((a.x0 + a.x1) / 2, (a.y0 + a.y1) / 2);
+      return h("li.area", { "data-aid": a.id, onclick: () => S.map.frame([], [{ x: a.x0, y: a.y0 }, { x: a.x1, y: a.y1 }], 0.6, 10) },
+        h("span.sw", { "aria-hidden": "true" }),
+        h("div.abody", h("div.aname", a.name),
+          h("div.ameta", (a.x1 - a.x0).toFixed(1) + " × " + (a.y1 - a.y0).toFixed(1) + " m" + (room ? " · " + room.label : ""))),
+        iconBtn("trash", "Remove forbidden area " + a.name, async (e) => {
+          e.stopPropagation();
+          try { await API.del(WZ.projectRoutes() + "/areas/" + encodeURIComponent(a.id)); await reload(); WZ.toast("Removed " + a.name); }
+          catch (err) { WZ.toast(err.message, "bad"); }
+        }, "danger"));
+    }
+    function areasSection() {
+      const list = P().forbidden_areas || [];
+      return h("section.areas-sec",
+        h("div.sec-head", h("h2", "Forbidden areas"),
+          h("button.btn", { type: "button", onclick: () => setDrawing(true) }, icon("area", 16), "Draw area")),
+        list.length ? h("ul.areas", list.map(areaRow))
+          : h("p.muted", "None yet. Draw a rectangle on the map that the robot must keep out of, such as Resus or a staff-only room."));
+    }
+
     function renderChars() {
       const chars = P().characters;
       const head = h("div.sec-head", h("h2", "Characters"),
@@ -190,10 +319,10 @@
           h("div.empty-art", { "aria-hidden": "true" }, h("i"), h("i"), h("i")),
           h("h3", "Nobody is on the map yet"),
           h("p.muted", "Add the people your robot will meet, or start from a ready-made scenario."),
-          h("button.btn", { type: "button", onclick: () => setTab("scenarios") }, "Browse scenarios")));
+          h("button.btn", { type: "button", onclick: () => setTab("scenarios") }, "Browse scenarios")), areasSection());
         return;
       }
-      body.replaceChildren(head, h("ul.chars", chars.map(charRow)));
+      body.replaceChildren(head, h("ul.chars", chars.map(charRow)), areasSection());
     }
 
     // ---- scenarios ----
@@ -264,8 +393,8 @@
       const firstRole = presets.roles.find((r) => r.id === "ward_nurse") || presets.roles[0];
       const firstMood = presets.moods.find((m) => m.id === "anxious") || presets.moods[0];
       const D = existing ? { sex: existing.sex, name: existing.name, age: existing.age_band, role: existing.role, mood: existing.mood,
-        rolePrompt: existing.role_prompt, moodPrompt: existing.mood_prompt, room: existing.room, x: existing.x, y: existing.y, bed: existing.bed || null, snap: existing.bed ? "Bed " + existing.bed : "", placed: true }
-        : { sex: "female", name: randomName("female"), age: "31-50", role: firstRole.id, mood: firstMood.id, rolePrompt: null, moodPrompt: null, room: "", x: 0, y: 0, bed: null, snap: "", placed: false };
+        rolePrompt: existing.role_prompt, moodPrompt: existing.mood_prompt, room: existing.room, x: existing.x, y: existing.y, bed: existing.bed || null, snap: existing.bed ? "Bed " + existing.bed : "", placed: true, seated: !!existing.start_seated }
+        : { sex: "female", name: randomName("female"), age: "31-50", role: firstRole.id, mood: firstMood.id, rolePrompt: null, moodPrompt: null, room: "", x: 0, y: 0, bed: null, snap: "", placed: false, seated: false };
       const rolePre = () => presets.roles.find((r) => r.id === D.role), moodPre = () => presets.moods.find((m) => m.id === D.mood);
       const preText = (p) => (p && p.prompt ? p.prompt.trim() : "");
 
@@ -283,6 +412,9 @@
       const moodRestore = h("button.link", { type: "button", onclick: () => { D.moodPrompt = null; syncPrompts(); } }, "Restore preset");
       const roomSel = h("select", { id: "f-room", onchange: () => { D.room = roomSel.value; D.placed = false; autoPlace(); preview.frame([D.room], [{ x: D.x, y: D.y }], 0.12, 20); drawPreview(); } });
       const err = h("p.error", { role: "alert" });
+      const seatedIn = h("input", { type: "checkbox", id: "f-seated", checked: D.seated, onchange: () => { D.seated = seatedIn.checked; } });
+      const seatedField = h("div.field.check", seatedIn, h("label", { for: "f-seated" }, "Start seated",
+        h("small", "Sits on the free A&E waiting seat nearest to their spot. Untick to stand them 1 m in front of it.")));
       const coord = h("span.coord");
       const saveBtn = h("button.btn.primary", { type: "submit" }, existing ? "Save changes" : "Add to scene");
 
@@ -379,7 +511,7 @@
             h("div.field.sub", h("div.flabel", h("label.small", { for: "f-roleprompt" }, "What this person is like"), roleRestore), roleTa),
             field("Mood", "f-mood", moodSel),
             h("div.field.sub", h("div.flabel", h("label.small", { for: "f-moodprompt" }, "How the mood shows"), moodRestore), moodTa)),
-          h("div.col-map", field("Room", "f-room", roomSel), previewWrap, err)),
+          h("div.col-map", field("Room", "f-room", roomSel), previewWrap, seatedField, err)),
         h("div.dlg-foot", h("button.btn", { type: "button", onclick: () => dlg.close() }, "Cancel"), saveBtn));
       const dlg = h("dialog.dlg.big", { "aria-labelledby": "cd-title" }, form);
       dlg.addEventListener("close", () => { if (preview) preview.destroy(); dlg.remove(); });
@@ -407,7 +539,7 @@
           name, sex: D.sex, age_band: D.age, role: D.role, mood: D.mood,
           role_prompt: D.role === "custom" ? rp : (rp === preText(rolePre()) ? null : rp),
           mood_prompt: D.mood === "custom" ? (mp || null) : (mp === preText(moodPre()) ? null : mp),
-          room: D.room, x: D.x, y: D.y, bed: D.bed,
+          room: D.room, x: D.x, y: D.y, bed: D.seated ? null : D.bed, start_seated: D.seated,
         };
         saveBtn.disabled = true;
         try {
@@ -427,7 +559,7 @@
     function lockUi() {
       if (S.dead) return;
       const on = !!(WZ.state && WZ.state.running);
-      for (const b of body.querySelectorAll(".cacts button, .sec-head .btn.primary, .card-detail .btn.primary")) {
+      for (const b of body.querySelectorAll(".cacts button, .sec-head .btn, .card-detail .btn.primary, .seat-chk input, .area .icon-btn")) {
         b.disabled = on;
         if (on) b.setAttribute("title", "Not while a run is going"); else b.removeAttribute("title");
       }
@@ -447,7 +579,7 @@
   function unmount() {
     const root = document.getElementById("view");
     const S = root._scene;
-    if (S) { S.dead = true; if (S.map) S.map.destroy(); S.thumbs.forEach((m) => m.destroy()); }
+    if (S) { S.dead = true; if (S.map) S.map.destroy(); S.thumbs.forEach((m) => m.destroy()); if (S.onKey) document.removeEventListener("keydown", S.onKey); }
   }
 
   WZ.registerPage("scene", { title: "Scene", mount, unmount });

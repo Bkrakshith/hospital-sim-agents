@@ -1,6 +1,7 @@
 """8-connected A* over the occupancy grid with clearance inflation and string-pulling."""
 from __future__ import annotations
 
+import copy
 import heapq
 import math
 from collections import OrderedDict
@@ -30,6 +31,7 @@ class Router:
         self._b = self._raw
         self._cache: "OrderedDict[tuple, Optional[list]]" = OrderedDict()
         self._size = cache_size
+        self.version = 0  # goes up with every block(): a router built from this one knows to rebuild
 
     def _inflate(self, occ: np.ndarray, clearance: float) -> np.ndarray:
         r = clearance / self.grid.res
@@ -55,6 +57,28 @@ class Router:
                     self._raw[iy + dy][ix + dx] = True
         self._near = self._inflate(np.array(self._raw, dtype=bool), CLEARANCE).tolist()
         self._cache.clear()
+        self.version += 1
+
+    def with_rects_blocked(self, rects) -> "Router":
+        """A new router with this one's blocked cells plus every cell whose centre is inside one of the
+        rectangles (x0, y0, x1, y1): forbidden areas only the robot keeps out of."""
+        g = self.grid
+        raw = np.array(self._raw, dtype=bool)
+        for x0, y0, x1, y1 in rects:
+            iy0, ix0 = g.to_cell(x0, y0)
+            iy1, ix1 = g.to_cell(x1, y1)
+            for iy in range(max(0, iy0), min(raw.shape[0], iy1 + 1)):
+                for ix in range(max(0, ix0), min(raw.shape[1], ix1 + 1)):
+                    cx, cy = g.to_world(iy, ix)
+                    if x0 <= cx <= x1 and y0 <= cy <= y1:
+                        raw[iy, ix] = True
+        out = copy.copy(self)  # keeps any other settings; the cell tables and the cache are its own
+        out.version = 0
+        out._raw = raw.tolist()
+        out._near = out._inflate(raw, CLEARANCE).tolist()
+        out._b = out._raw
+        out._cache = OrderedDict()
+        return out
 
     def is_free(self, x: float, y: float) -> bool:
         """Free of walls and of the clearance band."""

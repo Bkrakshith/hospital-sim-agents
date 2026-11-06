@@ -94,6 +94,7 @@ class CharacterSpec(_P):
     y: float
     yaw: float = 0.0
     bed: Optional[str] = None
+    start_seated: bool = False  # on a free A&E waiting seat at the start (the Studio picks the seat)
 
 
 class Criterion(_P):

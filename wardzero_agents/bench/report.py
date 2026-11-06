@@ -15,7 +15,7 @@ from ..campaign.debrief import ROBOT_NAMES, clock, run_people
 from ..campaign.experiences import detect
 from ..llm.gateway import Gateway, LLMRequest
 from .criteria import evaluate
-from .metrics import RunData, compute_all
+from .metrics import RunData, compute_all, forbidden_area_entry_list
 
 TEMPLATE = Path(__file__).with_name("templates") / "report.html"
 MAX_EXCERPTS = 30
@@ -79,7 +79,7 @@ def _numbers(text: str) -> list[tuple[float, int]]:
 
 # What the narrative may quote: figures the code computed from the run. Not the seed, run index, token
 # or cost figures, nor the narrative itself.
-_EXCLUDED_TOP = ("run", "tokens", "narrative", "suggestions", "valid", "fairness_violations")
+_EXCLUDED_TOP = ("run", "tokens", "narrative", "suggestions", "valid", "fairness_violations", "area_map")
 
 
 def _collect(obj, acc: list[float]) -> None:
@@ -250,7 +250,21 @@ def build_facts(run_dir: Path, preset, narrative: Optional[dict] = None) -> dict
         "moments": moments, "ratings": ratings, "ratings_mean": rating_mean, "trust": trust,
         "tokens": _tokens(d), "narrative": "", "suggestions": [],
         "video": _video(Path(run_dir)),
+        **_forbidden(d),
     }
+
+
+def _forbidden(d: RunData) -> dict:
+    """The user's forbidden areas, every entry into a forbidden zone (name and time) and the map of both."""
+    from ..site.areas import run_areas
+    from .area_map import area_map_svg
+    areas = run_areas(d.run_dir, d.meta)
+    entries = forbidden_area_entry_list(d)
+    svg = area_map_svg(d.site, d.poses(), areas, entries) if (areas or entries) and d.site is not None else None
+    return {"forbidden_areas": [{"name": a.name, "x0": a.x0, "y0": a.y0, "x1": a.x1, "y1": a.y1} for a in areas],
+            "forbidden_entries": [{"t": _r(e["t"]), "clock": clock(e["t"]), "name": e["name"], "kind": e["kind"]}
+                                  for e in entries],
+            "area_map": svg or ""}
 
 
 def _video(run_dir: Path) -> Optional[dict]:
@@ -378,6 +392,21 @@ def render_html(facts: dict) -> str:
              + (f'<details class="note"><summary>Voice credits</summary><pre>{_e(vid["credits"])}</pre></details>'
                 if vid.get("credits") else "")
              + "</section>") if vid else ""
+    entries, f_areas = facts.get("forbidden_entries") or [], facts.get("forbidden_areas") or []
+    if entries or f_areas or facts.get("area_map"):
+        kinds = {"user": "your area", "always": "always forbidden", "alarm": "fire door, alarm on"}
+        rows = [[_e(str(i)), _e(e["clock"]), _e(e["name"]), _e(kinds.get(e["kind"], e["kind"]))]
+                for i, e in enumerate(entries, 1)]
+        listing = (_table(["#", "Time", "Area", "Kind"], rows, num=(0,)) if rows else
+                   '<p class="note">The robot never went into a forbidden area.</p>')
+        named = ("<p class=\"note\">Areas drawn in the Studio: " + _e(", ".join(a["name"] for a in f_areas)) + ".</p>"
+                 if f_areas else "")
+        amap = (f'<figure class="amapbox">{facts["area_map"]}<figcaption class="note">Red: forbidden areas. '
+                "Blue: the robot's path from its start (dot). Numbered: where it went in.</figcaption></figure>"
+                if facts.get("area_map") else "")
+        areas_html = f'<section id="areas"><h2>Forbidden areas</h2>{named}{amap}{listing}</section>'
+    else:
+        areas_html = ""
     tok = facts["tokens"]
     facts_rows = [
         ("Run", run["run_id"]), ("Seed", run["seed"]), ("Run index", run["run_index"]),
@@ -390,7 +419,7 @@ def render_html(facts: dict) -> str:
     sub = f"Scenario {_e(run['scenario_id'])}; run {_e(run['run_id'])}"
     page = TEMPLATE.read_text(encoding="utf-8")
     vals = {"title": _e(run["title"]), "subtitle": sub, "banner": banner, "video": video, "criteria": criteria,
-            "timeline": timeline, "ratings": ratings, "trust": trust, "narrative": narrative,
+            "timeline": timeline, "areas": areas_html, "ratings": ratings, "trust": trust, "narrative": narrative,
             "facts": facts_html}
     page = re.sub(r"\{\{(\w+)\}\}", lambda m: vals.get(m.group(1), m.group(0)), page)  # one pass
     return page

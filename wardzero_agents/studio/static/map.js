@@ -163,8 +163,9 @@
       const s = this.site, svg = this.svg, th = this.opts.thumb;
       const g = (cls) => el("g", { class: cls }, svg);
       const gRooms = g("l-rooms"), gFurn = g("l-furn"), gWalls = g("l-walls"), gBeds = g("l-beds"),
-        gLabels = g("l-labels"), gMarkers = g("l-markers");
+        gAreas = g("l-areas"), gLabels = g("l-labels"), gMarkers = g("l-markers");
       this.gMarkers = gMarkers;
+      this.gAreas = gAreas;
       this.polys = new Map();
       for (const r of s.rooms) {
         const bb = bbox(r.poly);
@@ -209,6 +210,7 @@
         const t = el("title", {}, bg); t.textContent = "Bed " + b.id;
         this.bedEls.set(b.id, bg);
       }
+      this.gAreaLabels = el("g", {}, gMarkers);
       this.gStatic = el("g", {}, gMarkers);
       this.gRobot = el("g", {}, gMarkers);
       this.gChars = el("g", {}, gMarkers);
@@ -326,19 +328,67 @@
       if (o.title) { const tt = el("title", {}, g); tt.textContent = o.title; }
       return g;
     }
-    /* characters: [{id,name,role,x,y}], opts {selected, hover, onPick, names} */
+    /* characters: [{id,name,role,x,y,yaw}], opts {selected, hover, onPick, names, draggable, handle (an id: that
+       character gets a turn handle)}. Returns Map id -> {g, m, handle, line} for dragging (see movePerson). */
     setCharacters(list, o) {
       o = o || {};
       this._clear(this.gChars);
+      const out = new Map();
       for (const c of list) {
         const g = this._person(this.gChars, c, {
           ring: c.id === o.selected, name: o.names === false ? null : (c.name || "").split(" ")[0],
-          title: c.name, scale: this.opts.thumb ? 0.62 : 1, r: this.opts.thumb ? 11 : 11,
-          cls: c.id === o.hover ? "hover" : "",
+          title: c.name + (o.draggable ? " (drag to move)" : ""), scale: this.opts.thumb ? 0.62 : 1, r: this.opts.thumb ? 11 : 11,
+          cls: (c.id === o.hover ? "hover" : "") + (o.draggable ? " draggable" : ""),
         });
-        if (o.onPick) { g.style.cursor = "pointer"; g.addEventListener("pointerdown", (e) => e.stopPropagation()); g.addEventListener("click", (e) => { e.stopPropagation(); o.onPick(c); }); }
+        const m = this.markers[this.markers.length - 1];
+        const E = { g, m, yaw: c.yaw || 0 };
+        if (o.handle === c.id) {
+          E.line = el("line", { x1: 0, y1: 0, class: "person-arm" }, g);
+          E.handle = el("circle", { r: 6, class: "person-handle" }, g);
+          const ht = el("title", {}, E.handle); ht.textContent = "Drag to turn " + (c.name || "").split(" ")[0];
+          g.insertBefore(E.line, g.firstChild);
+          m.r = 40;
+          this._posePerson(E, c.x, c.y, E.yaw);
+        }
+        out.set(c.id, E);
+        if (o.onPick && !o.draggable) { g.style.cursor = "pointer"; g.addEventListener("pointerdown", (e) => e.stopPropagation()); g.addEventListener("click", (e) => { e.stopPropagation(); o.onPick(c); }); }
       }
       this._relayout();
+      return out;
+    }
+    _posePerson(E, x, y, yaw) {
+      E.m.x = x; E.m.y = y; E.yaw = yaw;
+      if (E.handle) {
+        const hx = 30 * Math.cos(yaw), hy = -30 * Math.sin(yaw);
+        E.handle.setAttribute("cx", hx); E.handle.setAttribute("cy", hy);
+        E.line.setAttribute("x2", hx); E.line.setAttribute("y2", hy);
+      }
+    }
+    /* Move a character marker from setCharacters without rebuilding it (dragging). */
+    movePerson(E, x, y, yaw) { this._posePerson(E, x, y, yaw == null ? E.yaw : yaw); this._relayout(); }
+    /* Forbidden areas: [{id, name, x0, y0, x1, y1}] drawn as red rectangles with their names. */
+    setAreas(list) {
+      this.gAreas.replaceChildren();
+      this._clear(this.gAreaLabels);
+      for (const a of list || []) {
+        const r = el("rect", { x: a.x0, y: -a.y1, width: a.x1 - a.x0, height: a.y1 - a.y0, class: "farea" }, this.gAreas);
+        const t = el("title", {}, r); t.textContent = "Forbidden area: " + a.name;
+        if (this.opts.thumb || this.opts.labels === false) continue;
+        const { g, m } = this._marker(this.gAreaLabels, (a.x0 + a.x1) / 2, a.y1);
+        m.r = 10;
+        g.setAttribute("class", "farea-tag");
+        const txt = el("text", { y: -5, "text-anchor": "middle" }, g);
+        txt.textContent = a.name;
+      }
+      this._relayout();
+    }
+    /* The rectangle being drawn (or null). */
+    setDraft(a) {
+      if (!this._draft) this._draft = el("rect", { class: "farea draft" }, this.gAreas);
+      if (!a) { this._draft.remove(); this._draft = null; return; }
+      if (!this._draft.isConnected) this.gAreas.appendChild(this._draft);
+      const x0 = Math.min(a.x0, a.x1), x1 = Math.max(a.x0, a.x1), y0 = Math.min(a.y0, a.y1), y1 = Math.max(a.y0, a.y1);
+      for (const [k, v] of Object.entries({ x: x0, y: -y1, width: x1 - x0, height: y1 - y0 })) this._draft.setAttribute(k, v);
     }
     setStaticPatients(beds) {
       this._clear(this.gStatic);

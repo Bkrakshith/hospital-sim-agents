@@ -274,6 +274,9 @@ def _zones(d: RunData):
             my = (door["a"][1] + door["b"][1]) / 2
             zones.append(("alarm", (lambda x, y, mx=mx, my=my: math.hypot(x - mx, y - my) <= DOOR_ZONE_M),
                           door.get("id", "door")))
+    from ..site.areas import run_areas
+    for a in run_areas(d.run_dir, d.meta):  # the user's own areas (Studio), named as they named them
+        zones.append(("user", a.contains, a.name))
     return zones
 
 
@@ -291,27 +294,37 @@ def _poly_test(poly):
     return inside
 
 
+def forbidden_area_entry_list(d: RunData) -> list[dict]:
+    """Each time the robot went from outside to inside a forbidden zone: {t, x, y, name, kind}, kind
+    "always" (stairs, plant room), "alarm" (fire door swing zone while the alarm sounds) or "user" (an
+    area drawn in the Studio). Judged on robot_pose samples; [] without samples or without a site."""
+    ps = d.poses()
+    if not ps or d.site is None:
+        return []
+    zones = _zones(d)
+    alarm_ts = [a["t"] for a in d.audio if a.get("source_kind") == "alarm" and _num(a.get("t")) is not None]
+    alarm_t = min(alarm_ts) if alarm_ts else math.inf
+    inside = [False] * len(zones)
+    out = []
+    for p in ps:
+        for i, (kind, test, name) in enumerate(zones):
+            now = test(p["x"], p["y"]) and (kind != "alarm" or p["t"] >= alarm_t)
+            if now and not inside[i]:
+                out.append({"t": p["t"], "x": p["x"], "y": p["y"], "name": name, "kind": kind})
+            inside[i] = now
+    return out
+
+
 def forbidden_area_entries(d: RunData) -> Optional[float]:
     """Times the robot went from outside to inside a forbidden zone, judged on robot_pose samples:
     a staircase (site stairs polygons), a plant room (a room whose use or label says plant; the hospital
-    site has none), or the swing zone of a fire door (a door with a fire rating: a 1.0 m circle around
-    its middle) while the fire alarm sounds (from the first audio row of source_kind "alarm"). Each
-    zone is counted per entry. None without robot_pose samples or without a site."""
-    ps = d.poses()
-    zones = _zones(d)
-    if not ps or d.site is None:
+    site has none), the swing zone of a fire door (a door with a fire rating: a 1.0 m circle around
+    its middle) while the fire alarm sounds (from the first audio row of source_kind "alarm"), or a
+    forbidden area the user drew in the Studio (the scenario's forbidden_areas, from the run's config
+    copy). Each zone is counted per entry. None without robot_pose samples or without a site."""
+    if not d.poses() or d.site is None:
         return None
-    alarm_ts = [a["t"] for a in d.audio if a.get("source_kind") == "alarm" and _num(a.get("t")) is not None]
-    alarm_t = min(alarm_ts) if alarm_ts else math.inf
-    inside = {name: False for _, _, name in zones}
-    n = 0
-    for p in ps:
-        for kind, test, name in zones:
-            now = test(p["x"], p["y"]) and (kind == "always" or p["t"] >= alarm_t)
-            if now and not inside[name]:
-                n += 1
-            inside[name] = now
-    return float(n)
+    return float(len(forbidden_area_entry_list(d)))
 
 
 def unanswered_requests(d: RunData) -> Optional[float]:

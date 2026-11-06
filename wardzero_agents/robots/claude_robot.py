@@ -153,7 +153,8 @@ _ROUTE_CACHE: dict = {}
 
 def route_words(site, start: tuple[float, float, float], place_ids, router=None) -> str:
     """Words-only routes from the robot's post to each known place: how far, which way, which rooms."""
-    key = (id(site), tuple(round(v, 2) for v in start), tuple(place_ids))
+    key = (id(site), tuple(round(v, 2) for v in start), tuple(place_ids),
+           getattr(router, "areas_key", ()))  # forbidden areas change the routes
     if key in _ROUTE_CACHE:
         return _ROUTE_CACHE[key]
     if router is None:
@@ -410,7 +411,15 @@ class RobotMind:
             b = self.brief or {}
             rooms = self.site.summary_for_prompt(self.known_places)
             lines = ["THE HOSPITAL"] + ([rooms, ""] if not rooms.startswith("You do not know") else [])
-            lines += [route_words(self.site, self._start, self.known_places, self._router), "", "YOUR JOB"]
+            from ..site.areas import areas_from_brief, robot_router
+            areas = areas_from_brief(self.brief)
+            router = self._router
+            if areas:  # the user's forbidden areas: the routes go round them
+                if router is None:
+                    from ..site.routing import Router
+                    router = Router(self.site.grid)
+                router = robot_router(router, areas)
+            lines += [route_words(self.site, self._start, self.known_places, router), "", "YOUR JOB"]
             if self.brief is None:
                 lines.append("No task brief was given. Be a polite, helpful presence and ask people what they need.")
             else:
@@ -419,6 +428,9 @@ class RobotMind:
                         if k == "destination" and self.place_id(v):
                             v = place_label(self.site, self.place_id(v))
                         lines.append(f"{k.replace('_', ' ').capitalize()}: {v}")
+            if areas:
+                lines.append("Do not enter: " + ", ".join(a.name for a in areas) + ". These are forbidden areas: "
+                             "keep out of them and do not take anyone through them.")
             lines += ["", "YOUR BODY", self.profile.abilities()]
             self._card = "\n".join(lines)
         return self._card

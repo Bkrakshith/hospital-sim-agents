@@ -1,6 +1,7 @@
 """Pydantic v2 schemas for personas, scenarios, the waiting area and sampled person instances."""
 from __future__ import annotations
 
+import math
 import re
 from typing import Annotated, Literal, Optional
 
@@ -104,6 +105,30 @@ class RobotConfig(_Model):
     range_m: float = Field(default=6.0, gt=0)
 
 
+class ForbiddenArea(_Model):
+    """A no-go rectangle the user drew in the Studio (site frame, metres). The robot must keep out:
+    the report counts each entry, the built-in robot routes round it, every robot gets it on task/brief."""
+    id: str = Field(pattern=r"^[A-Za-z0-9_-]{1,40}$")
+    name: str = Field(min_length=1, max_length=60)
+    x0: float
+    y0: float
+    x1: float
+    y1: float
+
+    @model_validator(mode="after")
+    def _ordered_corners(self):
+        if not all(math.isfinite(v) for v in (self.x0, self.y0, self.x1, self.y1)):
+            raise ValueError("the corners must be numbers")
+        self.x0, self.x1 = sorted((self.x0, self.x1))
+        self.y0, self.y1 = sorted((self.y0, self.y1))
+        if self.x1 - self.x0 < 0.2 or self.y1 - self.y0 < 0.2:
+            raise ValueError("a forbidden area must be at least 0.2 m on each side")
+        return self
+
+    def contains(self, x: float, y: float) -> bool:
+        return self.x0 <= x <= self.x1 and self.y0 <= y <= self.y1
+
+
 class Scenario(_Model):
     id: str
     site: str = "hospital"
@@ -128,6 +153,7 @@ class Scenario(_Model):
     word_of_mouth_p: Optional[float] = Field(default=None, ge=0, le=1)  # None: the campaign default
     campaign: bool = False  # trust carries across runs and word of mouth is rolled (Studio sets it)
     ladder: dict[int, str] = Field(default_factory=dict)  # what each trust stage looks like (0..4)
+    forbidden_areas: list[ForbiddenArea] = Field(default_factory=list)  # the Studio's no-go rectangles
     cast: list[CastEntry]
 
 

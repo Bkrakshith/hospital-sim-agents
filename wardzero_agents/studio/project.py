@@ -12,6 +12,7 @@ from typing import Literal, Optional
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, ValidationError
 
+from ..config.models import ForbiddenArea
 from ..config.presets import CharacterSpec, RobotStart, ScenarioPreset
 
 _ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,39}$")
@@ -48,6 +49,7 @@ class Project(BaseModel):
     record: StrictBool = False
     record_res: Literal["1280x720", "1920x1080"] = "1280x720"
     voice: StrictBool = True  # with record: spoken voices in the recorded videos (added after the run)
+    forbidden_areas: list[ForbiddenArea] = Field(default_factory=list)  # no-go rectangles for the robot
 
 
 def valid_id(pid: str) -> bool:

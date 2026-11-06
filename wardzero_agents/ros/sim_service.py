@@ -106,6 +106,9 @@ class SimService:
         self.time_scale = float(time_scale)
         self.lockstep = lockstep
         self.world = StubWorld(loaded, loaded.scenario.seed if seed is None else seed)
+        if getattr(loaded.scenario, "forbidden_areas", None):  # the robot routes round the user's no-go areas
+            from ..site.areas import robot_router
+            self.world.robot.router = robot_router(self.world.router, loaded.scenario.forbidden_areas)
         self.bodies: Bodies = bodies if bodies is not None else StubBodies()
         self.robot = loaded.scenario.robot.enabled
         self.tasks = RobotTasks(self.world)
@@ -253,11 +256,13 @@ class SimService:
     # ---- the robot's body and tasks --------------------------------------------------------
     @property
     def robot_brief(self) -> Optional[dict]:
-        """The task brief to publish latched on task/brief, from the scenario's robot_brief."""
+        """The task brief to publish latched on task/brief: the scenario's robot_brief, plus its forbidden
+        areas as polygons (forbidden_areas) when it has any."""
+        from ..site.areas import task_brief
         brief = getattr(self.loaded.scenario, "robot_brief", None)
-        if brief is None:
-            return None
-        return brief.model_dump(mode="json") if hasattr(brief, "model_dump") else dict(brief)
+        if hasattr(brief, "model_dump"):
+            brief = brief.model_dump(mode="json")
+        return task_brief(brief, getattr(self.loaded.scenario, "forbidden_areas", None))
 
     def on_cmd_vel(self, cmd: "tuple[float, float]") -> None:
         if self.robot:

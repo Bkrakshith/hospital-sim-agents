@@ -41,7 +41,7 @@ for `speech/say`, a mobile base for `cmd_vel` and `goal_pose`).
 | `<ns>/goal_pose` | `geometry_msgs/PoseStamped` | out | Walk to a point on the map. Mobile robots only. |
 | `<ns>/task/action` | `std_msgs/String` (JSON) | out | One task action (below). |
 | `<ns>/task/result` | `std_msgs/String` (JSON) | in | One result per action, and one per goal. |
-| `<ns>/task/brief` | `std_msgs/String` (JSON) | in | Latched. `{role, job}`: the robot's job for this scenario. |
+| `<ns>/task/brief` | `std_msgs/String` (JSON) | in | Latched. `{role, job}`: the robot's job for this scenario, plus `forbidden_areas` when the scenario has any (below). |
 
 The stub sim publishes only: clock, odom, bbox_3d, objects, audio/heard, task/result and
 task/brief, and listens on cmd_vel, goal_pose, speech/say and task/action. The Isaac host adds
@@ -50,6 +50,20 @@ commands, the camera, and for a wheeled base that can move `odom` and `cmd_vel` 
 differential drive. Its `camera/bbox_3d` is the same JSON as the stub's: the host turns Isaac's
 camera boxes (world frame, numeric classes) into box centres in the `map` frame with anonymous
 tracks (5 Hz). Isaac drops 3D boxes cut by the image border, so people closer than about 1.5 m, who do not fit the camera's 65 degree vertical view, are added by the host from the world (same shape, `"truncated": true`, within 1.8 m, in the view cone and line of sight). Lidar point clouds and walking legged bases (`cmd_vel` for the G1) are not wired yet.
+
+## Forbidden areas (`task/brief`)
+
+A Studio project can mark rectangles the robot must keep out of (Scene page, "Forbidden area"). They
+come in the latched task brief as polygons in the `map` frame, metres, corners counter-clockwise:
+
+```json
+{"role": "...", "job": "...",
+ "forbidden_areas": [{"id": "fa1", "name": "Resus", "polygon": [[-1.0, 1.0], [2.0, 1.0], [2.0, 3.0], [-1.0, 3.0]]}]}
+```
+
+The key is absent when there are none. Each time the robot's pose goes from outside to inside one, the
+report's `forbidden_area_entries` counts it and lists it with the area's name and time. The built-in G1
+routes round them and is told their names. Isaac does not draw them.
 
 ## Task actions (`task/action`)
 

@@ -194,6 +194,7 @@
     function drawStatic() {
       const p = P();
       S.map.setStaticPatients(p.static_patients ? WZ.site.beds.filter((b) => /^B[1-9][0-9]*$/.test(b.id) && !p.characters.some((c) => c.bed === b.id)) : []);
+      S.map.setAreas(p.forbidden_areas || []);
     }
     function wrap(text, max) {
       const words = String(text).split(/\s+/), lines = [""];
