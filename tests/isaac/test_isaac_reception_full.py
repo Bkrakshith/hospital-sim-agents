@@ -41,7 +41,7 @@ TIMEOUT_S = 5400
 AREA = {"id": "a1", "name": "Wet floor", "x0": 8.0, "y0": 4.6, "x1": 9.5, "y1": 5.5}
 SCRIPT = [
     {"t": 2.0, "who": "V1", "do": "approach", "target": "g1"},
-    {"t": 9.0, "who": "V1", "text": "Excuse me, I'm Priya. I need a nurse, please.", "to": "g1"},
+    {"t": 16.0, "who": "V1", "text": "Excuse me, I'm Priya. I need a nurse, please.", "to": "g1"},  # once she is at the desk
     # Daniel asks from where he stands: a person the script moves ignores their own mind from then on, and his mind
     # is what accepts the robot's offer and follows it
     {"t": 66.0, "who": "V2", "text": "Hello, could you take me to the ward, please?", "to": "g1"},
