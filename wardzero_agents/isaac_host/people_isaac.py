@@ -32,6 +32,17 @@ ASSETS_ROOT = Path(os.environ.get("ISAAC_ASSETS_ROOT", Path.home() / "isaacsim_a
 MOTION_LIBRARY = "Isaac/People/MotionLibrary/HumanMotionLibrary.usd"
 CHARACTERS_ROOT = "/World/Characters"
 SEATS_ROOT = "/World/Seats"
+STAFF_CHAIRS_ROOT = "/World/StaffChairs"
+# the hospital's office chair (SM_Chair_04a, the one inside the reception counter); its front is +x
+STAFF_CHAIR_REL = "assets/isaac/Isaac/Environments/Hospital/Props/SM_Chair_04a.usd"
+STAFF_CHAIR_YAW_OFFSET_DEG = 0.0
+
+
+def staff_chair_usd() -> "Optional[Path]":
+    """The office chair asset next to the hospital stage (hospital-sim-env/isaac/<STAFF_CHAIR_REL>), or None."""
+    from .stage import STAGE_USD
+    p = Path(STAGE_USD).resolve().parents[1] / STAFF_CHAIR_REL
+    return p if p.exists() else None
 STATIC_ROOT = "/World/StaticPatients"
 SEAT_HIPS_Z = 0.62  # sit effector 6 cm above the 0.56 m cushion top of the lobby chairs (spike S1 Q2)
 BED_FLAT_Z = 1.0  # mattress top of SM_HospitalBed_01b (measured from its mesh: 0.80 to 1.00, flat part)
@@ -449,6 +460,28 @@ class IsaacPeople:
             hips.AddTransformOp().Set(Gf.Matrix4d(0, 1, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0.0, 0.0, SEAT_HIPS_Z, 1))
             eff.CreateRelationship("behavior:task:effectorHips").SetTargets([hips.GetPath()])
             prim.CreateRelationship("behavior:task:effectors").SetTargets([eff.GetPath()])
+            if getattr(seat, "staff_only", False):
+                self._staff_chair(sid, seat)
+
+    def _staff_chair(self, sid: str, seat) -> Optional[str]:
+        """A staff seat (the receptionist's R1) has no chair in the stage: the hospital's own office chair goes there,
+        facing the way the sitter faces, out of the NavMesh (she walks into it to sit)."""
+        import NavSchema
+        import omni.kit.commands
+        from pxr import Gf, Sdf, UsdGeom
+
+        usd = staff_chair_usd()
+        if usd is None:
+            log.warning("seat %s: no chair asset (%s); she sits on nothing", sid, STAFF_CHAIR_REL)
+            return None
+        path = f"{STAFF_CHAIRS_ROOT}/{sid}"
+        xf = UsdGeom.Xform.Define(self.stage, path)
+        xf.GetPrim().GetReferences().AddReference(str(usd))
+        xf.AddTranslateOp().Set(Gf.Vec3d(seat.x, seat.y, 0.0))
+        xf.AddRotateZOp().Set(math.degrees(seat.yaw) + STAFF_CHAIR_YAW_OFFSET_DEG)
+        omni.kit.commands.execute("ApplyNavMeshAPICommand", prim_path=Sdf.Path(path), api=NavSchema.NavMeshExcludeAPI)
+        log.info("staff chair at seat %s (%.2f, %.2f)", sid, seat.x, seat.y)
+        return path
 
     def _lying(self, pid: str, p, world: "StubWorld") -> None:
         """A patient in a bed: a posed character on the mattress, no Behavior System (so no animation)."""

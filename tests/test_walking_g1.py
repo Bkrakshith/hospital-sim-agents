@@ -452,3 +452,19 @@ def test_a_walking_g1_route_keeps_out_of_a_forbidden_area_with_its_band_and_leav
     iy, ix = grid.to_cell(12.0, 4.0)
     assert blocked._raw[iy][ix]  # ... and the leaf
     assert body.set_goal(8.0, 4.0) is False  # a goal inside the area is refused
+
+
+def test_at_its_post_the_follow_camera_eases_to_the_desk_view_and_back():
+    from wardzero_agents.isaac_host import recording as R
+    post = (1.05, 1.62, -math.pi / 2)
+    cam = R.ChaseCam(post=post)
+    eye, target = cam.update(post)
+    assert (eye, target) == R.follow_view(post, R.START_VIEW_FRAMING)  # starts on the post view: robot and visitor
+    assert eye[1] < post[1]  # in front of the robot (it faces the lobby, -y), not behind the counter
+    for _ in range(10):
+        cam.update((post[0] + 2.0, post[1], 0.0))  # walking away
+    assert 0 < cam.w < 1
+    for _ in range(40):
+        eye, target = cam.update((post[0] + 2.0, post[1], 0.0))
+    assert cam.w == 0.0 and eye == pytest.approx(R.chase_view((cam.x, cam.y, cam.yaw))[0])
+    assert R.ChaseCam().update((0, 0, 0)) == R.chase_view((0, 0, 0))  # no post: the plain chase camera

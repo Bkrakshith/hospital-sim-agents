@@ -400,9 +400,10 @@ class IsaacHost:
             return
         if self.robot is not None:  # the follow camera, behind and above the robot; desk and overhead stay selectable
             try:
+                r = self.loaded.scenario.robot
                 self.cams = recording.HeadedCameras(self.stage, list(self.plan.rects.values()) or
                                                     [tuple(self.loaded.site.bounds[i] for i in (0, 2, 1, 3))],
-                                                    self.robot.pose, (1280, 720))
+                                                    self.robot.pose, (1280, 720), post=(r.x, r.y, r.yaw))
                 self.cams.start()
                 return
             except Exception as exc:  # a nicety only: fall back to the fixed view

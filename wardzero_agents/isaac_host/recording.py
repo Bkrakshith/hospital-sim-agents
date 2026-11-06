@@ -182,12 +182,26 @@ def _wrap(a: float) -> float:
     return math.atan2(math.sin(a), math.cos(a))
 
 
-class ChaseCam:
-    """A smoothed third-person camera behind and above a pose. ``update(pose)`` once a frame returns (eye, target)."""
+POST_RADIUS_M = 0.6  # the robot counts as at its post within this distance of it
+POST_BLEND_PER_FRAME = 0.04  # how fast the camera eases between the post view and the chase view (about 1 s at 25 fps)
 
-    def __init__(self, framing: tuple = CHASE, pos_alpha: float = CHASE_POS_ALPHA, yaw_alpha: float = CHASE_YAW_ALPHA):
+
+class ChaseCam:
+    """A smoothed third-person camera behind and above a pose. ``update(pose)`` once a frame returns (eye, target).
+
+    With a ``post`` (x, y, yaw), while the robot stands at its post the camera eases to the post view instead: the desk
+    framing in front of the robot, high and wide enough for the robot and the person talking to it (from behind, the
+    reception counter the G1 stands in front of hides it). Walking away, it eases back to the chase view."""
+
+    def __init__(self, framing: tuple = CHASE, pos_alpha: float = CHASE_POS_ALPHA, yaw_alpha: float = CHASE_YAW_ALPHA,
+                 post: Optional[tuple] = None):
         self.framing, self.pos_alpha, self.yaw_alpha = framing, pos_alpha, yaw_alpha
         self.x = self.y = self.yaw = None
+        self.post = post
+        self.w = None  # 1: post view, 0: chase view
+
+    def at_post(self, pose: tuple) -> bool:
+        return self.post is not None and math.hypot(pose[0] - self.post[0], pose[1] - self.post[1]) < POST_RADIUS_M
 
     def update(self, pose: tuple) -> tuple[tuple, tuple]:
         x, y, yaw = (float(v) for v in pose)
@@ -197,7 +211,18 @@ class ChaseCam:
             self.x += self.pos_alpha * (x - self.x)
             self.y += self.pos_alpha * (y - self.y)
             self.yaw = _wrap(self.yaw + self.yaw_alpha * _wrap(yaw - self.yaw))
-        return chase_view((self.x, self.y, self.yaw), self.framing)
+        eye, target = chase_view((self.x, self.y, self.yaw), self.framing)
+        if self.post is None:
+            return eye, target
+        want = 1.0 if self.at_post(pose) else 0.0
+        self.w = want if self.w is None else self.w + max(-POST_BLEND_PER_FRAME, min(POST_BLEND_PER_FRAME,
+                                                                                       want - self.w))
+        if self.w <= 0.0:
+            return eye, target
+        p_eye, p_target = follow_view(self.post, START_VIEW_FRAMING)
+        k = self.w * self.w * (3 - 2 * self.w)  # smoothstep
+        mix = lambda a, b: tuple(u + k * (v - u) for u, v in zip(a, b))  # noqa: E731
+        return mix(eye, p_eye), mix(target, p_target)
 
 
 def chase_view(pose: tuple, framing: tuple = CHASE) -> tuple[tuple, tuple]:
@@ -258,9 +283,10 @@ class HeadedCameras:
     frame), ``view_desk`` (the fixed desk framing at the robot's post) and ``view_overhead`` (the kept rooms from
     above). All three are USD cameras, so Kit's camera menu offers them. Recording has its own cameras."""
 
-    def __init__(self, stage, rects: Sequence[tuple], robot_pose, res: tuple[int, int] = DEFAULT_RES):
+    def __init__(self, stage, rects: Sequence[tuple], robot_pose, res: tuple[int, int] = DEFAULT_RES,
+                 post: Optional[tuple] = None):
         self.stage, self.rects, self.robot_pose, self.res = stage, list(rects), robot_pose, res
-        self.chase = ChaseCam()
+        self.chase = ChaseCam(post=post)
         self.paths: dict[str, str] = {}
         self._follow_op = None
         self.updates = 0
