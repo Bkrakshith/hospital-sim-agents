@@ -1,6 +1,7 @@
 """8-connected A* over the occupancy grid with clearance inflation and string-pulling."""
 from __future__ import annotations
 
+import copy
 import heapq
 import math
 from collections import OrderedDict
@@ -71,8 +72,8 @@ class Router:
                     cx, cy = g.to_world(iy, ix)
                     if x0 <= cx <= x1 and y0 <= cy <= y1:
                         raw[iy, ix] = True
-        out = Router.__new__(Router)
-        out.grid, out._size, out.version = g, self._size, 0
+        out = copy.copy(self)  # keeps any other settings; the cell tables and the cache are its own
+        out.version = 0
         out._raw = raw.tolist()
         out._near = out._inflate(raw, CLEARANCE).tolist()
         out._b = out._raw
