@@ -76,19 +76,38 @@ G1_CLAUDE = RobotProfile(
 PROFILES = {G1_CLAUDE.name: G1_CLAUDE}
 
 # THE SWITCH for the built-in G1's legs. In Quick 2D (the stub) the G1 walks as a simple moving body on the same routes.
-# In Isaac Sim it stays on its fixed post until the walking controller (NVIDIA GEAR-SONIC) lands in the host: then set
-# this True (or WARDZERO_G1_WALKS_IN_ISAAC=1 for a trial) and the G1 becomes can_move=True, base "legged" there too.
-G1_WALKS_IN_ISAAC = os.environ.get("WARDZERO_G1_WALKS_IN_ISAAC") == "1"
+# In Isaac Sim it walks (NVIDIA GEAR-SONIC in the host) when the SONIC weights are on this machine
+# (`python scripts/fetch_sonic.py`, checked by `hhumans doctor`); without them it stands at its post.
+# WARDZERO_G1_WALKS_IN_ISAAC=0 or 1 forces the Isaac side either way.
+G1_WALK_SPEED = 0.6  # m/s: SONIC's SLOW_WALK as the gate test drove it (the ankles saturate more in WALK mode)
+
+
+def g1_walks_in_isaac() -> bool:
+    env = os.environ.get("WARDZERO_G1_WALKS_IN_ISAAC", "").strip()
+    if env in ("0", "1"):
+        return env == "1"
+    from ..isaac_host.sonic.weights import missing_files  # pure Python: no onnxruntime, no Kit
+    return not missing_files()
+
+
+def g1_static_reason() -> str:
+    """Why the built-in G1 stands still in Isaac Sim, and the fix (for logs and the run's output)."""
+    from ..isaac_host.sonic.weights import resolve_dir
+    if os.environ.get("WARDZERO_G1_WALKS_IN_ISAAC", "").strip() == "0":
+        return "WARDZERO_G1_WALKS_IN_ISAAC=0 keeps the G1 at its post in Isaac Sim."
+    return (f"The G1 stands at its post in Isaac Sim: the GEAR-SONIC walking controller weights are not in "
+            f"{resolve_dir()}. Run `python scripts/fetch_sonic.py` in hospital-sim-agents (or set WARDZERO_SONIC_DIR).")
 
 
 def profile_for_sim(profile: RobotProfile, sim: str) -> RobotProfile:
-    """The profile the robot's mind works with in this simulator. Only the built-in G1 changes: it walks in Quick 2D,
-    and in Isaac only when G1_WALKS_IN_ISAAC is on. Other robots keep what their robot.yaml says."""
+    """The profile the robot's mind and body work with in this simulator. Only the built-in G1 changes: it walks in
+    Quick 2D, and in Isaac when g1_walks_in_isaac(). Other robots keep what their robot.yaml says."""
     if profile.name != G1_NAME or profile.can_move:
         return profile
-    if sim == "isaac" and not G1_WALKS_IN_ISAAC:
+    if sim == "isaac" and not g1_walks_in_isaac():
         return profile
-    return dataclasses.replace(profile, can_move=True, base="legged")
+    return dataclasses.replace(profile, can_move=True, base="legged",
+                              max_speed=G1_WALK_SPEED if sim == "isaac" else profile.max_speed)
 
 
 def get_profile(name: str) -> RobotProfile:

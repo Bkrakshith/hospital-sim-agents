@@ -24,6 +24,7 @@ class Router:
 
     def __init__(self, grid: OccGrid, clearance: float = CLEARANCE, cache_size: int = 4096):
         self.grid = grid
+        self.clearance = float(clearance)  # kept: block() and with_rects_blocked() rebuild the band with it
         occ = grid.occ.astype(bool)
         near = self._inflate(occ, clearance)
         self._raw = occ.tolist()
@@ -55,13 +56,14 @@ class Router:
             for dx in range(-n, n + 1):
                 if dy * dy + dx * dx <= (radius / g.res) ** 2 and g.in_grid(iy + dy, ix + dx):
                     self._raw[iy + dy][ix + dx] = True
-        self._near = self._inflate(np.array(self._raw, dtype=bool), CLEARANCE).tolist()
+        self._near = self._inflate(np.array(self._raw, dtype=bool), self.clearance).tolist()
         self._cache.clear()
         self.version += 1
 
     def with_rects_blocked(self, rects) -> "Router":
-        """A new router with this one's blocked cells plus every cell whose centre is inside one of the
-        rectangles (x0, y0, x1, y1): forbidden areas only the robot keeps out of."""
+        """A new router with this one's blocked cells (anything block_segments or block put in, door leaves
+        included) plus every cell whose centre is inside one of the rectangles (x0, y0, x1, y1): forbidden
+        areas only the robot keeps out of. It keeps this router's clearance band (0.6 m for the walking G1)."""
         g = self.grid
         raw = np.array(self._raw, dtype=bool)
         for x0, y0, x1, y1 in rects:
@@ -75,7 +77,7 @@ class Router:
         out = copy.copy(self)  # keeps any other settings; the cell tables and the cache are its own
         out.version = 0
         out._raw = raw.tolist()
-        out._near = out._inflate(raw, CLEARANCE).tolist()
+        out._near = out._inflate(raw, self.clearance).tolist()
         out._b = out._raw
         out._cache = OrderedDict()
         return out

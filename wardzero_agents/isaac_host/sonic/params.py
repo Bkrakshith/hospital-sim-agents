@@ -72,6 +72,10 @@ EFFORT_SONIC = np.array([139, 139, 88, 139, 50, 50, 139, 139, 88, 139, 50, 50, 8
 # Our G1 rev 1.0 URDF: hip pitch 7520-14 (88 N m), ankles and waist roll/pitch 35 N m.
 EFFORT_OURS = np.array([88, 139, 88, 139, 35, 35, 88, 139, 88, 139, 35, 35, 88, 35, 35,
                         25, 25, 25, 25, 25, 5, 5, 25, 25, 25, 25, 25, 5, 5], float)
+# ... and its armature (g1-isaac-sim joints.json): SONIC's, except hip pitch on the 7520-14 motor. Effort B of the Isaac
+# gate test (research_notes/isaac_host/sonic_isaac_report.md): it passed T1-T5 with these two arrays.
+ARMATURE_OURS = ARMATURE.copy()
+ARMATURE_OURS[[0, 6]] = ARM_7520_14
 
 DEFAULT_ANGLES = np.array([
     -0.312, 0.0, 0.0, 0.669, -0.363, 0.0,

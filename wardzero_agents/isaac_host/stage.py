@@ -354,8 +354,9 @@ def open_stage(app, path: Path):
     return ctx.get_stage()
 
 
-def add_physics_scene(stage) -> str:
-    """CPU PhysX with the MBP broadphase (S1b: GPU dynamics waits ~50 ms/frame on one articulation)."""
+def add_physics_scene(stage, steps_per_s: Optional[int] = None) -> str:
+    """CPU PhysX with the MBP broadphase (S1b: GPU dynamics waits ~50 ms/frame on one articulation). steps_per_s: the
+    physics rate (200 for the walking G1, whose controller runs PD every 5 ms); None leaves PhysX's default."""
     from pxr import PhysxSchema, UsdPhysics
 
     scene = next((p for p in stage.Traverse() if p.IsA(UsdPhysics.Scene)), None)
@@ -364,6 +365,8 @@ def add_physics_scene(stage) -> str:
     ps = PhysxSchema.PhysxSceneAPI.Apply(scene)
     ps.CreateEnableGPUDynamicsAttr(False)
     ps.CreateBroadphaseTypeAttr("MBP")
+    if steps_per_s:
+        ps.CreateTimeStepsPerSecondAttr(int(steps_per_s))
     return str(scene.GetPath())
 
 

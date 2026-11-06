@@ -73,12 +73,12 @@ class AreaRouter:
     def inside(self, x: float, y: float) -> Optional[ForbiddenArea]:
         return next((a for a in self.areas if a.contains(x, y)), None)
 
-    def route(self, a: tuple, b: tuple):
+    def route(self, a: tuple, b: tuple, avoid=()):
+        """avoid: (x, y, r) discs to keep out of if possible (people in the way), as Router.route takes."""
         if self.inside(*b[:2]) is not None:
             return None
-        if self.inside(*a[:2]) is not None:
-            return self.base.route(a, b)
-        return self._router().route(a, b)
+        r = self.base if self.inside(*a[:2]) is not None else self._router()
+        return r.route(a, b, avoid) if avoid else r.route(a, b)
 
     def is_free(self, x: float, y: float) -> bool:
         return self.inside(x, y) is None and self.base.is_free(x, y)

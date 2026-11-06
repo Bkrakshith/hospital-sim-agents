@@ -254,14 +254,16 @@ from wardzero_agents.robots import profile as prof  # noqa: E402
 from wardzero_agents.robots.claude_robot import RobotMind, decision_outputs, parse_decision  # noqa: E402
 
 
-def test_the_g1_walks_in_quick_2d_and_stays_on_its_post_in_isaac(monkeypatch):
+def test_the_g1_walks_in_quick_2d_and_in_isaac_only_with_sonic(monkeypatch):
     g1 = prof.G1_CLAUDE
     assert g1.can_move is False  # the profile itself is unchanged
     stub = prof.profile_for_sim(g1, "stub")
-    assert stub.can_move and stub.base == "legged"
+    assert stub.can_move and stub.base == "legged" and stub.max_speed == g1.max_speed
+    monkeypatch.setenv("WARDZERO_G1_WALKS_IN_ISAAC", "0")
     assert prof.profile_for_sim(g1, "isaac") is g1
-    monkeypatch.setattr(prof, "G1_WALKS_IN_ISAAC", True)
-    assert prof.profile_for_sim(g1, "isaac").can_move
+    assert prof.profile_for_sim(g1, "stub").can_move  # the switch is about Isaac only
+    monkeypatch.setenv("WARDZERO_G1_WALKS_IN_ISAAC", "1")
+    assert prof.profile_for_sim(g1, "isaac").can_move and prof.profile_for_sim(g1, "isaac").max_speed == 0.6
     other = prof.RobotProfile(**{**g1.__dict__, "name": "cart", "controller": "external"})
     assert prof.profile_for_sim(other, "stub") is other
 

@@ -169,8 +169,9 @@ def check_one_time_base(run: Path, bag: Path) -> dict:
     """What the robot hears is on one time base: /clock (published once per frame from svc.t plus Isaac's start-up offset),
     tf-side joint stamps and camera_info stamps agree, never repeat and never go back. The run's own streams stay on svc.t."""
     run_t = [r for r in stream(run, "host") if r.get("kind") == "final"][-1]["t"]  # the service's time at the end
-    off = next(r for r in stream(run, "host") if r.get("kind") == "startup")["robot_clock_offset_s"]
-    frame = 1 / 30
+    start = next(r for r in stream(run, "host") if r.get("kind") == "startup")
+    off = start["robot_clock_offset_s"]
+    frame = 1 / start.get("fps", 30)  # 25 fps with the walking G1 (physics 200 Hz in whole steps a frame)
     clock = bag_stamps(bag, "/clock")
     assert len(clock) >= SECONDS * 25, len(clock)
     # strictly increasing (the very last message repeats the final time: the scenario's end holds the clock at its length)

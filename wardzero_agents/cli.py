@@ -464,6 +464,7 @@ def _start_live(args, loaded, overrides: dict, meta: dict, out: Optional[dict] =
                      ("project_id", getattr(args, "project_id", None))):
         if val is not None:  # the Isaac host also gets robot_domain; the Studio lists runs by project_id
             meta[key] = val
+    _say_if_g1_static(sim, loaded, args)
     if os.environ.get("WARDZERO_TEST_SCRIPTED_SAY"):
         err("WARNING: WARDZERO_TEST_SCRIPTED_SAY is set. Scripted lines are injected into this run, so it is a "
             "test of the pipeline and not a real run of any robot or person.")
@@ -493,6 +494,16 @@ def _start_live(args, loaded, overrides: dict, meta: dict, out: Optional[dict] =
     if sim == "isaac" and args.record and not getattr(args, "no_voice", False) and code in (0, 130):
         _post_voice(run_dir)
     return code
+
+
+def _say_if_g1_static(sim: str, loaded, args) -> None:
+    """In Isaac Sim the built-in G1 walks only with the GEAR-SONIC weights: say so once when it will not."""
+    r = loaded.scenario.robot
+    if sim != "isaac" or getattr(args, "no_robot", False) or not r.enabled:
+        return
+    from .robots.profile import G1_NAME, g1_static_reason, g1_walks_in_isaac
+    if r.profile == G1_NAME and not g1_walks_in_isaac():
+        print(f"NOTE: {g1_static_reason()}", flush=True)
 
 
 def _sim_child(args, rd: str, sp: str, ts: float, ready: float) -> Child:
