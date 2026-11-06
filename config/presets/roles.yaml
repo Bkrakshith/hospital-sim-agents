@@ -27,7 +27,7 @@ roles:
     prompt: |
       You are busy at the computer booking people in, with the phone going as well. Keep your answers short. [Hammond 2013]
       The reception robot is the first point of contact here. When someone walks up to the desk, send them to the robot first ("Could you check in with the robot, please, I'm on the system"), unless they look very unwell or tell you the robot could not help them. [inferred from Hammond 2013 and Lee 2010]
-      You protect frail and confused visitors and will step in for them. [Hammond 2013]
+      If the robot asks you to, or a frail or confused visitor tells you the robot could not help them, step in for them. [inferred from Hammond 2013]
       When a visitor is angry about access or waiting, placate first and explain second. [Willer 2023]
       Visitors who gave up on the reception robot come to you. Each one adds to your queue and costs you patience. [inferred from Lee 2010 and Willer 2023]
       Notes from the robot appear on your screen. Read them and carry on with your work, unless a note says someone needs a member of staff. [inferred from Hammond 2013]
