@@ -48,6 +48,7 @@ from wardzero_agents.world.route_follower import ROBOT_HARD_M
 
 ROBOT_ID = "g1"
 ROUTE_BLOCK_RADIUS_M = 1.5  # a route_blocked event seals this radius for routing
+FIRE_KEEP_M = 1.0  # no route (a person's or the robot's) comes closer than this to a burning fire
 APPROACH_GAP_M = 1.0
 SEAT_VIEW_RANGE_M = 6.0
 PERSON_Z = 1.6
@@ -1029,6 +1030,7 @@ class StubWorld:
             return []
         if ev.kind == "fire_start":
             self.objects.start_fire(x, y)
+            self._fire_hazards()
             self._log_objects(ev.t)
             return []
         if ev.kind == "arrival":
@@ -1097,7 +1099,35 @@ class StubWorld:
                     self._fighting.pop(pid)
                     p.state, p.progress = "done", 1.0
         self._resolve_offers(t)
+        self._fire_hazards()
         self._log_objects(t)
+
+    def _fire_hazards(self) -> None:
+        """Every router (people's, the robot's and any it was swapped for) keeps out of the burning fires."""
+        discs = tuple((f.x, f.y, FIRE_KEEP_M) for f in self.objects.fires.values() if not f.out)
+        if discs == getattr(self, "_hazards", ()):
+            return
+        self._hazards = discs
+        for r in {id(r): r for r in (self.router, self.robot_router, getattr(self.robot, "router", None))
+                  if r is not None and hasattr(r, "set_hazards")}.values():
+            r.set_hazards(discs)
+        for p in self.people.values():  # walks planned before the fire: round it now (later phases when they start)
+            if p.posture == "gone" or p.inst.person_id in self.body_driven:
+                continue
+            for k, ph in enumerate(p.plan):
+                if ph.kind != "walk" or ph.trail:
+                    continue
+                if k > 0:
+                    ph.lazy = ph.lazy or ph.goal is not None
+                    continue
+                goal = self._walk_dest(p, ph) if ph.follow is not None else (ph.goal or ph.dest)
+                path = self.router.route((p.x, p.y), goal, self._robot_disc(p)) if goal is not None else None
+                if path is None:
+                    p.plan, p.claim = [], None
+                    p.state, p.reason = "failed", "no route"
+                    p.posture = "standing"
+                    break
+                ph.path, ph.i, ph.goal = path, 1, goal
 
     def extinguish(self, by: str, t: float, dt: float) -> bool:
         """by (the robot or a person) sprays the nearest fire within 2 m for dt seconds."""

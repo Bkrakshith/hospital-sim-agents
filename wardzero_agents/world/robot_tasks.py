@@ -3,7 +3,8 @@
 An action is a JSON dict {"id", "action", ...} from <ns>/task/action:
   hand_over {item, to: track, place?: [x,y,z]}   an open offer; the result comes when it resolves
   take {item}                                     an unheld item within 0.8 m
-  extinguish {fire}                               sprays until the fire is out (or the robot leaves)
+  extinguish {fire}                               sprays until the fire is out (or the robot leaves); out of range, it
+                                                  first walks to free floor SPRAY_FROM_M from the fire
   press_call {}                                   chimes at the nearest nurse base
   guide_start {track, place, seat?} / guide_stop {}
                                                   walks to the place at the person's pace; the person is offered a walk;
@@ -69,6 +70,7 @@ REACH_SPOT_M = (0.85, 0.75, 0.95)  # walking up to someone with an item in hand:
 PLACE_GRID_M = 0.1  # the hand-over places tried around the receiver, on this grid ...
 PLACE_SEARCH_M = 0.8  # ... out to this far from them
 HAND_OVER_CARD = "robot_hand_over"
+SPRAY_FROM_M = 1.5  # out of range of a fire, extinguish first walks to free floor this far from it
 SEAT_ASIDE_M = 1.0  # showing a seat, the robot stands this far to the side of the seat's front, out of the way in
 # keeping clear of people while it walks (any goal, its own or a task's):
 PERSON_KEEP_M = 0.7  # centre to centre: body radius 0.3 + a person's 0.25 + 0.15 m
@@ -120,6 +122,7 @@ class RobotTasks:
     def __init__(self, world):
         self.world = world
         self._spray: dict[str, str] = {}  # action id -> fire id
+        self._to_fire: dict[str, str] = {}  # action id -> fire id, walking up to it before spraying
         self._guide: Optional[dict] = None
         self._tell: Optional[dict] = None
         self._notes: list[dict] = []  # desk notes not read yet
@@ -266,9 +269,26 @@ class RobotTasks:
         f = w.objects.fires.get(str(msg["fire"]))
         if f is None or f.out:
             return self._result(aid, "extinguish", False, "no_such_fire", t)
-        if math.hypot(f.x - w.robot.x, f.y - w.robot.y) > EXTINGUISH_RANGE_M:
+        if math.hypot(f.x - w.robot.x, f.y - w.robot.y) <= EXTINGUISH_RANGE_M:
+            self._spray[aid] = f.id
+            return
+        if not self.mobile:
             return self._result(aid, "extinguish", False, "out_of_range", t)
-        self._spray[aid] = f.id
+        # walk up to it first (the goal is its own: a result for aid comes when the spraying ends)
+        r = w.robot
+        free = getattr(r.router, "is_clear", None) or getattr(r.router, "is_free", None)
+        spots = []
+        for k in range(16):
+            a = 2 * math.pi * k / 16
+            x, y = f.x + SPRAY_FROM_M * math.cos(a), f.y + SPRAY_FROM_M * math.sin(a)
+            if not w.site.grid.blocked(x, y) and (free is None or free(x, y)) and w._los((x, y), (f.x, f.y)):
+                spots.append((math.hypot(x - r.x, y - r.y), x, y))
+        for _, x, y in sorted(spots)[:6]:
+            if self._set_goal(aid, x, y, math.atan2(f.y - y, f.x - x), t):
+                self._end_guide(t, "superseded")
+                self._to_fire[aid] = f.id
+                return
+        self._result(aid, "extinguish", False, "no_route", t)
 
     def _press_call(self, aid, msg, t) -> None:
         w = self.world
@@ -783,6 +803,15 @@ class RobotTasks:
             gid = self.goal_id
             if not str(gid).startswith(SAFETY):
                 self._goal(gid, ev == "arrived", ev, t)
+            fid = self._to_fire.pop(gid, None)
+            if fid is not None:
+                f = w.objects.fires.get(fid)
+                if ev != "arrived":
+                    self._result(gid, "extinguish", False, ev, t)
+                elif f is None or f.out:
+                    self._result(gid, "extinguish", False, "no_such_fire", t)
+                else:
+                    self._spray[gid] = fid  # in range now: the spraying above reports how it ends
             g = self._guide
             if g is not None and g["id"] == gid and g["phase"] == "walking":
                 if ev == "arrived" and g["seat"] and g["seat_id"] is None and self._to_seat(g, t):
@@ -802,6 +831,23 @@ class RobotTasks:
                 else:
                     self._result(gid, "tell_staff", False, "no_route" if ev == "stuck" else ev, t)
                     self._tell = None
+        hz = getattr(w, "_hazards", ())
+        if hz != getattr(self, "_hazards_seen", ()):  # a fire started or went out: the walk under way goes round it
+            self._hazards_seen = hz
+            if w.robot.has_goal and w.robot._had_goal and self._goal_xy is not None:
+                x, y, yaw, exempt = self._goal_xy
+                if not w.robot.set_goal(x, y, yaw, self._avoid(exempt)):
+                    w.robot.cancel_goal()
+                    self._goal(self.goal_id, False, "no_route", t)
+                    if self._tell is not None and self._tell["id"] == self.goal_id:
+                        self._result(self.goal_id, "tell_staff", False, "no_route", t)
+                        self._tell = None
+                    if self._guide is not None and self._guide["id"] == self.goal_id:
+                        self._end_guide(t, "no_route")
+        for aid in list(self._to_fire):  # its walk was replaced, cancelled or given up: no spraying
+            if self.goal_id != aid or not (w.robot.has_goal and w.robot._had_goal):
+                del self._to_fire[aid]
+                self._result(aid, "extinguish", False, "cancelled", t)
         if self._guide is not None:
             self._guide_step(t, dt)
         if self._notes:

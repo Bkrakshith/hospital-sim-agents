@@ -176,3 +176,77 @@ def test_the_robot_approaches_the_surgeon_from_beside_her_and_can_pass_an_instru
     w.apply_intent(Intent(id="y", person="S1", t=s.t, kind="accept_item"))
     outs = advance(s, 1.0)
     assert [(r["ok"], r["reason"]) for r in results(outs, "h1")] == [(True, "ok")]
+
+
+# ---------- fire ----------
+
+def _near_segment(p, a, b):
+    dx, dy = b[0] - a[0], b[1] - a[1]
+    L2 = dx * dx + dy * dy
+    u = 0.0 if L2 < 1e-12 else max(0.0, min(1.0, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / L2))
+    return math.hypot(p[0] - (a[0] + u * dx), p[1] - (a[1] + u * dy))
+
+
+def _clear_of(path, p, r):
+    return all(_near_segment(p, a, b) >= r for a, b in zip(path, path[1:]))
+
+
+def test_routes_keep_clear_of_a_hazard_disc_and_never_end_in_one():
+    from wardzero_agents.site import Router
+    from wardzero_agents.site.model import load_site
+    r = Router(load_site(CONFIG).grid)
+    fire = (19.0, 14.5)
+    assert not _clear_of(r.route((19.0, 9.0), (19.0, 20.0)), fire, 0.9)  # the corridor's straight way
+    r.set_hazards([(fire[0], fire[1], 1.0)])
+    path = r.route((19.0, 9.0), (19.0, 20.0))
+    assert path is not None and _clear_of(path, fire, 0.9)
+    assert r.route((19.0, 9.0), (19.2, 14.6)) is None  # into the fire
+    assert r.route((19.3, 14.5), (19.0, 9.0)) is not None  # out of it
+    r.set_hazards([])
+    assert not _clear_of(r.route((19.0, 9.0), (19.0, 20.0)), fire, 0.9)
+
+
+def test_a_fire_keeps_people_and_the_robot_away_until_it_is_out(staged, tmp_path):
+    s = sim(staged, "ward_fire", tmp_path)
+    w = s.world
+    fire = (19.0, 14.5)
+    w.apply_world_event(WorldEvent(id="f", t=0.0, kind="fire_start", x=fire[0], y=fire[1]))
+    w.apply_intent(Intent(id="n", person="N1", t=0.0, kind="walk_to", point=[19.0, 9.5]))  # N1 is at (19, 20)
+    n1 = w.people["N1"]
+    assert n1.state == "running" and _clear_of([(n1.x, n1.y)] + list(n1.plan[-1].path), fire, 0.9)
+    s.tasks.goal_pose(19.0, 20.5, 0.0, 0.0)  # the robot, at (19, 9), to the far side
+    assert _clear_of([(w.robot.x, w.robot.y)] + list(w.robot._path), fire, 0.9)
+    w.objects.fires["fire_1"].reduce(1.0)
+    advance(s, 0.2)
+    assert w.router.route((19.0, 9.0), (19.2, 14.6)) is not None
+
+
+def test_extinguish_out_of_range_walks_up_to_the_fire_then_puts_it_out(staged, tmp_path):
+    s = sim(staged, "ward_fire", tmp_path)
+    w = s.world
+    w.apply_world_event(WorldEvent(id="f", t=0.0, kind="fire_start", x=19.0, y=14.5))
+    s.on_task_action({"id": "x1", "action": "extinguish", "fire": "fire_1"})  # from (19, 9): 5.5 m away
+    outs = advance(s, 40.0)
+    res = results(outs, "x1")
+    assert [(r.get("kind", "action"), r["ok"], r["reason"]) for r in res if r.get("kind") != "goal"] == [
+        ("action", True, "ok")]
+    assert w.objects.fires["fire_1"].out
+    assert 1.0 <= math.hypot(w.robot.x - 19.0, w.robot.y - 14.5) <= 2.0
+
+
+def test_a_fire_that_starts_mid_walk_sends_walkers_round_it(staged, tmp_path):
+    s = sim(staged, "ward_fire", tmp_path)
+    w = s.world
+    fire = (19.0, 14.5)
+    w.apply_intent(Intent(id="n", person="N1", t=0.0, kind="walk_to", point=[19.0, 9.5]))
+    s.tasks.goal_pose(19.0, 20.5, 0.0, 0.0)
+    advance(s, 0.5)
+    w.apply_world_event(WorldEvent(id="f", t=s.t, kind="fire_start", x=fire[0], y=fire[1]))
+    advance(s, 0.2)
+    n1 = w.people["N1"]
+    assert n1.state == "running" and _clear_of([(n1.x, n1.y)] + list(n1.plan[-1].path[n1.plan[-1].i:]), fire, 0.9)
+    assert _clear_of([(w.robot.x, w.robot.y)] + list(w.robot._path), fire, 0.9)
+    seen = []
+    for o in advance(s, 30.0):
+        seen.append(min(math.hypot(n1.x - fire[0], n1.y - fire[1]), math.hypot(w.robot.x - fire[0], w.robot.y - fire[1])))
+    assert min(seen) >= 0.85
