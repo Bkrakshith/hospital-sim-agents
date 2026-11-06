@@ -138,10 +138,12 @@ class RobotTasks:
         self._goal_n = 0
         self._out = TaskOutputs()
         # False when the robot's body cannot walk (the Isaac G1 before its walking controller): tell_staff then
-        # speaks from where the robot stands, and nothing turns it or sends it back to its post
+        # speaks from where the robot stands (the staff locator does not walk it to the staff member), and nothing
+        # turns it or sends it back to its post
         self.mobile = True
         rc = getattr(getattr(getattr(world, "loaded", None), "scenario", None), "robot", None)
         self.post = (rc.x, rc.y, rc.yaw) if rc is not None else tuple(world.robot.pose)
+        self._hazards_seen = (getattr(world, "_hazards", ()), self._router_version())
 
     def _result(self, aid, action, ok, reason, t) -> None:
         self._out.results.append({"id": aid, "action": action, "ok": ok, "reason": reason, "t": t})
@@ -752,6 +754,12 @@ class RobotTasks:
                     return
 
     # ---- goals ---------------------------------------------------------------------------
+    def _router_version(self):
+        """The robot's router's version (it goes up when a route is blocked); a wrapping router reports its base's."""
+        rr = getattr(self.world.robot, "router", None)
+        v = getattr(rr, "version", None)
+        return v if v is not None else getattr(getattr(rr, "base", None), "version", 0)
+
     def goal_pose(self, x, y, yaw, t) -> None:
         """A goal_pose command; no route is reported as a goal result."""
         self._goal_n += 1
@@ -856,8 +864,8 @@ class RobotTasks:
                 else:
                     self._result(gid, "tell_staff", False, "no_route" if ev == "stuck" else ev, t)
                     self._tell = None
-        hz = getattr(w, "_hazards", ())
-        if hz != getattr(self, "_hazards_seen", ()):  # a fire started or went out: the walk under way goes round it
+        hz = (getattr(w, "_hazards", ()), self._router_version())
+        if hz != self._hazards_seen:  # a fire started or went out, or a route was blocked: the walk under way goes round
             self._hazards_seen = hz
             if w.robot.has_goal and w.robot._had_goal and self._goal_xy is not None:
                 x, y, yaw, exempt = self._goal_xy
