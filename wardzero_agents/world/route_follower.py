@@ -10,6 +10,12 @@ yaw angles. It walks facing the next waypoint, slows to 0.3 m/s within 1.5 m of 
 otherwise), turns in place (IDLE with a facing) when the waypoint is far off to the side, and ends with
 ``arrived``, ``stuck`` (no progress for 5 s of sim time) or ``fell``.
 
+Cross-track correction: the robot steers at a point ``lookahead`` metres ahead of its foot on the current route segment
+(pure pursuit), not at the waypoint itself, so a robot pushed off the line (a desk corner, a sideways drift of the
+walking gait) walks back onto it instead of cutting the corner. Give the follower a Router with a clearance band
+wider than the robot's half-width with arms (``G1_CLEARANCE_M`` for the G1): the gate test's G1 rubbed along the end
+of the reception desk on a 0.3 m clearance route.
+
 The heading loop is closed on the measured yaw. SONIC's planner turns by about 90 % of the step between its
 current heading and a new facing (an in-place 90 deg turn stops at 81 deg), so once the robot has stopped turning
 with more than ``yaw_tol`` left, the facing is re-issued from the measured yaw: ``yaw + correct_gain * error``.
@@ -40,6 +46,10 @@ SETTLE_S = 0.6  # the robot counts as no longer turning when its yaw moved < SET
 SETTLE_YAW = math.radians(2)
 CORRECT_GAIN = 1.2  # over-asks a little, since the planner delivers ~90 % of a facing step
 RETARGET = math.radians(4)
+LOOKAHEAD_M = 0.8  # pure-pursuit point ahead on the route segment (cross-track correction)
+# route clearance band for the walking G1 (half-width with arms ~0.35 m). The band is soft and the map's cells are
+# 0.2 m, so a 0.45 m band still let the route pass 0.31 m from the end of the reception desk; 0.6 keeps it >= 0.44 m
+G1_CLEARANCE_M = 0.6
 
 FOLLOWING, TURNING, ARRIVED, STUCK, FELL, NO_GOAL = "following", "turning", "arrived", "stuck", "fell", "no_goal"
 RESULTS = (ARRIVED, STUCK, FELL)
@@ -68,14 +78,17 @@ class RouteFollower:
                  slow_radius: float = SLOW_RADIUS, arrive_m: float = ARRIVE_M, waypoint_m: float = WAYPOINT_M,
                  stuck_s: float = STUCK_S, stuck_m: float = STUCK_M, yaw_tol: float = YAW_TOL,
                  turn_in_place: float = TURN_IN_PLACE, walk_again: float = WALK_AGAIN, settle_s: float = SETTLE_S,
-                 correct_gain: float = CORRECT_GAIN, retarget: float = RETARGET) -> None:
+                 correct_gain: float = CORRECT_GAIN, retarget: float = RETARGET,
+                 lookahead: float = LOOKAHEAD_M) -> None:
         self.router = router
         self.open_speed, self.slow_speed, self.slow_radius = open_speed, slow_speed, slow_radius
         self.arrive_m, self.waypoint_m = arrive_m, waypoint_m
         self.stuck_s, self.stuck_m = stuck_s, stuck_m
         self.yaw_tol, self.turn_in_place, self.walk_again = yaw_tol, turn_in_place, walk_again
         self.settle_s, self.correct_gain, self.retarget = settle_s, correct_gain, retarget
+        self.lookahead = lookahead
         self.path: list[tuple[float, float]] = []
+        self._prev: Optional[tuple[float, float]] = None  # start of the current route segment
         self.final_yaw: Optional[float] = None
         self.result: Optional[str] = None
         self._event: Optional[str] = None
@@ -89,13 +102,21 @@ class RouteFollower:
         self._anchor: Optional[tuple[float, float, float, float]] = None  # x, y, yaw, t
 
     # ---- goals -------------------------------------------------------------------------------
-    def set_goal(self, start: Sequence[float], goal: Sequence[float], final_yaw: Optional[float] = None) -> bool:
-        """Route from start (x, y) to goal (x, y) with the Router. False (and no goal) when there is none."""
-        route = self.router.route((start[0], start[1]), (goal[0], goal[1])) if self.router is not None else None
+    def set_goal(self, start: Sequence[float], goal: Sequence[float], final_yaw: Optional[float] = None,
+                 avoid=()) -> bool:
+        """Route from start (x, y) to goal (x, y) with the Router. False (and no goal) when there is none.
+        avoid: (x, y, r) discs to keep out of, passed on to a Router that takes them."""
+        if self.router is None:
+            route = None
+        elif avoid:
+            route = self.router.route((start[0], start[1]), (goal[0], goal[1]), avoid)
+        else:
+            route = self.router.route((start[0], start[1]), (goal[0], goal[1]))
         if route is None:
             self.cancel()
             return False
         self.set_route(route[1:] or [tuple(goal[:2])], final_yaw)
+        self._prev = (float(start[0]), float(start[1]))
         return True
 
     def set_route(self, waypoints: Sequence[Sequence[float]], final_yaw: Optional[float] = None) -> None:
@@ -110,6 +131,12 @@ class RouteFollower:
         self.corrections = 0
         self._yaws.clear()
         self._anchor = None
+        self._prev = None
+
+    def reset_progress(self) -> None:
+        """The robot is being held on purpose (waiting for someone): the stuck clock starts again."""
+        self._anchor = None
+        self._yaws.clear()
 
     def cancel(self) -> None:
         """Dropped on purpose: no result event."""
@@ -174,9 +201,11 @@ class RouteFollower:
         if not self._progress(t, x, y, yaw):
             return self._finish(STUCK, yaw)
         settled = self._settled(t, yaw)
+        if self._prev is None:
+            self._prev = (x, y)
         while self.path and math.hypot(self.path[0][0] - x, self.path[0][1] - y) < (
                 self.arrive_m if len(self.path) == 1 else self.waypoint_m):
-            self.path.pop(0)
+            self._prev = self.path.pop(0)
         if not self.path:
             if self.final_yaw is None:
                 return self._finish(ARRIVED, yaw)
@@ -189,7 +218,7 @@ class RouteFollower:
             if abs(wrap(self.final_yaw - yaw)) <= self.yaw_tol and settled:
                 return self._finish(ARRIVED, yaw)
             return FollowerCommand(IDLE, 0.0, None, face, TURNING)
-        tx, ty = self.path[0]
+        tx, ty = self.carrot(x, y)
         bearing = math.atan2(ty - y, tx - x)
         err = abs(wrap(bearing - yaw))
         if self._in_place and err <= self.walk_again:
@@ -202,6 +231,24 @@ class RouteFollower:
         slow = near_any(x, y, doors, self.slow_radius) or near_any(x, y, people, self.slow_radius)
         speed = self.slow_speed if slow else self.open_speed
         return FollowerCommand(SLOW_WALK, speed, face, face, FOLLOWING, slow)
+
+
+    def carrot(self, x: float, y: float) -> tuple[float, float]:
+        """The point to steer at: ``lookahead`` ahead of the robot's foot on the current segment, at most its end."""
+        bx, by = self.path[0]
+        if self._prev is None or self.lookahead <= 0:
+            return bx, by
+        ax, ay = self._prev
+        dx, dy = bx - ax, by - ay
+        seg2 = dx * dx + dy * dy
+        if seg2 < 1e-12:
+            return bx, by
+        s = max(0.0, min(1.0, ((x - ax) * dx + (y - ay) * dy) / seg2))
+        seg = math.sqrt(seg2)
+        s2 = s + self.lookahead / seg
+        if s2 >= 1.0:
+            return bx, by
+        return ax + s2 * dx, ay + s2 * dy
 
 
 class UnicycleDrive:
