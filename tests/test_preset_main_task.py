@@ -213,6 +213,9 @@ def test_specimen_robot_reaches_the_porter_with_traffic(staged, tmp_path):
     po1 = w.people["PO1"]
     assert math.hypot(w.robot.x - po1.x, w.robot.y - po1.y) <= 1.1
     assert s.tasks.hand_over_place((w.robot.x, w.robot.y), po1, "specimen_box")[0] is not None
+    # The robot is the one who must try again: its brief says so, since the bed at the door may stop its first walk.
+    job = p.robot_brief["job"]
+    assert "in your way" in job and "try again" in job, job
 
 
 def test_specimen_bed_porters_refuse_the_box(staged):

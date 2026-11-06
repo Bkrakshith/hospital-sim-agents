@@ -9,7 +9,7 @@ duration_min: 10
 arrival_entrance: ward_entrance
 robot_brief:
   role: specimen runner
-  job: Carry the specimen box from the ward nurse base to the porter waiting at the main lift lobby. Hand it to the porter, and share the corridor and lift lobby politely.
+  job: Carry the specimen box from the ward nurse base to the porter waiting at the main lift lobby. Hand it to the porter yourself, and share the corridor and lift lobby politely. If a bed or a person is in your way and your walk stops short, wait a moment and try again, or ask them to let you past; keep the box until the porter takes it.
   items: [specimen box]
   destination: porter_point
   first_contact: false
