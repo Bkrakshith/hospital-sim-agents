@@ -111,11 +111,19 @@ def test_tell_staff_walks_to_the_counter_and_the_receptionist_gets_the_person(re
         person="V1", t=0.0, text="I'm Priya, I need a nurse", addressee="g1"))
     tr = track_of(s, "V1")
     s.on_task_action({"id": "rb1", "action": "tell_staff", "about": tr, "message": "A visitor needs a nurse."})
-    outs = advance(s, 15)
+    outs, at_told = [], None
+    for _ in range(150):
+        outs.append(s.step(0.1))
+        if at_told is None and any(r["id"] == "rb1" for r in results(outs[-1:])):
+            at_told = (w.robot.x, w.robot.y)
     res = [r for r in results(outs) if r["id"] == "rb1"]
     assert res == [{"id": "rb1", "action": "tell_staff", "ok": True, "reason": "told", "t": res[0]["t"]}]
     c = w.site.landmarks["reception_counter"]
-    assert math.hypot(w.robot.x - c.x, w.robot.y - c.y) < 0.2
+    assert math.hypot(at_told[0] - c.x, at_told[1] - c.y) < 0.2  # it told her from the counter ...
+    outs += advance(s, 20)
+    post = s.tasks.post
+    assert math.hypot(w.robot.x - post[0], w.robot.y - post[1]) < 0.3  # ... then walked back to its post
+    assert [r["ok"] for r in results(outs, "goal") if r["id"] == "rb1-return"] == [True]
     nudges = [n for o in outs for n in o.nudges]
     assert [n.person for n in nudges] == ["RCP"] and nudges[0].card == rt.TELL_CARD
     msg = nudges[0].message

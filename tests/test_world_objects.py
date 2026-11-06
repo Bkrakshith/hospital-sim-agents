@@ -147,7 +147,9 @@ def test_person_extinguisher_rate(tmp_path):
     fire.size, fire.grow_per_s = 0.5, 0.0
     p = w.people["P1"]
     p.x, p.y = 3.5, 4.0
+    w.objects.add_item(Item(id="ext_1", kind="extinguisher", label="fire extinguisher", x=3.5, y=4.5, z=0.5))
     w.apply_intent(I("use_extinguisher"))
+    assert w.objects.items["ext_1"].holder == "P1"
     run(w, 1.0)
     assert fire.size == pytest.approx(0.5 - 0.08, abs=1e-6)
 

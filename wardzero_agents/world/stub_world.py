@@ -41,7 +41,7 @@ from wardzero_agents.world.objects import (
     ACCEPT_WINDOW_S, EXTINGUISH_RANGE_M, PERSON_EXTINGUISH_PER_S, ROBOT_EXTINGUISH_PER_S, SURGEON_WINDOW_S, CallBell, Item, WorldObjects,
 )
 from wardzero_agents.world.reach import giver_reach_ok, receiver_zone_ok
-from wardzero_agents.world.oracle import Entity, Pose, visible
+from wardzero_agents.world.oracle import Entity, Pose, bearing_deg, visible, wrap_deg
 from wardzero_agents.world.perception import Tracks, call_light_points
 from wardzero_agents.world.robot_body import CONTACT_MARGIN_M, RobotBody
 from wardzero_agents.world.route_follower import ROBOT_HARD_M
@@ -59,12 +59,14 @@ EPS = 1e-9
 ARRIVE_M = 0.05
 REROUTE_M = 0.5  # an approach re-plans its route once the person it follows has moved this far
 LOS_STEP_M = 0.1
+BEARING_NOISE_DEG = 10.0  # the direction of a voice or cough the robot hears is off by up to this
 STATIC_ROLE = "patient_static"
 STATIC_PERSONA = "static_patient"
 
 PERSON_REACH_Z = (0.5, 1.6)
 GIVE_RANGE_M = 1.5
 TAKE_RANGE_M = 1.2
+EXTINGUISHER_PICK_M = 1.0  # a person picks up a free extinguisher this close before using it
 BELL_DB = 65.0  # carries the length of the ward corridor (heard in full to about 28 m)
 ALARM_DB = 100.0
 APPROACH_KINDS = ("approach", "attend")
@@ -150,6 +152,8 @@ class StubWorld:
     def __init__(self, loaded: LoadedScenario, seed: int):
         self.loaded = loaded
         self.rng = np.random.default_rng(seed)
+        self._ear_rng = np.random.default_rng([seed, 1])  # the noise on the direction of what the robot hears
+        self._pa_blocked: set = set()  # (t, place) of route-block announcements already made
         self.signs: list[Sign] = list(loaded.signs)
         self.last_t = 0.0
         self._wet = 0
@@ -175,6 +179,8 @@ class StubWorld:
         self._responses: dict[str, tuple[str, float]] = {}  # person -> (accept_item|refuse_item, t)
         self._offers: dict[str, dict] = {}  # receiver -> open give_item offer
         self._fighting: dict[str, str] = {}  # person -> fire id they are putting out
+        self._lay_back: dict[str, float] = {}  # person -> when they last lay back in bed
+        self._route_blocks: list[tuple[float, float, float]] = []  # (x, y, r) discs route_blocked sealed
         self._logged_objects = None
         self.people: dict[str, _Person] = {}
         self.body_driven: set[str] = set()  # people whose phases a body ends (see end_phase)
@@ -301,9 +307,19 @@ class StubWorld:
 
     def robot_heard(self, ev: AudioEvent) -> Optional[Heard]:
         """What the robot's microphone hears. A microphone cannot tell who spoke, so the source
-        id (P1, N2, ...) is replaced by "unknown"; the kind of sound is kept."""
-        h = audio.route(ev, self.robot_pose, ROBOT_ID, 0.0, self.rng)
-        return None if h is None else h.model_copy(update={"source_id": "unknown"})
+        id (P1, N2, ...) is replaced by "unknown"; the kind of sound is kept. A person's voice or cough also
+        carries the direction it came from (bearing_deg in the robot's frame, positive = left), give or take
+        BEARING_NOISE_DEG, so the robot can tell which of the people it sees made it."""
+        r = self.robot_pose
+        h = audio.route(ev, r, ROBOT_ID, 0.0, self.rng)
+        if h is None:
+            return None
+        upd: dict = {"source_id": "unknown"}
+        if ev.source_kind in ("person", "cough") and ev.source_id != "bell_robot":  # not its own call chime
+            # its own random stream: the world's draws (and so the rest of a seeded run) are unchanged
+            noise = float(self._ear_rng.uniform(-BEARING_NOISE_DEG, BEARING_NOISE_DEG))
+            upd["bearing_deg"] = round(wrap_deg(bearing_deg(r, ev.x, ev.y) + noise), 1)
+        return h.model_copy(update=upd)
 
     # ---- intents -------------------------------------------------------------------------
     def _fail(self, p: _Person, intent: Intent, reason: str) -> None:
@@ -480,6 +496,10 @@ class StubWorld:
             dest = self._resolve_place(name)
             if dest is None:
                 self._fail(p, intent, "unknown target")
+                return []
+            if any(math.hypot(dest[0] - bx, dest[1] - by) <= br for bx, by, br in self._route_blocks):
+                # the way out itself is blocked: no walking to the free floor beside it and out of the building
+                self._fail(p, intent, "no route")
                 return []
             walk = self._route(p, dest, speed)
             if walk is None:
@@ -1054,13 +1074,26 @@ class StubWorld:
             self._omni.add(sign.id)
             return []
         if ev.kind == "route_blocked":
+            # sealed for everyone: the people's router, the robot's, and any the robot's was swapped for (one that
+            # wraps another, like the forbidden-area router, follows the one it wraps)
             self._blocked += 1
-            self.router.block(x, y, ROUTE_BLOCK_RADIUS_M)
+            self._route_blocks.append((x, y, ROUTE_BLOCK_RADIUS_M))
+            routers = [r for r in self._all_routers() if hasattr(r, "block")]
+            ids = {id(r) for r in routers}
+            for r in routers:
+                if id(getattr(r, "base", None)) not in ids:
+                    r.block(x, y, ROUTE_BLOCK_RADIUS_M)
             sign = Sign(id=f"route_blocked_{self._blocked}", text=ev.text or "Route blocked: do not use",
                         x=x, y=y, z=1.2, facing_yaw=0.0, placeholder=True)
             self.signs.append(sign)
             self._omni.add(sign.id)
-            return []
+            # announced on the PA, so everyone (the robot too) hears which way is blocked
+            rid = self.site.room_at(x, y)
+            where = self.site.rooms[rid].label.split(",")[0] if rid else "this area"
+            if (ev.t, where) in self._pa_blocked:  # several blocks at once in one place: one announcement
+                return []
+            self._pa_blocked.add((ev.t, where))
+            return [self._event(ev.t, "pa", "pa", x, y, 2.5, 80.0, f"Fire: the route through {where} is blocked")]
         if ev.kind == "fire_start":
             self.objects.start_fire(x, y)
             self._fire_hazards()
@@ -1141,15 +1174,20 @@ class StubWorld:
         self._fire_hazards()
         self._log_objects(t)
 
+    def _all_routers(self) -> list:
+        """The people's router, the robot's, and the one the robot's body uses (it may have been swapped), each once."""
+        rs = (self.router, self.robot_router, getattr(self.robot, "router", None))
+        return list({id(r): r for r in rs if r is not None}.values())
+
     def _fire_hazards(self) -> None:
         """Every router (people's, the robot's and any it was swapped for) keeps out of the burning fires."""
         discs = tuple((f.x, f.y, FIRE_KEEP_M) for f in self.objects.fires.values() if not f.out)
         if discs == getattr(self, "_hazards", ()):
             return
         self._hazards = discs
-        for r in {id(r): r for r in (self.router, self.robot_router, getattr(self.robot, "router", None))
-                  if r is not None and hasattr(r, "set_hazards")}.values():
-            r.set_hazards(discs)
+        for r in self._all_routers():
+            if hasattr(r, "set_hazards"):
+                r.set_hazards(discs)
         for p in self.people.values():  # walks planned before the fire: round it now (later phases when they start)
             if p.posture == "gone" or p.inst.person_id in self.body_driven:
                 continue
@@ -1275,8 +1313,24 @@ class StubWorld:
             return []
         if kind == "use_extinguisher":
             f = self.objects.nearest_fire(p.x, p.y)
+            # an extinguisher in hand, or a free one within reach (picked up first, e.g. off the wall)
+            ext = next((i for i in self._held(pid) if i.kind == "extinguisher"), None)
+            if ext is None:
+                free = [i for i in self.objects.items.values() if i.kind == "extinguisher" and i.holder is None
+                        and math.hypot(i.x - p.x, i.y - p.y) <= EXTINGUISHER_PICK_M]
+                if free:
+                    ext = min(free, key=lambda i: math.hypot(i.x - p.x, i.y - p.y))
+                    ext.holder, ext.x, ext.y = pid, p.x, p.y
+                    self._log_objects(t)
+                    if f is None:  # took it off the wall; she sprays once she has walked up to the fire
+                        self._begin(p, intent)
+                        self._finish(p)
+                        return []
             if f is None:
                 self._fail(p, intent, "no fire in reach")
+                return []
+            if ext is None:
+                self._fail(p, intent, "no extinguisher in hand")
                 return []
             self._begin(p, intent)
             self._fighting[pid] = f.id
@@ -1302,9 +1356,14 @@ class StubWorld:
             p.sitting_up = True
         elif kind == "lie_back":
             p.sitting_up = False
+            self._lay_back[pid] = t
         elif kind == "call_bell":
             out += self._ring_bell(p, t)
         elif kind in ("accept_item", "refuse_item"):
+            o = self._offers.get(pid)
+            if kind == "accept_item" and in_bed and not p.sitting_up and o is not None and o["giver"] == ROBOT_ID \
+                    and self._lay_back.get(pid, -math.inf) < o["t"]:
+                p.sitting_up = True  # taking the robot's tray: she sits up for it (one answer is enough)
             self._responses[pid] = (kind, t)
         elif kind == "call_for_help":
             out.append(self.say(pid, intent.text or "Help, I need a nurse here!", intent.addressee, t))

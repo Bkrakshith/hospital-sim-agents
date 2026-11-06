@@ -17,6 +17,7 @@ BOX_STANDING = (0.5, 0.5, 1.7)
 BOX_SEATED = (0.6, 0.6, 1.2)
 BOX_LYING = (1.8, 0.6, 0.5)
 DOOR_LIGHT_OUT_M = 0.3  # a call light over a door shows this far outside the room
+BLOCKED_SIGN = "route_blocked"  # the id prefix of the sign a route_blocked event puts up
 
 
 class Tracks:
@@ -127,7 +128,12 @@ def perceive_objects(world, body: RobotBody) -> dict:
     taken |= {q.claim for q in world.people.values() if q.posture != "gone" and getattr(q, "claim", None)}
     seats = [{"id": c.id, "x": round(c.x, 3), "y": round(c.y, 3), "free": c.id not in taken}
              for c in world.site.seats.values() if not c.staff_only and _in_view(world, body, c.x, c.y)]
-    return {"items": items, "held": held, "beds": beds, "fires": fires, "call_lights": lights, "seats": seats}
+    # a route the scenario blocked (a fire on it): the sign at the block, when the camera can see it
+    blocked = [{"id": sg.id, "x": round(sg.x, 3), "y": round(sg.y, 3), "text": sg.text}
+               for sg in getattr(world, "signs", ()) if str(sg.id).startswith(BLOCKED_SIGN)
+               and _in_view(world, body, sg.x, sg.y)]
+    return {"items": items, "held": held, "beds": beds, "fires": fires, "call_lights": lights, "seats": seats,
+            "blocked": blocked}
 
 
 def world_robot_id(world) -> str:
