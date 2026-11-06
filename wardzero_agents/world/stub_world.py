@@ -68,6 +68,12 @@ ALARM_DB = 100.0
 APPROACH_KINDS = ("approach", "attend")
 ESCORT_GAP_M = 1.0  # the escorted person trails this far behind the one leading
 ADJACENT_M = 0.6  # compartments whose boxes are this close count as neighbours
+FOLLOW_NEAR_M = 1.0  # a person following the robot keeps between these two distances behind it
+FOLLOW_FAR_M = 1.5
+FOLLOW_GAP_M = 1.25  # ... walking up to this far behind when they have fallen back
+FOLLOW_DONE_M = 1.75  # the robot has stopped and the follower is this close: the follow is done
+ROBOT_AVOID_M = 0.75  # people's routes keep this far from where the robot stands, when they can
+STAFF_ROLES = frozenset({"receptionist", "ward_nurse", "staff", "nurse", "porter", "surgeon"})
 ROLE_KINDS = ("give_item", "take_item", "call_for_help", "call_bell", "accept_item", "refuse_item",
               "request_instrument", "reject_item", "take_instrument_self", "use_extinguisher",
               "sit_up_in_bed", "lie_back")
@@ -105,6 +111,7 @@ class _Phase:
     goal: Optional[tuple[float, float]] = None  # the point the path was routed to
     lazy: bool = False  # walk: re-route from wherever the walker is when the phase starts
     carry: Optional[str] = None  # walk: id of a person who is led (escorted) along
+    trail: bool = False  # walk: follow the robot (follow is "g1"), 1.0-1.5 m behind it, until it stops
 
 
 @dataclass
@@ -160,6 +167,7 @@ class StubWorld:
         self._logged_objects = None
         self.people: dict[str, _Person] = {}
         self.body_driven: set[str] = set()  # people whose phases a body ends (see end_phase)
+        self.named: set[str] = set()  # people who have said their own first name aloud
         taken_beds: set[str] = set()
         for inst in loaded.instances:
             if inst.seat is not None:
@@ -260,6 +268,9 @@ class StubWorld:
 
     def say(self, person: str, text: str, addressee: Optional[str], t: float) -> AudioEvent:
         p = self._get(person)
+        first = (p.inst.display_name or "").split(" ")[0]
+        if first and re.search(r"\b" + re.escape(first) + r"\b", text or "", re.I):
+            self.named.add(person)
         return self._event(t, "person", person, p.x, p.y, PERSON_Z, audio.SPEECH_DB, text, addressee)
 
     def robot_say(self, text: str, t: float) -> AudioEvent:
@@ -309,9 +320,15 @@ class StubWorld:
         if not plan:
             self._finish(p)
 
+    def _robot_disc(self) -> tuple:
+        """Where people's routes keep clear of: the robot standing in the way (when the scenario has one)."""
+        if not self.loaded.scenario.robot.enabled:
+            return ()
+        return ((self.robot.x, self.robot.y, ROBOT_AVOID_M),)
+
     def _route(self, p: _Person, goal: tuple[float, float], speed: float,
                follow: Optional[str] = None) -> Optional[_Phase]:
-        path = self.router.route((p.x, p.y), goal)
+        path = self.router.route((p.x, p.y), goal, self._robot_disc())
         if path is None:
             return None
         return _Phase("walk", dest=None if follow else goal, follow=follow, speed=speed, path=path, i=1, goal=goal)
@@ -381,6 +398,12 @@ class StubWorld:
                           carry=intent.target)
             self._begin(p, intent)
             self._start(p, self._stand_phase(p) + [walk, lead])
+        elif kind == "follow":
+            if not self.loaded.scenario.robot.enabled or (intent.target or ROBOT_ID) not in (ROBOT_ID, "robot"):
+                self._fail(p, intent, "unknown target")
+                return []
+            self._begin(p, intent)
+            self._start(p, self._stand_phase(p) + [_Phase("walk", follow=ROBOT_ID, speed=speed, trail=True)])
         elif kind in APPROACH_KINDS:
             tgt = intent.target
             if tgt is None or tgt == intent.person or self._pos(tgt) is None:
@@ -403,6 +426,9 @@ class StubWorld:
                 return []
             if self._seat_taken(seat.id, intent.person):
                 self._fail(p, intent, "seat occupied")
+                return []
+            if seat.staff_only and p.inst.role not in STAFF_ROLES:
+                self._fail(p, intent, "that chair is for staff only")
                 return []
             walk = self._route(p, (seat.x, seat.y), speed)
             if walk is None:
@@ -433,6 +459,12 @@ class StubWorld:
         tp = self._pos(ph.follow)
         if tp is None:
             return None
+        if ph.trail:  # behind the robot: stay put while within the band, else walk up to FOLLOW_GAP_M from it
+            d = math.hypot(p.x - tp[0], p.y - tp[1])
+            if d <= FOLLOW_FAR_M:
+                return p.x, p.y
+            k = FOLLOW_GAP_M / d
+            return tp[0] + (p.x - tp[0]) * k, tp[1] + (p.y - tp[1]) * k
         d = math.hypot(p.x - tp[0], p.y - tp[1])
         if d <= APPROACH_GAP_M:
             return p.x, p.y
@@ -601,6 +633,10 @@ class StubWorld:
                     p.plan.pop(0)
                     self._end_timed(p, ph)
                 continue
+            if ph.trail:  # following the robot: one move per step, and the world says when it is over
+                self._trail(p, ph, rem)
+                rem = 0.0
+                continue
             if ph.follow is not None:
                 dest = self._walk_dest(p, ph)
                 if dest is None:
@@ -671,6 +707,62 @@ class StubWorld:
                 p.posture = "walking"
                 rem = 0.0
         self._settle(p)
+
+    # ---- following the robot ------------------------------------------------------------------
+    def trail_done(self, pid: str) -> bool:
+        """A person following the robot is done: the robot has stopped (no goal: it reached the place, or gave up)
+        and they have caught up with it. Also done when there is no robot."""
+        p = self.people.get(pid)
+        if p is None or not self.loaded.scenario.robot.enabled:
+            return True
+        return not self.robot.has_goal and math.hypot(p.x - self.robot.x, p.y - self.robot.y) <= FOLLOW_DONE_M
+
+    def is_trailing(self, pid: str) -> bool:
+        """The head of this person's plan is following the robot."""
+        p = self.people.get(pid)
+        return p is not None and bool(p.plan) and p.plan[0].kind == "walk" and p.plan[0].trail
+
+    def _trail(self, p: _Person, ph: _Phase, dt: float) -> None:
+        """Keep 1.0-1.5 m behind the robot: stand while within FOLLOW_FAR_M, walk up to FOLLOW_GAP_M when further."""
+        r = self.robot
+        d = math.hypot(p.x - r.x, p.y - r.y)
+        if self.trail_done(p.inst.person_id):
+            p.plan.pop(0)
+            p.posture = "standing"
+            p.yaw = math.atan2(r.y - p.y, r.x - p.x)
+            return
+        if d <= FOLLOW_GAP_M or (p.posture != "walking" and d <= FOLLOW_FAR_M):
+            p.posture = "standing"
+            p.yaw = math.atan2(r.y - p.y, r.x - p.x)
+            ph.goal = None
+            return
+        dest = self._walk_dest(p, ph) if d > FOLLOW_FAR_M else (
+            r.x + (p.x - r.x) * FOLLOW_GAP_M / d, r.y + (p.y - r.y) * FOLLOW_GAP_M / d)
+        if ph.goal is None or ph.i >= len(ph.path) or math.hypot(dest[0] - ph.goal[0], dest[1] - ph.goal[1]) > REROUTE_M:
+            path = self.router.route((p.x, p.y), dest, self._robot_disc())
+            if path is None:
+                p.plan = []
+                p.state, p.reason = "failed", "no route"
+                p.posture = "standing"
+                return
+            ph.path, ph.i, ph.goal = path, 1, dest
+        left = ph.speed * dt
+        while left > EPS and ph.i < len(ph.path):
+            wp = ph.path[ph.i]
+            seg = math.hypot(wp[0] - p.x, wp[1] - p.y)
+            if seg > 1e-6:
+                p.yaw = math.atan2(wp[1] - p.y, wp[0] - p.x)
+            if seg <= left:
+                p.x, p.y = wp
+                left -= seg
+                ph.i += 1
+            else:
+                p.x += (wp[0] - p.x) / seg * left
+                p.y += (wp[1] - p.y) / seg * left
+                left = 0.0
+            if math.hypot(p.x - r.x, p.y - r.y) <= FOLLOW_GAP_M:
+                break
+        p.posture = "walking"
 
     def step(self, t: float) -> None:
         if t <= self.last_t:
@@ -767,6 +859,7 @@ class StubWorld:
             Entity("seat", sid, s.x, s.y, "taken" if self._seat_taken(sid, "") else "free")
             for sid, s in self._seats.items()
             if sid not in (p.seat, p.claim)  # the viewer's own seat is not an observation
+            and (not s.staff_only or p.inst.role in STAFF_ROLES)  # a staff chair is not a seat for visitors
         ]
         seen += visible(me, seats, [], range_m=SEAT_VIEW_RANGE_M, los=los)
         beds = [Entity("person", pid, q.x, q.y, f"a patient lying in bed {q.bed}")

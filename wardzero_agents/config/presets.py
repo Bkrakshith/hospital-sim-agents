@@ -21,8 +21,8 @@ _LEGACY = {r: frozenset(BASIC_INTENTS) for r in ("patient", "companion", "visito
 ROLE_INTENTS: dict[str, frozenset[str]] = {
     "ward_nurse": frozenset(BASIC_INTENTS | _STAFF_EXTRA),
     "receptionist": frozenset(BASIC_INTENTS | {"call_for_help"}),
-    "bed_patient": frozenset(BASIC_INTENTS | _BED | {"accept_item", "refuse_item"}),
-    "ward_visitor": frozenset(BASIC_INTENTS | {"escort", "call_for_help"}),
+    "bed_patient": frozenset(BASIC_INTENTS | _BED | {"accept_item", "refuse_item", "follow"}),
+    "ward_visitor": frozenset(BASIC_INTENTS | {"escort", "call_for_help", "follow"}),
     "surgeon": frozenset(_SURGEON),
     "porter": frozenset(BASIC_INTENTS | {"take_item", "give_item", "accept_item", "refuse_item",
                                          "call_for_help"}),

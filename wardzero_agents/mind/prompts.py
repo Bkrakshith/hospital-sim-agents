@@ -53,6 +53,7 @@ _INTENT_HELP = {
     "use_extinguisher": "put out a fire close to you with an extinguisher",
     "sit_up_in_bed": "sit up in your bed",
     "lie_back": "lie back down flat in your bed",
+    "follow": "follow the robot when it offers to walk you somewhere (target: g1); you stop when it stops there",
 }
 
 SYSTEM_FIXED = (
