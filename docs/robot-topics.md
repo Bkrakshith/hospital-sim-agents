@@ -35,7 +35,7 @@ for `speech/say`, a mobile base for `cmd_vel` and `goal_pose`).
 | `<ns>/camera/rgb`, `camera/depth`, `camera/camera_info` | `sensor_msgs/Image`, `CameraInfo` | in | Isaac host only. 5 Hz, from the robot's camera mount (frame = the sensor's link). `depth` only for a depth camera (kind `rgbd`). |
 | `<ns>/camera/bbox_3d` | `std_msgs/String` (JSON) | in | 5 Hz. Anonymous person tracks (see below). |
 | `<ns>/lidar/point_cloud` | `sensor_msgs/PointCloud2` | in | Isaac host only. |
-| `<ns>/perception/objects` | `std_msgs/String` (JSON) | in | 5 Hz. Items, held items, beds, fires, call lights in view. |
+| `<ns>/perception/objects` | `std_msgs/String` (JSON) | in | 5 Hz. Items, held items, beds, fires, call lights and seats (`id`, `x`, `y`, `free`; never a staff chair) in view. |
 | `<ns>/audio/heard` | `std_msgs/String` (JSON) | in | What the microphone picks up. `source_id` is always `unknown`. |
 | `<ns>/speech/say` | `std_msgs/String` | out | Plain text. 72 dB at 1 m. |
 | `<ns>/goal_pose` | `geometry_msgs/PoseStamped` | out | Walk to a point on the map. Mobile robots only. |
@@ -75,9 +75,11 @@ Each message is a JSON object with a unique `id` and an `action`:
 | `take` | `item` | Picks up an unheld item within 0.8 m. |
 | `extinguish` | `fire` | Sprays until the fire is out or the robot moves away. |
 | `press_call` | none | Chimes at the nearest nurse base. |
-| `guide_start` | `track`, `place` | Walks to the place at the person's pace; the person is offered a walk and can follow. |
+| `guide_start` | `track`, `place`, optional `seat` (true) | Walks to the place at the person's pace; the person is offered a walk and can follow. With `seat`, it ends beside the nearest free seat the robot can see there and shows it to them. |
+| `approach` | `track` | Walks up to the person (1.2 m from them) and faces them. Result `started`, `already_there`, `no_route`, `unknown_track` or `cannot_walk`; the walk reports as a goal. |
 | `guide_stop` | none | Cancels guiding. |
 | `tell_staff` | `about` (a track), optional `message` (text) | Walks to the reception counter (on a ward: the nurse base), faces the desk and says `message` to the member of staff there. |
+| `note_desk` | `about` (a track), `message` (text) | Leaves a note about the person on the reception desk computer. The robot does not move or speak. |
 
 `tell_staff`, for example:
 
@@ -91,6 +93,11 @@ help. The result is `ok` with reason `told`, or `ok: false` with `no_staff_to_te
 in this scenario), `staff_not_at_desk` (nobody heard it), `no_route`, `unknown_track` or `superseded` (another goal
 replaced the walk there). The robot is never told where the staff member is. A robot that cannot walk speaks from
 where it stands. Without a `message` the robot says "Excuse me, someone here needs help from a nurse."
+
+`note_desk` is the quiet way to involve the desk: the receptionist is often busy at the computer, and a note
+interrupts nobody while the robot stays with the person. The result comes at once: `ok` with reason `noted`, or
+`ok: false` with `no_desk_staff` (no receptionist in this scenario) or `unknown_track`. The receptionist reads the note
+when she is at her chair, straight away or when she gets back, and decides for herself whether to act on it.
 
 While guiding, the robot waits when the person is more than 2.5 m behind it and walks on when they are within 2 m;
 anyone else within 1.5 m slows it to 0.3 m/s. At the place it waits up to 20 s for the person, says goodbye and walks

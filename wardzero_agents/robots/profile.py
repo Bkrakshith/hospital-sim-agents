@@ -52,10 +52,13 @@ class RobotProfile:
             "spray a fire extinguisher at a small fire in range, press the staff call button, speak, and wait.",
             "You can tell the staff that someone needs help (tell_staff): you go to the reception desk (or the "
             "nurse base on a ward) and speak to the member of staff there.",
+            "You can leave a note about someone on the reception desk computer (note_desk): the receptionist reads "
+            "it on her screen when she is at the desk, nobody is interrupted and you stay where you are.",
         ]
         if self.can_move:
             lines.append(f"You can walk (up to {self.max_speed:g} m/s, body radius {self.radius:g} m): "
-                         "to a named place, or while leading a person there.")
+                         "to a named place, up to a person (approach), or while leading a person to a place or to a "
+                         "free seat there.")
         else:
             lines.append("You are standing at a fixed post and cannot walk in this build; to help someone "
                          "get somewhere, give clear directions or press the call button for staff.")

@@ -5,9 +5,14 @@ An action is a JSON dict {"id", "action", ...} from <ns>/task/action:
   take {item}                                     an unheld item within 0.8 m
   extinguish {fire}                               sprays until the fire is out (or the robot leaves)
   press_call {}                                   chimes at the nearest nurse base
-  guide_start {track, place} / guide_stop {}      walks to the place at the person's pace; the person is offered a walk
+  guide_start {track, place, seat?} / guide_stop {}
+                                                  walks to the place at the person's pace; the person is offered a walk;
+                                                  with seat, it ends beside a free seat there and shows it to them
+  approach {track}                                walks up to the person (APPROACH_M from them) and faces them
   tell_staff {about: track, message?}             walks to the reception counter (or the ward nurse base) and tells
                                                   the staff there that this person needs help
+  note_desk {about: track, message}               a note on the reception desk computer: the robot does not move or
+                                                  speak; the receptionist reads it when she is at the desk
 Each action ends in one result {"id", "action", "ok", "reason", "t"}; nothing here uses person ids
 on the robot's side of the wire: people are addressed by track.
 
@@ -16,12 +21,21 @@ Guiding: the robot holds while the person it guides is more than 2.5 m behind (a
 for them to arrive, says goodbye and walks back to its post (goal id "<id>-return"). It gives up if they never come
 within 2.5 m for 30 s.
 
+A guide to a seat: when the robot reaches the place it picks the free seat nearest to it, among those its camera could
+see by turning its head (within its range, in line of sight; never a staff chair). It walks to a spot beside that seat,
+says SEAT_SAY and the person is told the seat (a nudge naming sit_down <seat>); they have arrived when they are near
+the seat. With no free seat in sight it says NO_SEAT_SAY and the guide ends as a plain guide to the place.
+
 Telling the staff: the staff member hears it by the audio model (and must be within 5 m); when they do, they get a
 structured message (a nudge) with the person's id, their name if they said it, and where they are. The robot is not
 told where the staff member is.
 
+The desk note: the result ("noted") comes at once, since the computer takes the note. The receptionist gets it as a
+nudge (what is on her screen) when she is within 1.5 m of her chair, at once or when she gets back, and only once.
+
 The sim-side run log (robot_tasks.jsonl, never sent to the robot) gets a "guide" row at the start and end of each
-guide, with the person's id, and a "tell" row for each tell_staff: the benchmark reads arrival from these.
+guide, with the person's id, and a "tell" row for each tell_staff and a "note" row for each desk note when it is read (and when it is left unread at
+the end of the run, nothing: unread notes are not logged).
 """
 from __future__ import annotations
 
@@ -36,9 +50,17 @@ from wardzero_agents.world.oracle import Pose
 
 TAKE_REACH_M = 0.8
 CHIME_DB = 55.0
-ACTIONS = ("hand_over", "take", "extinguish", "press_call", "guide_start", "guide_stop", "tell_staff")
+ACTIONS = ("hand_over", "take", "extinguish", "press_call", "guide_start", "guide_stop", "tell_staff", "note_desk",
+           "approach")
 GUIDE_CARD = "robot_guide"
 TELL_CARD = "robot_tell_staff"
+NOTE_CARD = "robot_desk_note"
+SEAT_CARD = "robot_seat"
+SEAT_SAY = "This seat is free. Please take a seat."
+NO_SEAT_SAY = "I'm sorry, I can't see a free seat here."
+SEAT_BESIDE_M = 0.9  # the robot stands this far from the seat it shows
+APPROACH_M = 1.2  # how close the robot comes to a person it walks up to
+DESK_M = 1.5  # the receptionist reads the desk computer when she is this close to her chair
 
 GUIDE_HOLD_M = 2.5  # the robot waits while the guided person is further behind than this ...
 GUIDE_RESUME_M = 2.0  # ... and walks on once they are this close again
@@ -53,6 +75,7 @@ TELL_DEFAULT = "Excuse me, someone here needs help from a nurse."
 GOODBYE = "Here we are. Goodbye, and take care."
 COUNTER = "reception_counter"  # where the robot stands to talk to the receptionist
 STAFF_SPOT = "reception_staff"  # where the receptionist sits (the robot faces it)
+STAFF_SEAT = "R1"  # the receptionist's chair, where the desk computer is
 RECEPTION_ROLES = ("receptionist",)
 WARD_STAFF_ROLES = ("ward_nurse", "nurse", "staff")
 
@@ -70,6 +93,7 @@ class RobotTasks:
         self._spray: dict[str, str] = {}  # action id -> fire id
         self._guide: Optional[dict] = None
         self._tell: Optional[dict] = None
+        self._notes: list[dict] = []  # desk notes not read yet
         self.goal_id = ""
         self._goal_n = 0
         self._out = TaskOutputs()
@@ -153,6 +177,25 @@ class RobotTasks:
         self._out.audio.append(w._event(t, "person", "bell_robot", bx, by, 2.0, CHIME_DB))
         self._result(aid, "press_call", True, "ok", t)
 
+    def _approach(self, aid, msg, t) -> None:
+        w = self.world
+        pid = self._person(msg["track"])
+        if pid is None:
+            return self._result(aid, "approach", False, "unknown_track", t)
+        if not self.mobile:
+            return self._result(aid, "approach", False, "cannot_walk", t)
+        p, r = w.people[pid], w.robot
+        d = math.hypot(r.x - p.x, r.y - p.y)
+        if d <= APPROACH_M + 0.2:
+            r.turn_to(math.atan2(p.y - r.y, p.x - r.x))
+            return self._result(aid, "approach", True, "already_there", t)
+        ux, uy = (r.x - p.x) / d, (r.y - p.y) / d
+        x, y = p.x + ux * APPROACH_M, p.y + uy * APPROACH_M
+        if not self._set_goal(aid, x, y, math.atan2(-uy, -ux), t, exempt=pid):
+            return self._result(aid, "approach", False, "no_route", t)
+        self._end_guide(t, "superseded")
+        self._result(aid, "approach", True, "started", t)
+
     # ---- guiding -------------------------------------------------------------------------
     def _guide_start(self, aid, msg, t) -> None:
         w = self.world
@@ -173,7 +216,7 @@ class RobotTasks:
         pts = [(r.x, r.y)] + list(r._path)
         route_m = sum(math.hypot(b[0] - a[0], b[1] - a[1]) for a, b in zip(pts, pts[1:]))
         self._guide = {"id": aid, "pid": pid, "place": place, "goal": xy, "room": room, "phase": "walking",
-                       "held": False, "held_s": 0.0, "t0": t}
+                       "held": False, "held_s": 0.0, "t0": t, "seat": bool(msg.get("seat")), "seat_id": None}
         self._log({"t": t, "kind": "guide", "event": "start", "id": aid, "person": pid, "place": place,
                    "x": round(xy[0], 3), "y": round(xy[1], 3), "room": room, "route_m": round(route_m, 2)})
         self._out.nudges.append(Nudge(person=pid, t=t, card=GUIDE_CARD, message=(
@@ -228,6 +271,43 @@ class RobotTasks:
             if self.mobile:
                 x, y, yaw = self.post
                 self._set_goal(f"{g['id']}-return", x, y, yaw, t)
+
+    def free_seat(self, room: Optional[str]) -> Optional[str]:
+        """The free seat nearest the robot that its camera could see from here, preferring one in the room."""
+        w, r = self.world, self.world.robot
+        rng = w.loaded.scenario.robot.range_m
+        taken = {q.seat for q in w.people.values() if q.posture != "gone" and q.seat}
+        taken |= {q.claim for q in w.people.values() if q.posture != "gone" and getattr(q, "claim", None)}
+        seen = [c for c in w.site.seats.values()
+                if not c.staff_only and c.id not in taken and math.hypot(c.x - r.x, c.y - r.y) <= rng
+                and w._los((r.x, r.y), (c.x, c.y))]
+        if not seen:
+            return None
+        inside = [c for c in seen if room is not None and w.site.room_at(c.x, c.y) == room]
+        return min(inside or seen, key=lambda c: math.hypot(c.x - r.x, c.y - r.y)).id
+
+    def _to_seat(self, g: dict, t: float) -> bool:
+        """At the place of a guide to a seat: walk on to a free seat and show it. False when none is in sight."""
+        w = self.world
+        sid = self.free_seat(g["room"])
+        if sid is None:
+            ev = w.robot_say(NO_SEAT_SAY, t).model_copy(update={"addressee": g["pid"]})
+            self._out.audio.append(ev)
+            return False
+        c, r = w.site.seats[sid], w.robot
+        d = max(math.hypot(r.x - c.x, r.y - c.y), 1e-6)
+        x, y = c.x + (r.x - c.x) / d * SEAT_BESIDE_M, c.y + (r.y - c.y) / d * SEAT_BESIDE_M
+        if not self._set_goal(g["id"], x, y, math.atan2(c.y - y, c.x - x), t, exempt=g["pid"]):
+            x, y = c.x, c.y  # nowhere to stand beside it: show it from here
+            r.turn_to(math.atan2(c.y - r.y, c.x - r.x))
+        g["seat_id"], g["goal"], g["room"] = sid, (c.x, c.y), None
+        self._out.audio.append(w.robot_say(SEAT_SAY, t).model_copy(update={"addressee": g["pid"]}))
+        self._out.nudges.append(Nudge(person=g["pid"], t=t, card=SEAT_CARD, message=(
+            f"The robot is showing you a free seat, seat {sid}. If you want it, sit down there (sit_down {sid}).")))
+        self._log({"t": t, "kind": "guide", "event": "seat", "id": g["id"], "person": g["pid"], "seat": sid})
+        if (x, y) == (c.x, c.y):  # no walk: wait for them here
+            g["phase"], g["t_arrive"] = "waiting", t
+        return True
 
     def _guide_stop(self, aid, msg, t) -> None:
         if self.world.robot.has_goal and self.world.robot._had_goal:
@@ -297,6 +377,58 @@ class RobotTasks:
         self._result(tl["id"], "tell_staff", heard, reason, t)
         if self.mobile:  # face the way it faced before, back towards the visitors
             w.robot.turn_to(tl["yaw0"])
+
+    # ---- the desk computer ---------------------------------------------------------------
+    def _desk_staff(self) -> Optional[str]:
+        w = self.world
+        return next((pid for pid, q in w.people.items()
+                     if q.posture != "gone" and q.kind != "static" and q.inst.role in RECEPTION_ROLES), None)
+
+    def _note_desk(self, aid, msg, t) -> None:
+        pid = self._person(msg["about"])
+        if pid is None:
+            return self._result(aid, "note_desk", False, "unknown_track", t)
+        message = msg["message"]
+        if not isinstance(message, str) or not message.strip():
+            raise TypeError("message")
+        staff = self._desk_staff()
+        if staff is None:
+            return self._result(aid, "note_desk", False, "no_desk_staff", t)
+        self._notes.append({"id": aid, "about": pid, "staff": staff, "message": message.strip()[:400], "t": t})
+        self._result(aid, "note_desk", True, "noted", t)
+        self._read_notes(t)
+
+    def _at_desk(self, q) -> bool:
+        seat = self.world.site.seats.get(q.inst.seat or STAFF_SEAT)
+        if seat is None:
+            return False
+        return math.hypot(q.x - seat.x, q.y - seat.y) <= DESK_M
+
+    def _read_notes(self, t: float) -> None:
+        w, left = self.world, []
+        for n in self._notes:
+            q, p = w.people.get(n["staff"]), w.people.get(n["about"])
+            if q is None or q.posture == "gone" or p is None:
+                continue  # nobody will read it
+            if not self._at_desk(q):
+                left.append(n)
+                continue
+            self._out.nudges.append(Nudge(person=n["staff"], t=t, card=NOTE_CARD,
+                                          message=self.note_message(n["message"], n["about"])))
+            self._log({"t": t, "kind": "note", "id": n["id"], "about": n["about"], "staff": n["staff"], "read": True,
+                       "left_at": n["t"]})
+        self._notes = left
+
+    def note_message(self, message: str, pid: str) -> str:
+        """What the receptionist sees on her screen."""
+        w = self.world
+        p = w.people[pid]
+        name = p.inst.display_name if pid in w.named else "they have not said their name"
+        rid = w.site.room_at(p.x, p.y)
+        room = w.site.rooms[rid].label.split(",")[0] if rid else "the building"
+        return (f"A note from the reception robot appears on your computer screen: \"{message}\" It is about person id "
+                f"{pid} ({name}), now in {room}. The robot is dealing with them. You do not need to get up unless the "
+                f"note says they need a member of staff; carry on with your work.")
 
     def tell_message(self, message: str, pid: str, staff) -> str:
         """What the staff member is told, besides hearing it: who needs help, where, and what to do."""
@@ -381,7 +513,9 @@ class RobotTasks:
             self._goal(gid, ev == "arrived", ev, t)
             g = self._guide
             if g is not None and g["id"] == gid and g["phase"] == "walking":
-                if ev == "arrived":
+                if ev == "arrived" and g["seat"] and g["seat_id"] is None and self._to_seat(g, t):
+                    pass  # walking on to the seat
+                elif ev == "arrived":
                     g["phase"], g["t_arrive"] = "waiting", t
                     w.robot.speed_scale = 1.0
                 else:
@@ -394,6 +528,8 @@ class RobotTasks:
                     self._tell = None
         if self._guide is not None:
             self._guide_step(t, dt)
+        if self._notes:
+            self._read_notes(t)
         w.robot.speed_cap = self._near_cap() if w.robot.has_goal else None
         for r in w.robot_results:
             self._out.results.append({**r, "t": t})

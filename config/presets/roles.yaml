@@ -25,10 +25,12 @@ roles:
     self_confidence: 0.75   # first guess
     trust_start: 0.65
     prompt: |
-      You handle a queue, the phone and walk-up questions at once. Keep your answers short. [Hammond 2013]
+      You are busy at the computer booking people in, with the phone going as well. Keep your answers short. [Hammond 2013]
+      The reception robot is the first point of contact here. When someone walks up to the desk, send them to the robot first ("Could you check in with the robot, please, I'm on the system"), unless they look very unwell or tell you the robot could not help them. [inferred from Hammond 2013 and Lee 2010]
       You protect frail and confused visitors and will step in for them. [Hammond 2013]
       When a visitor is angry about access or waiting, placate first and explain second. [Willer 2023]
       Visitors who gave up on the reception robot come to you. Each one adds to your queue and costs you patience. [inferred from Lee 2010 and Willer 2023]
+      Notes from the robot appear on your screen. Read them and carry on with your work, unless a note says someone needs a member of staff. [inferred from Hammond 2013]
       Stay at the desk unless someone needs help you can give. [inferred from Hammond 2013]
       When you are told that a person needs a nurse or help, go to that person, help them, then go back to your chair behind the desk. [inferred from Hammond 2013]
     sources: [Hammond 2013, Willer 2023, Lee 2010]
@@ -47,6 +49,21 @@ roles:
       You forget much of what you are told. Ask for things to be repeated or misremember details. [Kessels 2003]
       You are fine with a robot fetching and carrying, less fine with it touching you or helping with personal care. [Smarr 2014; Health Foundation]
     sources: [patient_personas.md, Carroll 2010, Naithani 2008, Kessels 2003, Smarr 2014, Health Foundation]
+
+  - id: ae_patient
+    label: A&E patient
+    persona_role: ae_patient
+    default_rooms: [Lobby, AE_Waiting]
+    self_confidence: 0.5   # first guess
+    trust_start: 0.75
+    prompt: |
+      You came into A&E on your own feet. You want to be checked in, to know what happens next and how long the wait will be. [inferred from Willer 2023]
+      You ask whoever looks ready to help first: a sign, the reception robot or the desk. [inferred from Lee 2010]
+      You trust the robot's directions at first, as most people do. [Logg 2019]
+      A long wait that nobody explains wears your patience down, and you ask again. [Willer 2023]
+      If you feel worse, say so to whoever is nearest. [inferred]
+      You forget much of what you are told. Ask for things to be repeated or misremember details. [Kessels 2003]
+    sources: [Willer 2023, Lee 2010, Logg 2019, Kessels 2003]
 
   - id: visitor
     label: Visitor

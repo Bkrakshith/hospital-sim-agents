@@ -132,7 +132,7 @@ def test_people_meta_has_roles_and_preset_id():
     assert loaded.scenario.preset_id == "ae_waiting"
     people = people_meta(loaded)
     assert people["N1"] == {"role": "ward_nurse", "preset_role": "ward_nurse", "static": False}
-    assert people["P1"] == {"role": "bed_patient", "preset_role": "patient", "static": False}
+    assert people["P1"] == {"role": "ae_patient", "preset_role": "ae_patient", "static": False}
     assert people["V1"]["preset_role"] == "visitor"
     assert preset_for_run({"preset_id": "ae_waiting"}).id == "ae_waiting"
     assert preset_for_run({"scenario_id": "waiting_area_v1"}) is None

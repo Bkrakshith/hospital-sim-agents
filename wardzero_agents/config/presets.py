@@ -23,6 +23,7 @@ ROLE_INTENTS: dict[str, frozenset[str]] = {
     "receptionist": frozenset(BASIC_INTENTS | {"call_for_help"}),
     "bed_patient": frozenset(BASIC_INTENTS | _BED | {"accept_item", "refuse_item", "follow"}),
     "ward_visitor": frozenset(BASIC_INTENTS | {"escort", "call_for_help", "follow"}),
+    "ae_patient": frozenset(BASIC_INTENTS | {"follow", "accept_item", "refuse_item", "call_for_help"}),
     "surgeon": frozenset(_SURGEON),
     "porter": frozenset(BASIC_INTENTS | {"take_item", "give_item", "accept_item", "refuse_item",
                                          "call_for_help"}),
@@ -221,7 +222,7 @@ _BAND = {"18-30": ((1.3, 1.5), (1.2, 2.0), (18, 30)), "31-50": ((1.2, 1.4), (1.5
          "51-70": ((1.0, 1.2), (2.0, 3.5), (51, 70)), "71+": ((0.7, 0.9), (3.0, 5.0), (71, 88))}
 _ROLE_BASE = {  # patience_min, anxiety, sociability
     "ward_nurse": ((10, 25), (0.1, 0.3), (0.3, 0.6)), "receptionist": ((15, 30), (0.1, 0.3), (0.5, 0.8)),
-    "patient": ((30, 60), (0.3, 0.5), (0.3, 0.7)), "visitor": ((20, 45), (0.3, 0.6), (0.3, 0.7)),
+    "patient": ((30, 60), (0.3, 0.5), (0.3, 0.7)), "ae_patient": ((20, 45), (0.4, 0.7), (0.3, 0.7)), "visitor": ((20, 45), (0.3, 0.6), (0.3, 0.7)),
     "surgeon": ((10, 20), (0.1, 0.3), (0.2, 0.4)), "porter": ((15, 30), (0.1, 0.3), (0.3, 0.6)),
     "custom": ((20, 40), (0.2, 0.5), (0.3, 0.7))}
 

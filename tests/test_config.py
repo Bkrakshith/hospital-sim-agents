@@ -48,7 +48,7 @@ def test_loads_v1():
     ls = load_scenario(V1)
     assert [i.person_id for i in ls.instances] == ["P1", "P2", "P3", "P4", "P5"]
     assert len(ls.area.seats) == 12
-    assert len(ls.signs) == 6
+    assert len(ls.signs) == 8
     assert ls.root == CFG
 
 

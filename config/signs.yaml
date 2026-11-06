@@ -6,3 +6,5 @@ signs:
   - {id: sign_toilets, text: "← Toilets", x: -9.5, y: 1.8, z: 2.3, facing_yaw: 0.0, placeholder: true}
   - {id: sign_exit, text: "Way out", x: -1.2, y: -2.4, z: 2.6, facing_yaw: 1.5708, placeholder: true}
   - {id: sign_wait, text: "Please take a seat. You will be called.", x: -6.3, y: 1.9, z: 2.0, facing_yaw: -1.5708, placeholder: true}
+  - {id: sign_checkin, text: "Welcome. Please check in with the reception robot first.", x: -1.2, y: -0.4, z: 2.2, facing_yaw: -1.5708, placeholder: true}
+  - {id: sign_desk_robot, text: "Please check in with the robot first. Staff will call you.", x: 1.4, y: 2.6, z: 1.3, facing_yaw: -1.5708, placeholder: true}

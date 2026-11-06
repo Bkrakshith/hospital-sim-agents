@@ -91,7 +91,11 @@ def perceive_objects(world, body: RobotBody) -> dict:
         bed = world.site.beds.get(b.bed_id)
         if b.active and bed is not None and _in_view(world, body, bed.x, bed.y):
             lights.append({"bed": b.bed_id, "x": round(bed.x, 3), "y": round(bed.y, 3)})
-    return {"items": items, "held": held, "beds": beds, "fires": fires, "call_lights": lights}
+    taken = {q.seat for q in world.people.values() if q.posture != "gone" and q.seat}
+    taken |= {q.claim for q in world.people.values() if q.posture != "gone" and getattr(q, "claim", None)}
+    seats = [{"id": c.id, "x": round(c.x, 3), "y": round(c.y, 3), "free": c.id not in taken}
+             for c in world.site.seats.values() if not c.staff_only and _in_view(world, body, c.x, c.y)]
+    return {"items": items, "held": held, "beds": beds, "fires": fires, "call_lights": lights, "seats": seats}
 
 
 def world_robot_id(world) -> str:

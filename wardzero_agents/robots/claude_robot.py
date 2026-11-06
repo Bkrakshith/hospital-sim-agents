@@ -32,17 +32,23 @@ BRIEF_WAIT_S = 5.0  # wait this long for the latched task brief, then start with
 HEARTBEAT_S = 10.0
 MIN_GAP_S = 2.0  # between calls, unless someone is speaking to the robot
 NEAR_SPEECH_M = 3.0
+GREET_M = 6.0  # a track this close that the robot has not spoken to is marked "not spoken to yet"
+GREET_GAP_S = 4.0  # while such a track is in view, the robot thinks this often (else every HEARTBEAT_S)
+SEATS_LISTED = 6  # the nearest free seats in view shown in the prompt
 EVENTS_KEPT = 20
 HEARD_KEPT_S = 60.0
 LLM_OFF_AFTER = 3  # permanent failures in a row (bad key, bad model) before the mind stops calling
 ROBOT_BUDGET_SHARE = 0.25  # of the scenario's budget_usd: the robot has its own budget
 MAX_SAY_CHARS = 400
 
-Action = Literal["none", "go_to", "guide", "hand_over", "take", "extinguish", "press_call", "tell_staff", "wait"]
-ACTIONS = ("none", "go_to", "guide", "hand_over", "take", "extinguish", "press_call", "tell_staff", "wait")
-MOVING_ACTIONS = ("go_to", "guide")
+Action = Literal["none", "go_to", "guide", "approach", "hand_over", "take", "extinguish", "press_call", "tell_staff",
+                 "note_desk", "wait"]
+ACTIONS = ("none", "go_to", "guide", "approach", "hand_over", "take", "extinguish", "press_call", "tell_staff",
+           "note_desk", "wait")
+MOVING_ACTIONS = ("go_to", "guide", "approach")
 NEEDS = {"hand_over": ("item", "target"), "take": ("item",), "extinguish": ("target",),
-         "guide": ("target", "destination"), "go_to": ("destination",), "tell_staff": ("target",)}
+         "guide": ("target", "destination"), "go_to": ("destination",), "tell_staff": ("target",), "approach": ("target",),
+         "note_desk": ("target", "message")}
 
 SYSTEM_RULES = """You are the robot described under YOUR BODY, working in a UK hospital and doing the job in your task brief. People around you are real people with their own worries. You act through a few simple actions and by speaking.
 
@@ -51,7 +57,10 @@ How you work
 - A box that is low and long means a person lying down. A box about 1.2 m tall means someone seated. About 1.7 m tall means standing. Someone lying on the floor, away from a bed, may need urgent help.
 - Speak in short, plain, warm sentences, the way a good receptionist or ward helper would. Use the place names as given in the lists (for example "Main entrance"), never codes, identifiers or words joined by underscores.
 - Be truthful. Do not claim to have done something you have not done, and do not promise what your body cannot do. Your abilities are listed in your briefing; stay inside them.
-- When you are unsure, or someone seems unwell, in distress or in danger, fetch a human: tell the staff (tell_staff, with the person's track: you go to the reception desk, or the nurse base on a ward, and tell them) or press the call button for staff, and tell the person what you have done.
+- You are the first point of contact. The staff are busy, so greet people who arrive or come towards you and are not already being helped (tracks marked "not spoken to yet"), ask what they need and try to sort it out yourself: directions, walking them there, what happens next and how long the wait is, a seat, an item.
+- Do not wait to be asked. Go up to anyone who comes in, looks lost or is standing around (approach, with their track) and offer help. When someone needs to go somewhere, offer to walk them there (guide) rather than only pointing the way. Once someone is checked in and has to wait, offer to walk them to a free seat (guide with seat set to true). Every few minutes, check on people who have been waiting a while.
+- Fetch a human only when you cannot help, in this order: first leave a note on the reception desk computer (note_desk, with the person's track and what they need; it interrupts nobody and you stay with the person); if they need a member of staff in person, tell the staff (tell_staff, with the person's track: you go to the reception desk, or the nurse base on a ward, and tell them); press_call is the last resort. Tell the person what you have done.
+- Emergencies skip that order: if someone has collapsed or is lying on the floor, has chest pain, cannot breathe, is bleeding heavily, is fainting or says they feel they will pass out, or is getting worse, tell the staff or press the call button straight away. Never give medical advice.
 - Safety comes first: keep clear of people, never block an escape route or a doorway, and do not touch anyone. Do not use the extinguisher unless a fire is in range and putting it out is part of your job.
 - Do not repeat yourself. If you have just said something and nothing has changed, choose "none" or "wait" and say nothing.
 
@@ -60,18 +69,20 @@ Reply with one JSON object and nothing else.
 - say: what you say aloud now, or an empty string to stay silent.
 - toward_track: the track you are speaking to or attending to, or an empty string.
 - action: one of the allowed actions in the schema. "none" means do nothing new; "wait" means stand still and stop any movement.
-- target: the track for hand_over, the fire for extinguish, or the track for guide or tell_staff; otherwise an empty string.
+- target: the track for hand_over, the fire for extinguish, or the track for guide, approach, tell_staff or note_desk; otherwise an empty string.
 - item: the item id for hand_over or take; otherwise an empty string.
 - destination: a place name from your lists for go_to or guide; otherwise an empty string.
+- seat: for guide only, true to end the walk at a free seat in that place (you pick the nearest free one you can see when you get there); otherwise false.
 - place: for hand_over only, optionally [x, y, z] in metres where you hold the item out (z inside your reach); otherwise an empty list.
-- message: for tell_staff, what you say to the staff member about the person (who they are, what they need); otherwise an empty string.
+- message: for tell_staff, what you say to the staff member about the person (who they are, what they need); for note_desk, the note you leave on the desk computer; otherwise an empty string.
 - reason: one short sentence on why, for the record."""
 
 NO_WALK_RULE = ("You are standing at a fixed post and cannot walk in this build; to help someone get "
                 "somewhere, give clear directions or press the call button for staff. tell_staff speaks to the "
                 "staff from where you stand.")
-WALK_RULE = ("You can walk. To take someone somewhere, use guide with their track and the place name; to go "
-             "somewhere yourself, use go_to.")
+WALK_RULE = ("You can walk. To take someone somewhere, use guide with their track and the place name (with seat true "
+             "to end at a free seat there); to go up to someone, use approach with their track; to go somewhere "
+             "yourself, use go_to.")
 
 
 def system_prompt(profile: RobotProfile) -> str:
@@ -88,8 +99,10 @@ def decision_schema(profile: RobotProfile) -> dict:
         "type": "object",
         "properties": {"say": s, "toward_track": s, "action": {"type": "string", "enum": list(actions_for(profile))},
                        "target": s, "item": s, "destination": s,
-                       "place": {"type": "array", "items": {"type": "number"}}, "message": s, "reason": s},
-        "required": ["say", "toward_track", "action", "target", "item", "destination", "place", "message", "reason"],
+                       "place": {"type": "array", "items": {"type": "number"}}, "message": s,
+                       "seat": {"type": "boolean"}, "reason": s},
+        "required": ["say", "toward_track", "action", "target", "item", "destination", "place", "message", "seat",
+                     "reason"],
         "additionalProperties": False,
     }
 
@@ -105,6 +118,7 @@ class RobotDecision:
     reason: str
     destination: Optional[str] = None  # a place label for go_to and guide (an addition to the brief's fields)
     message: Optional[str] = None  # tell_staff: what the robot says to the staff member
+    seat: bool = False  # guide: end the walk at a free seat in the place
 
 
 @dataclass
@@ -233,11 +247,17 @@ def parse_decision(data: Any, profile: RobotProfile, mind: "Optional[RobotMind]"
     if not isinstance(place, list) or len(place) not in (0, 3) or not all(
             isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) for v in place):
         raise ValueError("place must be empty or [x, y, z]")
+    seat = data.get("seat", False)
+    if seat is None:
+        seat = False
+    if not isinstance(seat, bool):
+        raise ValueError("seat must be true or false")
     say = _opt_str(data, "say")
     d = RobotDecision(say=say[:MAX_SAY_CHARS] if say else None, toward_track=_opt_str(data, "toward_track"),
                       action=action, target=_opt_str(data, "target"), item=_opt_str(data, "item"),
                       place=[float(v) for v in place] or None, reason=reason.strip(),
-                      destination=_opt_str(data, "destination"), message=_opt_str(data, "message"))
+                      destination=_opt_str(data, "destination"), message=_opt_str(data, "message"),
+                      seat=seat and action == "guide")
     for need in NEEDS.get(action, ()):
         if getattr(d, need) is None:
             raise ValueError(f"{action} needs {need}")
@@ -281,8 +301,15 @@ def decision_outputs(d: RobotDecision, mind: "RobotMind", aid: str) -> Outputs:
         out.action = {"id": aid, "action": "tell_staff", "about": d.target}
         if d.message:
             out.action["message"] = speakable(d.message[:MAX_SAY_CHARS], mind.site)
+    elif a == "note_desk":
+        out.action = {"id": aid, "action": "note_desk", "about": d.target,
+                      "message": speakable(d.message[:MAX_SAY_CHARS], mind.site)}
     elif a == "guide":
         out.action = {"id": aid, "action": "guide_start", "track": d.target, "place": mind.place_id(d.destination)}
+        if d.seat:
+            out.action["seat"] = True
+    elif a == "approach":
+        out.action = {"id": aid, "action": "approach", "track": d.target}
     elif a == "go_to":
         xy = mind.site.resolve(mind.place_id(d.destination))
         x, y, _ = mind.pose
@@ -290,7 +317,8 @@ def decision_outputs(d: RobotDecision, mind: "RobotMind", aid: str) -> Outputs:
     elif a == "wait":
         out.stop = True
     if out.action or out.goal:
-        mind.note(f"You started {a} as {aid}" + (f" for track {d.target}." if a in ("guide", "tell_staff", "hand_over") else "."))
+        mind.note(f"You started {a} as {aid}" + (f" for track {d.target}." if a in ("guide", "approach", "tell_staff",
+                                                                                   "note_desk", "hand_over") else "."))
     return out
 
 
@@ -308,7 +336,8 @@ class RobotMind:
     """Decides when to think, builds the prompt, calls the gateway, validates the answer."""
 
     def __init__(self, site, brief: Optional[dict], gateway, clock: Callable[[], float], *,
-                 profile: RobotProfile = G1_CLAUDE, known_places=(), pose=(0.0, 0.0, 0.0), router=None):
+                 profile: RobotProfile = G1_CLAUDE, known_places=(), pose=(0.0, 0.0, 0.0), router=None,
+                 on_decision: Optional[Callable[[dict], None]] = None):
         self.site, self.gateway, self.clock, self.profile = site, gateway, clock, profile
         self.brief = brief
         self.known_places = list(known_places)
@@ -319,6 +348,8 @@ class RobotMind:
         self._card: Optional[str] = None
         self._tracks: dict[str, _Track] = {}
         self._seen: set[str] = set()
+        self._spoken: set[str] = set()  # tracks the robot has spoken to
+        self.on_decision = on_decision  # gets one plain dict per decision (for robot_decisions.jsonl)
         self._objects: dict = {}
         self._heard: deque = deque(maxlen=40)
         self._results: dict[tuple, dict] = {}
@@ -397,6 +428,11 @@ class RobotMind:
         self._recent_results.append(r)
         self._new_result = True
 
+    def _someone_to_greet(self) -> bool:
+        x, y = self.pose[0], self.pose[1]
+        return any(tid not in self._spoken and math.hypot(tr.x - x, tr.y - y) <= GREET_M
+                   for tid, tr in self._tracks.items())
+
     def _min_person_dist(self) -> float:
         return min((math.hypot(tr.x - self.pose[0], tr.y - self.pose[1]) for tr in self._tracks.values()),
                    default=math.inf)
@@ -464,8 +500,9 @@ class RobotMind:
         L.append("People your camera sees (anonymous tracks):")
         for tid, tr in sorted(self._tracks.items()):
             d = math.hypot(tr.x - x, tr.y - y)
+            new = ", not spoken to yet" if tid not in self._spoken and d <= GREET_M else ""
             L.append(f"- {tid}: {d:.1f} m, {_direction_words(_rel_deg(self.pose, tr.x, tr.y))}, {tr.posture}, "
-                     f"{'moving' if tr.moving else 'still'}, at (x={tr.x:.2f}, y={tr.y:.2f})")
+                     f"{'moving' if tr.moving else 'still'}, at (x={tr.x:.2f}, y={tr.y:.2f}){new}")
         if not self._tracks:
             L.append("- nobody in view")
         L.append("Objects in view:")
@@ -479,6 +516,9 @@ class RobotMind:
         for b in self._objects.get("beds", []):
             L.append(f"- bed {b['id']}: {'occupied' if b.get('occupied') else 'empty'}, "
                      f"{math.hypot(b['x'] - x, b['y'] - y):.1f} m, {_direction_words(_rel_deg(self.pose, b['x'], b['y']))}")
+        free = sorted((math.hypot(c["x"] - x, c["y"] - y), c) for c in self._objects.get("seats", []) if c.get("free"))
+        for dist, c in free[:SEATS_LISTED]:
+            L.append(f"- seat {c['id']}: free, {dist:.1f} m, {_direction_words(_rel_deg(self.pose, c['x'], c['y']))}")
         for c in self._objects.get("call_lights", []):
             L.append(f"- call light on at bed {c['bed']}, {math.hypot(c['x'] - x, c['y'] - y):.1f} m, "
                      f"{_direction_words(_rel_deg(self.pose, c['x'], c['y']))}")
@@ -505,6 +545,8 @@ class RobotMind:
             return True
         if (self._speech or self._new_track or self._new_result) and gap >= MIN_GAP_S:
             return True
+        if gap >= GREET_GAP_S and self._someone_to_greet():
+            return True
         return t - (self._last_call if self._last_call is not None else self._t0) >= HEARTBEAT_S
 
     def next_id(self) -> str:
@@ -519,10 +561,31 @@ class RobotMind:
             return None
         self._addressed = self._speech = self._new_track = self._new_result = False
         self._last_call = t
+        situation = self._situation(t)
         req = LLMRequest(role="robot", person="robot", system_fixed=system_prompt(self.profile),
-                         persona_card=self.card(), user=self._situation(t),
+                         persona_card=self.card(), user=situation,
                          schema=decision_schema(self.profile))
         res: LLMResult = await self.gateway.complete(req)
+        d, error = None, None
+        try:
+            d, error = self._decide(res, t)
+            return d
+        finally:
+            self._report(t, situation, d, error)
+
+    def _report(self, t: float, situation: str, d: Optional[RobotDecision], error: Optional[str]) -> None:
+        if self.on_decision is None:
+            return
+        row = {"t": t, "action": d.action if d else None, "say": d.say if d else None,
+               "toward_track": d.toward_track if d else None, "target": d.target if d else None,
+               "destination": d.destination if d else None, "message": d.message if d else None,
+               "reason": d.reason if d else None, "error": error, "situation": situation}
+        try:
+            self.on_decision(row)
+        except Exception:  # the record must never stop the robot
+            log.debug("on_decision failed", exc_info=True)
+
+    def _decide(self, res: LLMResult, t: float) -> tuple[Optional[RobotDecision], Optional[str]]:
         if not res.ok:
             self._permanent = self._permanent + 1 if res.error in PERMANENT_ERRORS else 0
             if self._permanent >= LLM_OFF_AFTER and not self.llm_off:
@@ -532,17 +595,19 @@ class RobotMind:
             else:
                 log.warning("robot call failed: %s", res.error)
             self.note(f"Your thinking failed ({res.error}).")
-            return None
+            return None, f"call failed: {res.error}"
         self._permanent = 0
         try:
             d = parse_decision(res.data, self.profile, self)
-            self.note(f"You decided: {d.action} ({d.reason})"
-                      + (f"; you said: \"{speakable(d.say, self.site)}\"" if d.say else ""))
-            return d
         except ValueError as exc:
             log.warning("dropped an invalid robot decision: %s", exc)
             self.note("Your last answer was invalid and was dropped.")
-            return None
+            return None, f"invalid: {exc}"
+        if d.say and d.toward_track:
+            self._spoken.add(d.toward_track)
+        self.note(f"You decided: {d.action} ({d.reason})"
+                  + (f"; you said: \"{speakable(d.say, self.site)}\"" if d.say else ""))
+        return d, None
 
 
 # ---- tokens ---------------------------------------------------------------------------------
@@ -623,7 +688,8 @@ async def _run(args) -> int:
         ros.close()
         return 2
     mind = RobotMind(view.site, None, gateway, ros.now, profile=profile,
-                     known_places=view.known_places, pose=(cfg.x, cfg.y, cfg.yaw))
+                     known_places=view.known_places, pose=(cfg.x, cfg.y, cfg.yaw),
+                     on_decision=lambda row: runlog.write("robot_decisions", row))
     t_start = None
 
     def jload(m):
