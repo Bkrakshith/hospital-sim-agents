@@ -427,3 +427,20 @@ def test_an_isaac_character_follows_the_robot_until_the_world_says_stop(tmp_path
     w.trail_released.add("P5")  # the guide is over
     run(svc_, apis, DT * 3)
     assert p.state == "done"
+
+
+def test_a_route_keeps_clear_of_a_disc_when_it_can(site):
+    from wardzero_agents.site import Router
+    r = Router(site.grid)
+    a, b, robot = (5.0, 1.6), (0.8, 1.6), (2.9, 1.6)
+
+    def closest(path):
+        best = math.inf
+        for (x0, y0), (x1, y1) in zip(path, path[1:]):
+            for k in range(21):
+                best = min(best, math.dist((x0 + (x1 - x0) * k / 20, y0 + (y1 - y0) * k / 20), robot))
+        return best
+
+    assert closest(r.route(a, b)) < 0.2
+    assert closest(r.route(a, b, [(*robot, 0.75)])) >= 0.6
+    assert r.route(a, (2.9, 1.9), [(*robot, 0.75)]) is not None  # an end inside the disc stays reachable

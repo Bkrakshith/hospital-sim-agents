@@ -321,15 +321,19 @@ class StubWorld:
         if not plan:
             self._finish(p)
 
-    def _robot_disc(self) -> tuple:
-        """Where people's routes keep clear of: the robot standing in the way (when the scenario has one)."""
+    def _robot_disc(self, p: Optional[_Person] = None) -> tuple:
+        """Where people's routes keep clear of: the robot standing in the way (when the scenario has one). Someone
+        already close to it gets a smaller disc that leaves them out, down to the robot's contact distance."""
         if not self.loaded.scenario.robot.enabled:
             return ()
-        return ((self.robot.x, self.robot.y, ROBOT_AVOID_M),)
+        r = ROBOT_AVOID_M
+        if p is not None:
+            r = min(r, math.hypot(p.x - self.robot.x, p.y - self.robot.y) - 0.05)
+        return ((self.robot.x, self.robot.y, r),) if r >= self.robot.radius + 0.3 else ()
 
     def _route(self, p: _Person, goal: tuple[float, float], speed: float,
                follow: Optional[str] = None) -> Optional[_Phase]:
-        path = self.router.route((p.x, p.y), goal, self._robot_disc())
+        path = self.router.route((p.x, p.y), goal, self._robot_disc(p))
         if path is None:
             return None
         return _Phase("walk", dest=None if follow else goal, follow=follow, speed=speed, path=path, i=1, goal=goal)
@@ -648,7 +652,7 @@ class StubWorld:
                     p.posture = "standing"
                     return
                 if ph.goal is None or math.hypot(dest[0] - ph.goal[0], dest[1] - ph.goal[1]) > REROUTE_M:
-                    path = self.router.route((p.x, p.y), dest)
+                    path = self.router.route((p.x, p.y), dest, self._robot_disc(p))
                     if path is None:
                         p.plan = []
                         p.claim = None
@@ -658,7 +662,7 @@ class StubWorld:
                     ph.path, ph.i, ph.goal = path, 1, dest
             if ph.lazy:
                 ph.lazy = False
-                path = self.router.route((p.x, p.y), ph.goal)
+                path = self.router.route((p.x, p.y), ph.goal, self._robot_disc(p))
                 if path is None:
                     p.plan = []
                     p.state, p.reason = "failed", "no route"
@@ -691,7 +695,7 @@ class StubWorld:
                 if ph.follow is not None:  # the person followed may have moved on while we walked
                     nd = self._walk_dest(p, ph)
                     if nd is not None and math.hypot(nd[0] - p.x, nd[1] - p.y) > ARRIVE_M:
-                        path = self.router.route((p.x, p.y), nd)
+                        path = self.router.route((p.x, p.y), nd, self._robot_disc(p))
                         if path is not None and math.hypot(path[-1][0] - p.x, path[-1][1] - p.y) > ARRIVE_M:
                             ph.path, ph.i, ph.goal = path, 1, nd
                             p.posture = "walking"
@@ -742,7 +746,7 @@ class StubWorld:
         dest = self._walk_dest(p, ph) if d > FOLLOW_FAR_M else (
             r.x + (p.x - r.x) * FOLLOW_GAP_M / d, r.y + (p.y - r.y) * FOLLOW_GAP_M / d)
         if ph.goal is None or ph.i >= len(ph.path) or math.hypot(dest[0] - ph.goal[0], dest[1] - ph.goal[1]) > REROUTE_M:
-            path = self.router.route((p.x, p.y), dest, self._robot_disc())
+            path = self.router.route((p.x, p.y), dest, self._robot_disc(p))
             if path is None:
                 p.plan = []
                 p.state, p.reason = "failed", "no route"

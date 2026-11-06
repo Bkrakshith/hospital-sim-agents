@@ -153,9 +153,9 @@ class Router:
         return None
 
     def _discs(self, avoid, keep) -> frozenset:
-        """Cells within r of each (x, y, r) in avoid, leaving out any disc that holds a cell in keep."""
+        """Cells within r of each (x, y, r) in avoid, less the cells in keep and their neighbours (the route's ends)."""
         g = self.grid
-        keep = set(keep)
+        keep = {(y + dy, x + dx) for y, x in keep for dy in (-1, 0, 1) for dx in (-1, 0, 1)}
         out: set = set()
         for x, y, r in avoid:
             iy, ix = g.to_cell(x, y)
@@ -166,16 +166,15 @@ class Router:
                     cx, cy = g.to_world(iy + dy, ix + dx)
                     if math.hypot(cx - x, cy - y) <= r:
                         disc.add((iy + dy, ix + dx))
-            if not disc & keep:
-                out |= disc
+            out |= disc - keep
         return frozenset(out)
 
     def route(self, a: tuple, b: tuple, avoid=()) -> Optional[list[tuple[float, float]]]:
         """Waypoints from a to b. An endpoint in a wall is moved to the nearest free cell centre (within 1 m);
         None if there is none or no route. Cached on the (cell_a, cell_b) pair.
 
-        avoid: (x, y, radius) discs to keep out of, for this route only (people standing in the way). A disc that
-        holds either end is ignored; with no route around the discs, the plain route is returned. Not cached."""
+        avoid: (x, y, radius) discs to keep out of, for this route only (people standing in the way). The cells at
+        either end stay open; with no route around the discs, the plain route is returned. Not cached."""
         ca, cb = self._snap(self.grid.to_cell(*a)), self._snap(self.grid.to_cell(*b))
         if ca is None or cb is None:
             return None
