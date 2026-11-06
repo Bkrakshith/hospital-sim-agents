@@ -9,7 +9,7 @@ duration_min: 8
 robot_brief:
   role: night ward assistant
   job: Answer a call bell while the nurses are busy. Reassure the patient, fetch a nurse, and never lift or move the patient.
-robot_start: {x: 19.0, y: 15.0, yaw: 0.0}
+robot_start: {x: 19.0, y: 15.0, yaw: 1.2}   # facing up the corridor: the B2 door call light is in view
 characters:
   - {id: P1, name: Margaret Wilson, sex: female, age_band: 71+, role: patient, mood: anxious, room: B2, x: 25.101, y: 19.098, yaw: -1.571, bed: B2}
   - {id: P2, name: Noah Robinson, sex: male, age_band: 51-70, role: patient, mood: sad, room: B5, x: 25.101, y: 5.086, yaw: 1.571, bed: B5}
