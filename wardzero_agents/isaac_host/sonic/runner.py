@@ -4,9 +4,11 @@ Call ``SonicRunner.tick`` every 50 Hz policy tick (every 4th physics step at 200
 SONIC's MuJoCo joint order; apply ``pd_torque`` with the returned targets on every physics step; pin the pelvis
 while ``harness`` is True. All timings use the sim time the caller passes, so a slow sim stays correct.
 
-Start-up (``sonic_prep.md`` 8.4): HARNESS (pelvis pinned, joints ramp to SONIC's default pose over ``ramp_s``) ->
-SETTLE (harness released, default pose held ``settle_s``) -> planner initialised -> IDLE (``idle_s``) -> READY
-(commands are passed on). Any time after release, a fall (pelvis below 0.45 m or tilt over 60 deg) -> FALLEN:
+Start-up (``sonic_prep.md`` 8.4): HARNESS (pelvis pinned at ``harness_z``, joints ramp to SONIC's default pose over
+``ramp_s``, then the pin is lowered to ``low_z`` over ``lower_s``) -> SETTLE (harness released, default pose held
+``settle_s``) -> planner initialised -> IDLE (``idle_s``) -> READY (commands are passed on). With ``settle_s`` 0 the
+harness is released and the planner initialised on the same tick: the start-up the Isaac gate test proved
+(``research_notes/isaac_host/sonic_isaac_report.md``: ramp 1 s, lower to 0.762 m over 0.4 s, release with the policy). Any time after release, a fall (pelvis below 0.45 m or tilt over 60 deg) -> FALLEN:
 damping only (kp = 0) and no more commands; the run reports it.
 """
 from __future__ import annotations
@@ -26,6 +28,7 @@ from .quat import tilt_deg, yaw_of
 FALL_Z_M = 0.45
 FALL_TILT_DEG = 60.0
 HARNESS_Z_M = 0.79  # pelvis height to pin at during the ramp
+LOW_Z_M = 0.762  # ... lowered to this, so the feet just touch, before the release (Isaac gate test)
 
 
 class Phase(str, Enum):
@@ -50,16 +53,19 @@ def fall_reason(pelvis_z: float, base_quat_wxyz, floor_z: float = 0.0,
 @dataclass
 class TickOutput:
     targets: Targets  # MuJoCo order; JointMap.to_sim puts them in the simulator's order
-    harness: bool  # True: keep the pelvis pinned at HARNESS_Z_M
+    harness: bool  # True: keep the pelvis pinned at harness_z
     phase: Phase
     fall: Optional[str] = None  # the reason, once fallen
+    harness_z: Optional[float] = None  # where to pin the pelvis while harness is True
 
 
 class SonicRunner:
     def __init__(self, controller: SonicController, *, ramp_s: float = 1.0, settle_s: float = 0.5,
-                 idle_s: float = 1.0, floor_z: float = 0.0) -> None:
+                 idle_s: float = 1.0, floor_z: float = 0.0, lower_s: float = 0.0,
+                 harness_z: float = HARNESS_Z_M, low_z: float = LOW_Z_M) -> None:
         self.ctrl = controller
-        self.ramp_s, self.settle_s, self.idle_s = ramp_s, settle_s, idle_s
+        self.ramp_s, self.settle_s, self.idle_s, self.lower_s = ramp_s, settle_s, idle_s, lower_s
+        self.harness_z, self.low_z = harness_z, low_z
         self.floor_z = floor_z
         self.phase = Phase.HARNESS
         self.fall: Optional[str] = None
@@ -110,16 +116,20 @@ class SonicRunner:
             return TickOutput(Targets(q_mj.copy(), np.zeros(N_JOINTS), h.kd.copy(), np.zeros(N_JOINTS)),
                               False, self.phase, self.fall)
         if self.phase == Phase.HARNESS:
-            a = 1.0 if self.ramp_s <= 0 else min(1.0, (t - self._t_phase) / self.ramp_s)
+            dt = t - self._t_phase
+            a = 1.0 if self.ramp_s <= 0 else min(1.0, dt / self.ramp_s)
             q = self._q0 + a * (DEFAULT_ANGLES - self._q0)
-            if a >= 1.0:
-                self.phase, self._t_phase = Phase.SETTLE, t
+            b = 1.0 if self.lower_s <= 0 else min(1.0, max(0.0, dt - self.ramp_s) / self.lower_s)
+            z = self.harness_z + (b * (self.low_z - self.harness_z) if self.lower_s > 0 else 0.0)
+            if a < 1.0 or b < 1.0:
+                return TickOutput(self._held(q), True, Phase.HARNESS, harness_z=z)
+            self.phase, self._t_phase = Phase.SETTLE, t
+            if self.settle_s > 0:
                 return TickOutput(self._held(q), False, Phase.SETTLE)
-            return TickOutput(self._held(q), True, Phase.HARNESS)
         if self.phase == Phase.SETTLE:
             if t - self._t_phase < self.settle_s:
                 return TickOutput(self._held(DEFAULT_ANGLES), False, self.phase)
-            self.ctrl.planner_initialize(q_mj)
+            self.ctrl.planner_initialize(q_mj)  # with settle_s 0: on the tick the harness lets go
             self.phase, self._t_phase = Phase.IDLE, t
         if self.phase == Phase.IDLE and t - self._t_phase >= self.idle_s:
             self.phase = Phase.READY
