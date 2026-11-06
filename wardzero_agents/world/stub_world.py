@@ -168,6 +168,7 @@ class StubWorld:
         self.people: dict[str, _Person] = {}
         self.body_driven: set[str] = set()  # people whose phases a body ends (see end_phase)
         self.named: set[str] = set()  # people who have said their own first name aloud
+        self.trail_released: set[str] = set()  # followers whose guide is over: their follow ends now
         taken_beds: set[str] = set()
         for inst in loaded.instances:
             if inst.seat is not None:
@@ -403,6 +404,7 @@ class StubWorld:
                 self._fail(p, intent, "unknown target")
                 return []
             self._begin(p, intent)
+            self.trail_released.discard(intent.person)
             self._start(p, self._stand_phase(p) + [_Phase("walk", follow=ROBOT_ID, speed=speed, trail=True)])
         elif kind in APPROACH_KINDS:
             tgt = intent.target
@@ -710,10 +712,10 @@ class StubWorld:
 
     # ---- following the robot ------------------------------------------------------------------
     def trail_done(self, pid: str) -> bool:
-        """A person following the robot is done: the robot has stopped (no goal: it reached the place, or gave up)
-        and they have caught up with it. Also done when there is no robot."""
+        """A person following the robot is done: the robot's guide for them is over (at the place, or given up), or
+        the robot has stopped (no goal) and they have caught up with it. Also done when there is no robot."""
         p = self.people.get(pid)
-        if p is None or not self.loaded.scenario.robot.enabled:
+        if p is None or not self.loaded.scenario.robot.enabled or pid in self.trail_released:
             return True
         return not self.robot.has_goal and math.hypot(p.x - self.robot.x, p.y - self.robot.y) <= FOLLOW_DONE_M
 
@@ -727,6 +729,7 @@ class StubWorld:
         r = self.robot
         d = math.hypot(p.x - r.x, p.y - r.y)
         if self.trail_done(p.inst.person_id):
+            self.trail_released.discard(p.inst.person_id)
             p.plan.pop(0)
             p.posture = "standing"
             p.yaw = math.atan2(r.y - p.y, r.x - p.x)

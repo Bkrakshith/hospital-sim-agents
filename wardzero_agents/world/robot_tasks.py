@@ -185,6 +185,9 @@ class RobotTasks:
         g, self._guide = self._guide, None
         self.world.robot.speed_scale = 1.0
         if g is not None:
+            p = self.world.people.get(g["pid"])
+            if p is not None and p.plan and p.plan[0].kind == "walk" and p.plan[0].trail:
+                self.world.trail_released.add(g["pid"])  # following ends with the guide
             self._log({"t": t, "kind": "guide", "event": "end", "id": g["id"], "person": g["pid"], "reason": reason})
 
     def _arrived(self, g: dict) -> bool:

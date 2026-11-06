@@ -232,7 +232,7 @@ def test_generator_staff_seats_and_landmarks_match_the_site(site):
     """scripts/gen_waiting_area.py is the source of the staff seats and landmarks; the json and yaml carry them."""
     import runpy
     gen = runpy.run_path(str(ROOT / "scripts" / "gen_waiting_area.py"))
-    for k, (x, y, label) in gen["LANDMARKS"].items():
+    for k, (x, y, label) in {**gen["LANDMARKS"], **gen["SITE_LANDMARKS"]}.items():
         assert (site["landmarks"][k]["x"], site["landmarks"][k]["y"], site["landmarks"][k]["label"]) == (x, y, label)
     got = {s["id"]: s for s in site["seats"]}
     for s in gen["STAFF_SEATS"]:
