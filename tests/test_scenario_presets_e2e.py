@@ -1,8 +1,8 @@
 """Every scenario preset, end to end on the stub backend, with no ROS.
 
 The stub sim service, the director, the agent service (real minds, fake LLM) and the built-in robot
-mind (fake gateway) run in one process in lockstep: 120 sim-seconds at time scale 10. Then the report
-is built from the run folder."""
+mind (fake gateway) run in one process in lockstep, for the preset's whole duration at time scale 10. Then the
+report is built from the run folder."""
 import asyncio
 import json
 import math
@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 from langgraph.checkpoint.memory import MemorySaver
 
-from wardzero_agents.bench.metrics import RunData
+from wardzero_agents.bench.metrics import RunData, people_in_furniture_s, robot_near_furniture_s
 from wardzero_agents.bench.report import build_report
 from wardzero_agents.config.presets import load_scenario_presets, people_meta, preset_to_scenario
 from wardzero_agents.llm.fake import FakeGateway, default_policy
@@ -27,9 +27,9 @@ from wardzero_agents.runlog import RunLog
 
 CONFIG = Path(__file__).resolve().parents[1] / "config"
 PRESETS = load_scenario_presets(CONFIG)
-RUN_S = 120.0
 TIME_SCALE = 10.0
 WALL_STEP = 0.01  # x TIME_SCALE = 0.1 sim-s per step
+ROBOT_NEAR_FURNITURE_MAX_S = 10.0  # standing beside a bed or a desk to help someone is fine; brushing past is not
 
 
 # A movable stand-in for a bring-your-own wheeled robot (same sensors as the built-in one).
@@ -76,8 +76,9 @@ class AgentOut:
         self.items.append(("say", s))
 
 
-def run_scenario(preset_id, tmp_path, seconds=RUN_S, profile=None):
+def run_scenario(preset_id, tmp_path, seconds=None, profile=None):
     preset = PRESETS[preset_id]
+    seconds = preset.duration_min * 60.0 if seconds is None else seconds
     loaded = preset_to_scenario(preset, CONFIG, tmp_path / "staged")
     run_dir = tmp_path / "run"
     runlog = RunLog(run_dir)
@@ -181,10 +182,20 @@ def beat_seconds(at):
 def check_preset(preset_id, tmp_path, caplog, profile=None):
     with caplog.at_level("WARNING"):
         preset, loaded, run_dir, sim, stats = run_scenario(preset_id, tmp_path, profile=profile)
+    run_s = preset.duration_min * 60.0
     bad = [r.getMessage() for r in caplog.records if r.levelname == "ERROR"]
     assert not bad, bad[:3]  # a failed tick is logged, not raised: no errors may have been logged
-    assert stats["ticks"] > 100 and sim.t == pytest.approx(RUN_S, abs=0.2)
+    assert stats["ticks"] > 100 and sim.t == pytest.approx(run_s, abs=0.2)
     assert stats["decisions"] >= 1
+
+    # everyone with a mind takes stock as soon as they are there (at the start, or when they arrive), not only
+    # when something new happens
+    first = {}
+    for r in rows(run_dir, "decisions"):
+        first.setdefault(r["person"], r["t"])
+    late = {i.person_id: first.get(i.person_id) for i in loaded.instances
+            if first.get(i.person_id) is None or first[i.person_id] > i.arrive_at_s + 10.0}
+    assert not late, f"no decision in the first 10 s: {late}"
 
     # the people did something: a sampled (not static) person spoke or acted
     moving = [r for r in rows(run_dir, "says") + rows(run_dir, "intents")
@@ -192,11 +203,17 @@ def check_preset(preset_id, tmp_path, caplog, profile=None):
     assert moving, "no person spoke or acted"
     assert rows(run_dir, "status") and rows(run_dir, "robot_pose")
 
-    # the director's beats due inside the run all fired
-    due = [b for b in preset.timeline if beat_seconds(b.at) <= RUN_S - 5]
+    # every beat of the timeline fired
+    due = list(preset.timeline)
+    assert all(beat_seconds(b.at) < run_s for b in due)
     fired = [c["card"] for c in rows(run_dir, "cards") if c["ok"]]
     for b in due:
         assert b.card in fired, f"beat {b.id} ({b.card}) did not fire"
+
+    # nobody stood inside furniture, and the robot hardly brushed it
+    data = RunData.load(run_dir)
+    assert people_in_furniture_s(data) == 0
+    assert (robot_near_furniture_s(data) or 0.0) <= ROBOT_NEAR_FURNITURE_MAX_S
 
     # the preset's world objects exist (trays, specimen box, call bell, instruments, extinguisher...)
     seen = {o.get("id") for r in rows(run_dir, "objects") for o in r["objects"]}
@@ -206,8 +223,9 @@ def check_preset(preset_id, tmp_path, caplog, profile=None):
         assert oid in seen, f"object {oid} never appeared"
     if any(b.card == "fire_start" for b in due):  # ward_fire and evacuation_guide: the fire exists
         assert "fire" in kinds
-    if any(b.card == "call_bell_at" for b in due):  # the patient was nudged to ring (the fake mind does not)
-        assert any(n["person"] == "P1" for n in rows(run_dir, "nudges"))
+    for b in due:
+        if b.card == "call_bell_at":  # the patient was nudged to ring (the fake mind does not)
+            assert any(n["person"] == b.target for n in rows(run_dir, "nudges"))
     if any(b.card == "route_blocked" for b in due):
         assert "route_blocked" in {w["kind"] for w in rows(run_dir, "world")}
 
