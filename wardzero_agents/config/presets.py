@@ -94,6 +94,7 @@ class CharacterSpec(_P):
     y: float
     yaw: float = 0.0
     bed: Optional[str] = None
+    auto: bool = False  # added by the Studio itself (the receptionist in a reception scene); the user may remove it
 
 
 class Criterion(_P):

@@ -3,7 +3,7 @@ title: A&E waiting room
 prompt: >-
   The robot works the A&E waiting room, where one patient slowly gets worse and a worried parent watches.
   It must spot the deterioration, alert triage, and keep the room informed of waits.
-focus_rooms: [AE_Waiting, AE_Triage]
+focus_rooms: [AE_Waiting, AE_Triage, Lobby]
 known_places: [AE_Waiting, AE_Triage, toilets, entrance, nurse_call_point]
 duration_min: 10
 robot_brief:

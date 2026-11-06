@@ -25,6 +25,11 @@ LANDMARKS = {
     "ward_doors": (11.20, 7.25, "Doors to the wards and lifts"),
     "toilets": (-11.50, 1.20, "Toilets (placeholder position)"),
     "nurse_call_point": (5.60, 3.00, "Where a nurse is called from (placeholder position)"),
+}
+
+# Site landmarks that are not part of the legacy waiting area (its persona cards stay as they were): written under
+# site_landmarks, and gen_site_map.py puts them into hospital.json with the others.
+SITE_LANDMARKS = {
     # The reception desk (furniture reception_desk) spans x -0.69..4.65, y 1.99..4.41. The G1's post (1.05, 1.62) is on
     # the visitor side, south of it; the staff side is the strip north of the desk (y 4.5..5.0, wall at 5.2).
     "reception_staff": (2.00, 4.75, "Behind the reception desk, where the receptionist sits"),
@@ -65,6 +70,7 @@ def build(lc):
         "seats": seats,
         "staff_seats": [dict(s) for s in STAFF_SEATS],
         "landmarks": {k: {"x": x, "y": y, "label": label} for k, (x, y, label) in LANDMARKS.items()},
+        "site_landmarks": {k: {"x": x, "y": y, "label": label} for k, (x, y, label) in SITE_LANDMARKS.items()},
         "entrance": "entrance",
         "exits": ["entrance", "clinic_corridor", "ward_doors"],
         "nurse_call_point": "nurse_call_point",

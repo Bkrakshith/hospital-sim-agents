@@ -150,6 +150,7 @@ class WaitingArea(_Model):
     seats: list[Seat]
     staff_seats: list[Seat] = Field(default_factory=list)  # in the site's seats; not offered as waiting seats
     landmarks: dict[str, Landmark]
+    site_landmarks: dict[str, Landmark] = Field(default_factory=dict)  # in the site map only, not the area's places
     entrance: str
     exits: list[str]
     nurse_call_point: str

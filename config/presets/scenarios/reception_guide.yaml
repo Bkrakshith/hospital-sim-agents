@@ -3,13 +3,13 @@ title: Reception and guide
 prompt: >-
   The robot stands at the main reception. People arrive, some lost and some hard of hearing, and ask for directions.
   It must greet them, give clear directions and walk people to where they are going.
-focus_rooms: [Lobby]
-known_places: [entrance, reception_front, clinic_corridor, ward_doors, toilets, nurse_call_point, Main_LiftLobby]
+focus_rooms: [Lobby, Ward_Entrance]
+known_places: [entrance, reception_front, clinic_corridor, ward_doors, ward_entrance, toilets, nurse_call_point, Main_LiftLobby]
 duration_min: 10
 robot_brief:
   role: reception guide
-  job: Greet people who come to reception, give short clear directions, and walk them to where they are going if they cannot find it.
-  destination: ward_doors
+  job: Greet people who come to reception, give short clear directions, and walk them to where they are going if they cannot find it. If someone needs a nurse or a person, walk to the reception desk and tell the receptionist.
+  destination: ward_entrance
 robot_start: {x: 1.05, y: 1.62, yaw: -1.5708}
 characters:
   - {id: V1, name: Priya Patel, sex: female, age_band: 31-50, role: visitor, mood: anxious, room: Lobby, x: -1.2, y: -1.0, yaw: 0.0}

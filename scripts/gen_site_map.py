@@ -136,7 +136,7 @@ WING_LABELS = {"Link": "Link to the surgical wing (4 m)", "PreOp": "Pre-op", "PA
 # Scenario focus areas, spec section 9. route_rooms: crossed between the entrance or robot start and the focus rooms.
 BEDROOMS = ["B1", "B2", "B3", "B4", "B5", "B6"]
 HINTS = {
-    "reception_guide": {"focus_rooms": ["Lobby"], "route_rooms": ["AE_Waiting", "Main_Corridor"]},
+    "reception_guide": {"focus_rooms": ["Lobby", "Ward_Entrance"], "route_rooms": ["AE_Waiting", "Main_Corridor"]},
     "scrub_nurse": {"focus_rooms": ["Theatre"], "route_rooms": ["Scrub"]},
     "meal_round": {"focus_rooms": BEDROOMS, "route_rooms": ["Ward_Corridor", "Ward_Entrance"]},
     "ward_fire": {"focus_rooms": ["Ward_Corridor"] + BEDROOMS, "route_rooms": ["Ward_Entrance", "Main_Corridor"]},
@@ -146,7 +146,7 @@ HINTS = {
     "visiting_rush": {"focus_rooms": ["Ward_Corridor"], "route_rooms": ["Lobby", "Main_Corridor", "Ward_Entrance"]},
     "wandering_patient": {"focus_rooms": ["Ward_Corridor"] + BEDROOMS, "route_rooms": ["Ward_Entrance"]},
     "night_call_bell": {"focus_rooms": BEDROOMS + ["Ward_WS1", "Ward_WS2"], "route_rooms": ["Ward_Corridor"]},
-    "ae_waiting": {"focus_rooms": ["AE_Waiting", "AE_Triage"], "route_rooms": ["Lobby", "Main_Corridor"]},
+    "ae_waiting": {"focus_rooms": ["AE_Waiting", "AE_Triage", "Lobby"], "route_rooms": ["Main_Corridor"]},
 }
 
 
@@ -422,7 +422,7 @@ def build(grid_src=None):
                           "d": r3(max(ys) - min(ys)), "h": NURSE_BASE_H})
 
     landmarks = {}
-    for k, v in wait["landmarks"].items():
+    for k, v in {**wait["landmarks"], **wait.get("site_landmarks", {})}.items():
         landmarks[k] = {"x": v["x"], "y": v["y"], "label": v["label"]}
         iy, ix = to_cell(grid, v["x"], v["y"])
         if grid[0][iy, ix]:

@@ -1,6 +1,7 @@
 """Deterministic offline gateway for tests. No network, no key, zero usage."""
 from __future__ import annotations
 
+import re
 import time
 from typing import Callable, Optional
 
@@ -36,9 +37,60 @@ def _person_in_view(situation: str) -> bool:
     return bool(rows) and "nobody in view" not in block
 
 
-def _decision(kind: str, target: str = "", say: str = "") -> dict:
-    return {"intent": {"kind": kind, "target": target, "text": ""}, "say": say, "addressee": "",
+def _decision(kind: str, target: str = "", say: str = "", addressee: str = "") -> dict:
+    return {"intent": {"kind": kind, "target": target, "text": ""}, "say": say, "addressee": addressee,
             "mood": "calm", "patience_delta": 0.0, "reason": "fake policy"}
+
+
+ROBOT_TELL_SAY = "I will let the receptionist know straight away. Please wait here."
+ROBOT_TELL_MESSAGE = "Excuse me, a visitor here needs a nurse, please."
+ROBOT_GUIDE_SAY = "Of course. Please come with me, I will walk with you."
+STAFF_HELLO = "Hello, I am from reception. A nurse is on the way to you."
+
+
+def _robot_tracks(situation: str) -> list[tuple[float, str]]:
+    """(distance, track) of every track the robot's camera lists, nearest first."""
+    block = situation.split("People your camera sees", 1)[-1].split("Objects in view", 1)[0]
+    return sorted((float(m.group(2)), m.group(1)) for m in re.finditer(r"^- (t\w+): ([0-9.]+) m", block, re.M))
+
+
+def _robot_reacts(req: LLMRequest, props: dict) -> Optional[dict]:
+    """The fake robot reacts to two requests spoken to it, once each: a nurse (tell_staff about the nearest person
+    it has not helped yet) and the ward (guide them to the brief's destination). Otherwise None."""
+    u = req.user
+    asked = " ".join(re.findall(r"someone speaking to you[^:]*: \"([^\"]*)\"", u)).lower()
+    allowed = props.get("action", {}).get("enum", [])
+    done = set(re.findall(r"for track (t\w+)", u))
+    tracks = [t for _, t in _robot_tracks(u) if t not in done]
+    if not asked or not tracks:
+        return None
+    base = {"say": "", "toward_track": tracks[0], "action": "none", "target": tracks[0], "item": "",
+            "destination": "", "place": [], "message": "", "reason": "fake policy"}
+    dest = re.search(r"^Destination: (.+)$", req.persona_card or "", re.M)
+    if "ward" in asked and "guide" in allowed and "You started guide" not in u and dest:
+        return {**base, "say": ROBOT_GUIDE_SAY, "action": "guide", "destination": dest.group(1).strip()}
+    if "nurse" in asked and "tell_staff" in allowed and "You started tell_staff" not in u:
+        return {**base, "say": ROBOT_TELL_SAY, "action": "tell_staff", "message": ROBOT_TELL_MESSAGE}
+    return None
+
+
+def _staff_errand(u: str) -> Optional[dict]:
+    """A member of staff the robot told about a person: go to them, say hello, then back to the chair."""
+    seat = re.search(r"sat at seat (\w+)", u)
+    nudge = re.search(r"NUDGE: The reception robot tells you:.*?person id (\w+)", u)
+    if nudge:
+        return _decision("approach", nudge.group(1))
+    cur = re.search(r"Current activity: (approach|sit_down) (\w+) \((\w+)\)", u)
+    if cur is None or seat is None:
+        return None
+    kind, target, state = cur.groups()
+    if kind == "approach" and state in ("sent", "running"):
+        return _decision("approach", target)
+    if kind == "approach" and state == "done":
+        return _decision("sit_down", seat.group(1), STAFF_HELLO, target)
+    if kind == "sit_down" and state in ("sent", "running"):
+        return _decision("sit_down", target)
+    return None
 
 
 def default_policy(req: LLMRequest) -> dict:
@@ -52,10 +104,19 @@ def default_policy(req: LLMRequest) -> dict:
     if req.role == "summarise":
         return {"memories": []}
     if req.role == "robot":  # the built-in robot waits, and greets once when a person is in view
+        acted = _robot_reacts(req, props)
+        if acted is not None:
+            return acted
         say = ROBOT_GREETING if _person_in_view(req.user) and "you said:" not in req.user else ""
         return {"say": say, "toward_track": "", "action": "none", "target": "", "item": "",
                 "destination": "", "place": [], "reason": "fake policy"}
     u = req.full_user
+    if "NUDGE: The robot is offering to walk you" in u or re.search(r"Current activity: follow \S+ \((sent|running)\)", u):
+        return _decision("follow", "g1")  # the natural reply to a guide offer, and keep following
+    if "Role: receptionist." in (req.persona_card or "") or "NUDGE: The reception robot tells you" in u:
+        errand = _staff_errand(u + "\n" + (req.persona_card or ""))
+        if errand is not None:
+            return errand
     if "ROBOT SAID TO YOU" in u:
         lm = _landmark(u.split("ROBOT SAID TO YOU", 1)[1].split("\n", 1)[0])
         return _decision("walk_to", lm, "Thank you") if lm else _decision("wait_standing", "", "Thank you")

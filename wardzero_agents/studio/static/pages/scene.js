@@ -160,7 +160,7 @@
         onclick: () => { S.sel = c.id; S.map.zoomToPoint(c.x, c.y, 9); drawMap(); renderChars(); } },
         h("span.avatar", { style: "background:" + WZMap.roleColor(c.role) }, c.name.charAt(0).toUpperCase()),
         h("div.cbody",
-          h("div.cname", c.name),
+          h("div.cname", c.name, c.auto ? h("span.chip.auto", { title: "Added automatically for this scenario. Remove it if you do not want it." }, "auto") : null),
           h("div.cmeta", roleLabel(c.role) + " · " + moodLabel(c.mood)),
           h("div.cmeta.dim", roomLabel(c.room) + (c.bed ? ", bed " + c.bed : "")),
           m ? h("span.trust", { title: "Trust " + m.trust.toFixed(2) + ", stage " + m.stage + ". " + m.runs + " runs, " + m.violations + " violations, " + m.repairs + " repairs." },

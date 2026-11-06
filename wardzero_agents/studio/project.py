@@ -48,6 +48,7 @@ class Project(BaseModel):
     record: StrictBool = False
     record_res: Literal["1280x720", "1920x1080"] = "1280x720"
     voice: StrictBool = True  # with record: spoken voices in the recorded videos (added after the run)
+    removed_auto: list[str] = Field(default_factory=list)  # auto characters the user removed: not added back
 
 
 def valid_id(pid: str) -> bool:
@@ -56,7 +57,9 @@ def valid_id(pid: str) -> bool:
 
 def defaults_from_preset(preset: ScenarioPreset) -> dict:
     """Project fields a fresh project takes from its scenario preset (prompts stay None: use the preset)."""
-    return {"characters": [c.model_dump(mode="json") for c in preset.characters],
+    from .auto_staff import with_auto
+    return {"characters": [c.model_dump(mode="json") for c in with_auto(list(preset.characters), preset)],
+            "removed_auto": [],
             "robot_start": preset.robot_start.model_dump(mode="json"), "duration_min": preset.duration_min}
 
 
