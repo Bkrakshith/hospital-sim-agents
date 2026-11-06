@@ -42,7 +42,8 @@ def _waiting_seat_at(site, x: float, y: float):
 
 
 def _stand_in_front(site, seat, others: list[CharacterSpec]) -> tuple[float, float, float]:
-    """A free standing spot STAND_OFF_M in front of a seat (facing away from it), else beside or behind it."""
+    """A free standing spot STAND_OFF_M in front of a seat (the way it faces), else a little nearer or further,
+    beside or behind it. The waiting area is open plan, so the spot may be just outside the room's outline."""
     for turn in (0.0, math.pi / 2, -math.pi / 2, math.pi):
         for dist in (STAND_OFF_M, 0.8, 1.2, 0.6):
             a = seat.yaw + turn

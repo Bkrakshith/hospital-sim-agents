@@ -399,3 +399,27 @@ a.btn { text-decoration: none; }
 .cost.final { opacity: .7; }
 .cost.final .meter i { background: var(--dim); }
 body:has(.coord-chip) .toasts { bottom: 110px; }
+
+/* placing characters and forbidden areas (Scene page) */
+.hmap .person.draggable { cursor: grab; }
+.hmap .person.dragging { cursor: grabbing; }
+.hmap .person-arm { stroke: var(--accent); stroke-width: 2px; opacity: .75; }
+.hmap .person-handle { fill: var(--panel); stroke: var(--accent); stroke-width: 2.5px; cursor: grab; }
+.hmap .farea { fill: rgba(211, 47, 47, .16); stroke: #d32f2f; stroke-width: 2px; vector-effect: non-scaling-stroke; stroke-dasharray: 6 3; }
+.hmap .farea.draft { fill: rgba(211, 47, 47, .10); stroke-dasharray: 3 3; }
+.hmap .farea-tag text { fill: #c62828; font-size: 12px; font-weight: 700; paint-order: stroke; stroke: var(--halo); stroke-width: 3.5px; stroke-linejoin: round; pointer-events: none; }
+.mapbox.drawing svg { cursor: crosshair; }
+.icon-btn.on { background: var(--bad-soft); color: var(--bad); }
+.legend .lg i.farea-sw { width: 14px; height: 10px; border: 2px dashed #d32f2f; background: rgba(211, 47, 47, .16); border-radius: 2px; display: inline-block; }
+.seat-chk { display: inline-flex; align-items: center; gap: 6px; margin-top: 4px; font-size: 12.5px; color: var(--muted); cursor: pointer; }
+.seat-chk input { accent-color: var(--accent); margin: 0; }
+.areas-sec { margin-top: 18px; }
+.areas { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.area { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); }
+.area .sw { width: 16px; height: 12px; border: 2px dashed #d32f2f; background: rgba(211, 47, 47, .16); border-radius: 2px; flex: none; }
+.area .abody { flex: 1; min-width: 0; }
+.area .aname { font-weight: 600; overflow-wrap: anywhere; }
+.area .ameta { font-size: 12.5px; color: var(--muted); }
+.field.check { flex-direction: row; align-items: flex-start; gap: 8px; }
+.field.check input { accent-color: var(--accent); margin-top: 3px; }
+.field.check small { display: block; color: var(--muted); font-size: 12.5px; }
