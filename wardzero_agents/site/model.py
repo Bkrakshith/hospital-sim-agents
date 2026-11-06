@@ -155,8 +155,11 @@ class Site:
         return min(hits, key=lambda r: r.area).id if hits else None
 
     def resolve(self, place: str) -> Optional[tuple[float, float]]:
-        """Kinds: landmark, seat, room, bed, furniture. A bare id tries them in that order."""
-        kinds = ("landmark", "seat", "room", "bed", "furniture")
+        """Kinds: landmark, room, seat, bed, furniture. A bare id tries them in that order.
+
+        Rooms come before seats because the A&E seats B1-B3 share their ids with the ward bedrooms: "B1" is the
+        bedroom, the seat is "seat:B1" (sit_down looks seats up in the seat table itself)."""
+        kinds = ("landmark", "room", "seat", "bed", "furniture")
         if ":" in place:
             kind, _, name = place.partition(":")
             if kind not in kinds:

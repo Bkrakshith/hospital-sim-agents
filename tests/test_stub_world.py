@@ -478,3 +478,16 @@ def test_a_reflex_look_at_overlay_leaves_the_current_activity_alone():
     w.apply_intent(I("look_at", id="glance", target="g1", overlay=True))
     s = st(w, "P5")
     assert s.intent_id == "walk" and s.state == "running"
+
+
+def test_a_bare_bedroom_id_is_the_ward_and_sit_down_still_finds_the_ae_seat(tmp_path):
+    from wardzero_agents.config.presets import load_scenario_presets, preset_to_scenario
+    cfg = Path(__file__).resolve().parents[1] / "config"
+    loaded = preset_to_scenario(load_scenario_presets(cfg)["ae_waiting"], cfg, tmp_path / "s")
+    w = StubWorld(loaded, 1)
+    assert w.site.room_at(*w._resolve_place("B1")) == "B1"
+    w.apply_intent(Intent(id="a", person="V1", t=0.0, kind="sit_down", target="B3"))
+    v = w.people["V1"]
+    assert v.state == "running" and v.claim == "B3"
+    seat = w.site.seats["B3"]
+    assert v.plan[-2].goal == (seat.x, seat.y)
