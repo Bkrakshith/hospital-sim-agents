@@ -59,6 +59,8 @@ ACTIONS = ("hand_over", "take", "extinguish", "press_call", "guide_start", "guid
            "approach")
 GUIDE_CARD = "robot_guide"
 TELL_CARD = "robot_tell_staff"
+CALL_CARD = "robot_staff_call"
+CALL_POINT_USES = ("nurse_base", "triage")  # rooms with a staff call point
 NOTE_CARD = "robot_desk_note"
 SEAT_CARD = "robot_seat"
 SEAT_SAY = "This seat is free. Please take a seat."
@@ -313,9 +315,51 @@ class RobotTasks:
 
     def _press_call(self, aid, msg, t) -> None:
         w = self.world
-        bx, by = w._nurse_base(w.robot.x, w.robot.y)
-        self._out.audio.append(w._event(t, "person", "bell_robot", bx, by, 2.0, CHIME_DB))
-        self._result(aid, "press_call", True, "ok", t)
+        about = self._person(msg["track"]) if msg.get("track") is not None else None
+        bx, by = self.call_point()
+        ev = w._event(t, "person", "bell_robot", bx, by, 2.0, CHIME_DB)
+        self._out.audio.append(ev)
+        text = self.call_message(about)
+        heard = []
+        for sid, q in w.people.items():
+            if q.posture == "gone" or q.kind == "static" or q.inst.role not in WARD_STAFF_ROLES + RECEPTION_ROLES:
+                continue
+            if audio.route(ev, Pose(q.x, q.y, q.yaw), sid, q.inst.hearing_loss_db, w.rng) is not None:
+                heard.append(sid)  # even faintly: a call chime is known when heard
+                self._out.nudges.append(Nudge(person=sid, t=t, card=CALL_CARD, message=text))
+        self._result(aid, "press_call", True, "answered" if heard else "unanswered", t)
+
+    def call_point(self) -> tuple[float, float]:
+        """Where the robot's staff call chimes: the nearest nurse base or triage room, in the robot's own compartment
+        when there is one there (so A&E calls triage, not a ward)."""
+        w, r = self.world, self.world.robot
+        rooms = [rm for rm in w.site.rooms.values() if rm.use in CALL_POINT_USES]
+        if not rooms:
+            return r.x, r.y
+        mine = w._compartment_at(r.x, r.y)
+        same = [rm for rm in rooms if mine is not None and rm.compartment == mine]
+        rm = min(same or rooms, key=lambda rm: math.hypot(rm.centre[0] - r.x, rm.centre[1] - r.y))
+        return rm.centre
+
+    def _room_of(self, x: float, y: float, default: str = "the building") -> str:
+        w = self.world
+        rid = w.site.room_at(x, y)
+        return w.site.rooms[rid].label.split(",")[0] if rid else default
+
+    def call_message(self, pid: Optional[str]) -> str:
+        """What a staff member who hears the robot's staff call is told: where the robot is, which call lights are on,
+        and who needs them when the robot said."""
+        w = self.world
+        out = f"The robot pressed the staff call from {self._room_of(w.robot.x, w.robot.y)}"
+        lit = sorted(b.bed_id for b in w.objects.bells.values() if b.active)
+        if lit:
+            out += f"; call light on at bed {', '.join(lit)}"
+        p = w.people.get(pid or "")
+        if p is not None:
+            name = p.inst.display_name if pid in w.named else "they have not said their name"
+            return (f"{out}. The person who needs a nurse is person id {pid} ({name}), in {self._room_of(p.x, p.y)} "
+                    f"at x {p.x:.1f}, y {p.y:.1f}: go to them (approach {pid}), help, then go back to your work.")
+        return f"{out}. Someone there needs a nurse: go to them, help, then go back to your work."
 
     def _approach(self, aid, msg, t) -> None:
         w = self.world
