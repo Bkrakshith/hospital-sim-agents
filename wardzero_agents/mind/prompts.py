@@ -100,15 +100,25 @@ def role_kinds(role: Optional[str]) -> list[str]:
     return [k for k in ALL_INTENT_KINDS if k in allowed]
 
 
-def system_fixed(role: Optional[str] = None) -> str:
+def robot_role_of(scenario) -> Optional[str]:
+    """The robot's role as people are told it: None when the scenario has no robot brief (the original
+    reception scenarios), "" when the brief names no role."""
+    brief = getattr(scenario, "robot_brief", None)
+    return None if brief is None else str(brief.get("role") or "")
+
+
+def system_fixed(role: Optional[str] = None, robot_role: Optional[str] = None) -> str:
     """SYSTEM_FIXED, plus one help line per intent this role has beyond the basics (and a note
-    when it lacks some of the basics). Identical to SYSTEM_FIXED when the role has the basics only."""
+    when it lacks some of the basics). Identical to SYSTEM_FIXED when the role has the basics only
+    and the scenario has no robot brief (robot_role None, see robot_role_of). With a brief the robot
+    is not called a reception robot: the persona card gives its role instead."""
     kinds = role_kinds(role)
     extra = [k for k in kinds if k not in BASIC_INTENTS]
     lost = [k for k in INTENT_KINDS if k not in kinds]
+    base = SYSTEM_FIXED if robot_role is None else SYSTEM_FIXED.replace("the reception robot", "the robot")
     if not extra and not lost:
-        return SYSTEM_FIXED
-    out = SYSTEM_FIXED
+        return base
+    out = base
     if extra:
         out += "\nYour role also lets you choose:\n" + "".join(f"  - {k}: {_INTENT_HELP[k]}\n" for k in extra)
     if lost:
@@ -177,7 +187,8 @@ WOM_NO = "Keep your opinion of the robot to yourself unless asked."
 
 def persona_card(inst: PersonInstance, area: WaitingArea, site=None, known_places=(), *,
                  trust_stage: int = 0, ladder: "dict[int, str] | None" = None,
-                 robot_memories: bool = False, word_of_mouth: "bool | None" = None) -> str:
+                 robot_memories: bool = False, word_of_mouth: "bool | None" = None,
+                 robot_role: Optional[str] = None) -> str:
     """Stable description of one person and the places they can name. It is the cached prompt block.
 
     The trust section is added only for a campaign person who has moved off stage 0 or remembers the
@@ -217,7 +228,10 @@ def persona_card(inst: PersonInstance, area: WaitingArea, site=None, known_place
         lines.append("Seat ids: " + ", ".join(s.id for s in area.seats) + ".")
     else:
         lines += _known_places(inst, site, known_places)
-    lines.append("The reception robot is g1.")
+    if robot_role is None:  # no robot brief: the original reception scenarios keep their exact card
+        lines.append("The reception robot is g1.")
+    else:
+        lines.append(f"The robot is g1 ({robot_role})." if robot_role else "The robot is g1.")
     if trust_stage > 0 or robot_memories:
         lines.append(TRUST_HEADER)
         if ladder and ladder.get(trust_stage):
@@ -312,7 +326,7 @@ def _seen_line(s: Seen) -> str:
     if s.kind == "sign":
         return f"- sign {s.id}: \"{s.detail or ''}\" ({where})"
     if s.kind == "robot":
-        return f"- the reception robot {s.id} ({where})"
+        return f"- the robot {s.id} ({where})"
     if s.kind == "person":
         return f"- person {s.id}{f' ({s.detail})' if s.detail else ''} ({where})"
     return f"- seat {s.id} ({where})"
