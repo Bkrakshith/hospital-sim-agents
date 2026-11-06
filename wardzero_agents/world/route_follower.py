@@ -46,6 +46,7 @@ SETTLE_S = 0.6  # the robot counts as no longer turning when its yaw moved < SET
 SETTLE_YAW = math.radians(2)
 CORRECT_GAIN = 1.2  # over-asks a little, since the planner delivers ~90 % of a facing step
 RETARGET = math.radians(4)
+DOOR_ZONE_M = 1.5  # within this of a swinging door's line the G1 keeps walking speed even with people near
 LOOKAHEAD_M = 0.8  # pure-pursuit point ahead on the route segment (cross-track correction)
 # route clearance band for the walking G1 (half-width with arms ~0.35 m). The band is soft and the map's cells are
 # 0.2 m, so a 0.45 m band still let the route pass 0.31 m from the end of the reception desk; 0.6 keeps it >= 0.44 m
@@ -235,9 +236,21 @@ class RouteFollower:
             return FollowerCommand(IDLE, 0.0, None, face, TURNING)
         slow = near_any(x, y, people, self.slow_radius) or (
             self.slow_near_doors and near_any(x, y, doors, self.slow_radius))
+        if slow and self._in_door_zone(x, y):
+            slow = False  # pushing a closer at 0.3 m/s wedges the G1 against the leaf: walking speed through a door
         speed = self.slow_speed if slow else self.open_speed
         return FollowerCommand(SLOW_WALK, speed, face, face, FOLLOWING, slow)
 
+
+    def _in_door_zone(self, x: float, y: float, zone: float = DOOR_ZONE_M) -> bool:
+        """Within ``zone`` of a swinging door's line (its leaves sweep about a metre each way)."""
+        for (ax, ay), (bx, by) in self.door_lines:
+            dx, dy = bx - ax, by - ay
+            L2 = dx * dx + dy * dy
+            u = 0.0 if L2 < 1e-12 else max(0.0, min(1.0, ((x - ax) * dx + (y - ay) * dy) / L2))
+            if math.hypot(x - (ax + u * dx), y - (ay + u * dy)) < zone:
+                return True
+        return False
 
     def carrot(self, x: float, y: float) -> tuple[float, float]:
         """The point to steer at: ``lookahead`` ahead of the robot's foot on the current segment, at most its end."""

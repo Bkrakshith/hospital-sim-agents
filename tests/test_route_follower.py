@@ -234,3 +234,11 @@ def test_a_route_through_a_swinging_door_passes_straight_through_one_leaf():
     assert rf.through_leaves(route, []) == route
     blocked = rf.through_leaves(route, [door], free=lambda x, y: x > 4.6)
     assert blocked[1][0] >= 4.6  # shortened when the approach point is blocked
+
+
+def test_people_do_not_slow_the_robot_while_it_pushes_through_a_door():
+    f = RouteFollower()
+    f.door_lines = [((6.0, 2.0), (6.0, 4.0))]
+    f.set_route([(10.0, 2.5)])
+    assert f.update(0.0, (5.2, 2.5, 0.0), people=[(4.5, 3.5)]).speed == rf.OPEN_SPEED  # in the door zone
+    assert f.update(0.1, (2.0, 2.5, 0.0), people=[(2.5, 3.5)]).speed == rf.SLOW_SPEED  # away from it
