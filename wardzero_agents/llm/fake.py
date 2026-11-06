@@ -95,6 +95,11 @@ def _staff_errand(u: str) -> Optional[dict]:
 
 def default_policy(req: LLMRequest) -> dict:
     props = (req.schema or {}).get("properties", {})
+    if req.role == "report" and "flow_yaml" in props:  # adapting a scenario flow: keep the preset's
+        u = req.user
+        i, j = u.find("<current_flow>"), u.find("</current_flow>")
+        return {"flow_yaml": u[i + len("<current_flow>"):j] if 0 <= i < j else "", "notes": "The scripted model kept "
+                "the preset's flow."}
     if req.role == "report":
         return {"narrative": "", "suggestions": []}
     if req.role == "summarise" and "likeability" in props:  # the after-run questionnaire

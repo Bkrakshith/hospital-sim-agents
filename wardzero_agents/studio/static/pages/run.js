@@ -96,6 +96,10 @@
     const phases = h("ol.phases", { "aria-label": "Run progress" });
     const tail = h("ul.tail", { "aria-label": "What was said" });
     const tailBox = h("section.rsec", h("h3.sub", "What was said"), tail, h("p.muted.small.empty-tail", "Nothing said yet. People start talking once the run begins."));
+    // the scenario flow: before a run, a button to look at it; during and after one, the live tree with each step's state
+    const flowTree = h("div.flow-live");
+    const flowBox = h("section.rsec", h("div.sec-head", h("h3.sub", "Scenario flow"),
+      h("button.btn.small", { type: "button", onclick: () => WZ.showFlow(P().id) }, "View flow")), flowTree);
     const reportBtn = h("button.btn.primary.wide", { type: "button", hidden: true, onclick: () => { location.hash = "#/report"; } }, "Open the report");
     const errBox = h("div.error", { role: "alert" });
 
@@ -114,7 +118,7 @@
             switchRow("carry_memory", "Carry memory between repeats", "People remember the earlier run. Applies when repeats is more than 1."),
             switchRow("baseline", "Also run the built-in robot", "Runs the same seeds with the built-in G1 to compare."))),
         h("section.rsec.actions", startBtn, stopBtn, errBox, stateBox, phases, reportBtn),
-        tailBox);
+        tailBox, flowBox);
       refresh();
     }
     const scenarioTitle = () => { const s = WZ.presets.scenarios.find((x) => x.id === P().scenario_id); return s ? s.title : P().scenario_id; };
@@ -122,11 +126,12 @@
     // ---- control ----
     async function start() {
       errBox.textContent = ""; S.starting = true; refresh();
+      if (P().scenario_prompt) { startBtn.textContent = "Adapting the flow to your prompt…"; }
       try {
         const r = await API.post("/api/run/start", { project_id: P().id });
         WZ.state = Object.assign({}, WZ.state, { running: true, phase: "running", run_id: r.run_id, has_report: false });
       } catch (e) { errBox.textContent = e.message; }
-      S.starting = false; refresh();
+      S.starting = false; startBtn.textContent = "Start run"; refresh();
     }
     async function stop() {
       S.stopping = true; refresh();
@@ -172,6 +177,8 @@
       const says = ((WZ.lastSays && WZ.lastSays.says) || []).slice(-8);
       tail.replaceChildren(...says.map((e) => h("li", h("time", clock(e.t)), h("b", nameOf(e.person)), h("span", e.text || ""))));
       tailBox.querySelector(".empty-tail").hidden = says.length > 0;
+      if (s.flow) { flowTree.replaceChildren(WZ.flowTree(s.flow)); }
+      else if (!s.running) flowTree.replaceChildren(h("p.muted.small", "The run follows this scenario's flow: each event waits until the scene is ready for it. Press View flow to see it."));
       // overhead preview slot
       if (s.preview_url) { if (preview.getAttribute("src") !== s.preview_url) preview.setAttribute("src", s.preview_url); preview.hidden = false; }
       else { preview.hidden = true; preview.removeAttribute("src"); }

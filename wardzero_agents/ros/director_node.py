@@ -37,7 +37,9 @@ TIMELINE_PERIOD_S = 1.0
 AUDIT_PERIOD_S = 30.0  # wall seconds: the ROS graph does not change with sim time
 AUDIT_FIRST_S = 2.0
 MAX_EVENTS = 100
-TAIL_STREAMS = ("decisions", "says", "tokens")
+TAIL_STREAMS = ("decisions", "says", "tokens", "audio", "robot_tasks", "robot_pose", "objects")
+SPOKE_NEAR_M = 2.5  # the robot "spoke to" someone it addressed, or (no addressee) anyone this close
+ROBOT_ACTIONS = ("press_call", "hand_over", "take", "extinguish", "approach")  # result rows the flow counts
 
 
 class Outbox(Protocol):
@@ -86,8 +88,18 @@ class DirectorService:
         self.out = out
         self.run_id = run_id
         self.snapshot_fn = snapshot_fn
-        self.engine = StoryboardEngine(loaded.storyboard, loaded.deck)
         sc = loaded.scenario
+        if getattr(loaded, "flow", None) is not None:  # the scenario's flow (a behaviour tree) drives the cards
+            from ..flows.engine import FlowEngine
+            self.engine = FlowEngine(loaded.flow, loaded.deck)
+        else:
+            self.engine = StoryboardEngine(loaded.storyboard, loaded.deck)
+        self.cast = {c.id for c in sc.cast}
+        self.robot_xy = (sc.robot.x, sc.robot.y)  # live, from robot_pose
+        self.robot_said_to: set[str] = set()
+        self.said_to_robot: set[str] = set()
+        self.robot_did: list[tuple[str, Optional[str]]] = []
+        self.fires: dict[str, bool] = {}
         self.executor = CardExecutor(loaded.deck, {i.person_id: i for i in loaded.instances},
                                      loaded.personas, sc.seed)
         self.seed = sc.seed
@@ -146,7 +158,10 @@ class DirectorService:
         self._refresh()
 
     def ingest(self, stream: str, rec: dict) -> None:
-        """One record from the agent node's run log."""
+        """One record from the run log (the agent node's streams, and the sim's robot and object streams)."""
+        if stream in ("audio", "robot_tasks", "robot_pose", "objects"):
+            self._ingest_world(stream, rec)
+            return
         pid = rec.get("person")
         if stream == "tokens":
             c = rec.get("cost_usd")
@@ -159,6 +174,8 @@ class DirectorService:
                                          "last_said": None})
         if stream == "says":
             m["last_said"] = rec.get("text")
+            if rec.get("addressee") in ("g1", "robot"):
+                self.said_to_robot.add(pid)
         elif stream == "decisions":
             res = rec.get("result") if isinstance(rec.get("result"), dict) else {}
             if rec.get("error"):
@@ -171,10 +188,51 @@ class DirectorService:
                 m["mood"] = res["mood"]
             m["reason"] = rec.get("reason")
 
+    def _ingest_world(self, stream: str, rec: dict) -> None:
+        """What the flow's conditions need: where the robot is, whom it spoke to, what it did, the fires."""
+        if stream == "robot_pose":
+            x, y = rec.get("x"), rec.get("y")
+            if isinstance(x, (int, float)) and isinstance(y, (int, float)):
+                self.robot_xy = (float(x), float(y))
+        elif stream == "audio":
+            if rec.get("source_kind") != "robot":
+                return
+            to = rec.get("addressee")
+            if isinstance(to, str) and to:
+                self.robot_said_to.add(to)
+            else:
+                rx, ry = self.robot_xy
+                self.robot_said_to |= {pid for pid, st in self.statuses.items()
+                                       if st.posture != "gone" and math.hypot(st.x - rx, st.y - ry) <= SPOKE_NEAR_M}
+        elif stream == "robot_tasks":
+            kind = rec.get("kind")
+            if kind == "guide" and rec.get("event") in ("start", "seat"):
+                self.robot_did.append(("guide" if rec["event"] == "start" else "seat", rec.get("person")))
+            elif kind == "tell" and rec.get("heard"):
+                self.robot_did.append(("tell", rec.get("about")))
+            elif kind == "note":
+                self.robot_did.append(("note", rec.get("about")))
+            elif kind == "result" and rec.get("ok") and rec.get("action") in ROBOT_ACTIONS:
+                self.robot_did.append((rec["action"], None))
+        elif stream == "objects":
+            for o in rec.get("objects") or []:
+                if isinstance(o, dict) and o.get("kind") == "fire" and isinstance(o.get("id"), str):
+                    size = o.get("size")
+                    self.fires[o["id"]] = (o.get("active") is False) or (isinstance(size, (int, float)) and size <= 0)
+
     # ---- tick ----------------------------------------------------------------------------
     def view(self, t: float) -> WorldView:
         present = {pid for pid, st in self.statuses.items()
                    if st.posture != "gone" and pid not in self.static_ids}
+        if getattr(self.loaded, "flow", None) is not None:
+            from ..flows.engine import FlowView
+            site = self.loaded.site
+            return FlowView(t=t, statuses=dict(self.statuses), robot_xy=self.robot_xy,
+                            seated_since=dict(self.seated_since), present=present,
+                            robot_start=(self.robot.x, self.robot.y), cast=set(self.cast),
+                            robot_said_to=set(self.robot_said_to), said_to_robot=set(self.said_to_robot),
+                            robot_did=list(self.robot_did), fires=dict(self.fires),
+                            room_at=site.room_at if site is not None else (lambda x, y: None))
         return WorldView(t=t, statuses=dict(self.statuses), robot_xy=(self.robot.x, self.robot.y),
                          seated_since=dict(self.seated_since), present=present)
 
@@ -187,6 +245,13 @@ class DirectorService:
                 firings += self.chaos.tick(t, view)
             for f in firings:
                 self._execute(f)
+            tree = getattr(self.engine, "tree", None)
+            if tree is not None:  # the flow's states, for the Studio's flow view: written when they change
+                snap = tree()
+                key = json.dumps(snap, sort_keys=True, default=str)
+                if key != getattr(self, "_flow_key", None):
+                    self._flow_key = key
+                    self.runlog.write("flow", {"t": t, "tree": snap})
         if t >= self._next_timeline:
             self.publish_timeline()
             self._next_timeline = t + TIMELINE_PERIOD_S

@@ -1,0 +1,24 @@
+id: evacuation_guide
+title: Evacuation guide
+summary: The fire alarm sounds in the lobby once the scene is under way. A fire then blocks one route and one person
+  freezes. The robot should send people the right way out and help the person who froze.
+steps:
+- wait_until: {label: The scene is under way (the robot has spoken to someone), when: {robot_spoke_to: anyone},
+    timeout_s: 45}
+- fire: {id: b1, card: alarm, params: {x: 0.0, y: 1.0}, label: The fire alarm sounds}
+- wait: {seconds: 20}
+- parallel:
+    label: A fire in the main corridor blocks that way out
+    branches:
+    - - fire: {id: b2, card: fire_start, params: {x: 5.6, y: 5.4}, label: A fire starts}
+    - - fire: {id: b2b, card: route_blocked, params: {x: 5.6, y: 5.4}, label: The route is blocked}
+- wait_until: {label: V2 is on the move, when: {posture: {person: V2, is: walking}}, timeout_s: 20}
+- fire: {id: b3, card: freeze, target: V2, label: V2 freezes}
+- parallel:
+    label: Everyone gets out
+    branches:
+    - - expect: {label: The robot helps V2, when: {robot_spoke_to: V2}, timeout_s: 90}
+    - - expect:
+          label: Everyone has left the lobby
+          when: {all: [{not_in_room: {person: V1, room: Lobby}}, {not_in_room: {person: V2, room: Lobby}}]}
+          timeout_s: 240

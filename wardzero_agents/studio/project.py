@@ -51,6 +51,9 @@ class Project(BaseModel):
     voice: StrictBool = True  # with record: spoken voices in the recorded videos (added after the run)
     forbidden_areas: list[ForbiddenArea] = Field(default_factory=list)  # no-go rectangles for the robot
     removed_auto: list[str] = Field(default_factory=list)  # auto characters the user removed: not added back
+    # the scenario as the user describes it (None: the preset's prompt). A changed prompt gets its own flow, adapted
+    # by a model before the next run (flow.yaml next to project.yaml)
+    scenario_prompt: Optional[str] = Field(default=None, max_length=4000)
 
 
 def valid_id(pid: str) -> bool:

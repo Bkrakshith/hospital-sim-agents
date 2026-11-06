@@ -143,6 +143,7 @@ class Scenario(_Model):
     models: Optional[ModelRoles] = None
     budget_usd: float = 20.0
     storyboard: str
+    flow: Optional[str] = None  # a scenario flow file (flows.spec): when set it drives the storyboard cards
     deck: str
     chaos: Chaos = Field(default_factory=Chaos)
     memory_snapshot: Optional[str] = None

@@ -310,6 +310,35 @@
           : h("p.muted", "None yet. Draw a rectangle on the map that the robot must keep out of, such as Resus or a staff-only room."));
     }
 
+    /* The scenario's prompt: the user may rewrite it; a changed prompt gets its own flow before the next run. */
+    function scenarioSection() {
+      const sc = WZ.presets.scenarios.find((x) => x.id === P().scenario_id);
+      if (!sc) return null;
+      const preset = sc.prompt.replace(/\s+/g, " ").trim();
+      const cur = (P().scenario_prompt || "").trim() || preset;
+      const changed = () => ta.value.replace(/\s+/g, " ").trim() !== preset;
+      const note = h("span.small.muted");
+      const sync = () => { restore.hidden = !changed(); note.textContent = changed() ? "Changed: the flow is adapted to this before the next run." : ""; };
+      const save = async () => {
+        const v = ta.value.trim();
+        const patch = { scenario_prompt: !v || !changed() ? null : v };
+        if ((P().scenario_prompt || null) === patch.scenario_prompt) return;
+        try { await WZ.saveProject(patch); WZ.toast(patch.scenario_prompt ? "Prompt saved" : "Back to the preset prompt"); }
+        catch (e) { WZ.toast(e.message, "bad"); }
+      };
+      const ta = h("textarea", { rows: 4, spellcheck: "true", "aria-label": "Scenario prompt", maxlength: 4000,
+        oninput: () => { sync(); grow(); }, onchange: save });
+      const grow = () => { ta.style.height = "auto"; ta.style.height = Math.min(ta.scrollHeight, 260) + "px"; };
+      ta.value = cur;
+      const restore = h("button.link", { type: "button", onclick: async () => { ta.value = preset; sync(); await save(); } }, "Restore preset");
+      sync();
+      return h("section.scen-prompt",
+        h("div.sec-head", h("h2", "Scenario: " + sc.title),
+          h("button.btn", { type: "button", onclick: () => WZ.showFlow(P().id) }, "View flow")),
+        h("label.small", { for: "scen-prompt" }, "What happens in this scenario"), ta,
+        h("div.row", restore, note));
+    }
+
     function renderChars() {
       const chars = P().characters;
       const head = h("div.sec-head", h("h2", "Characters"),
@@ -322,7 +351,7 @@
           h("button.btn", { type: "button", onclick: () => setTab("scenarios") }, "Browse scenarios")), areasSection());
         return;
       }
-      body.replaceChildren(head, h("ul.chars", chars.map(charRow)), areasSection());
+      body.replaceChildren(scenarioSection() || "", head, h("ul.chars", chars.map(charRow)), areasSection());
     }
 
     // ---- scenarios ----

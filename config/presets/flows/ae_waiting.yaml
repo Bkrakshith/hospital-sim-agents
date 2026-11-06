@@ -1,0 +1,27 @@
+id: ae_waiting
+title: A&E waiting room
+summary: Patients arrive and the robot checks them in and seats them. Once the room has settled the waits are
+  announced, then George gets worse where the robot can see him, and the robot should alert staff.
+steps:
+- wait_until: {label: The robot greets Ava, when: {robot_spoke_to: P2}, timeout_s: 90}
+- parallel:
+    label: Ava and George are looked after
+    branches:
+    - - expect:
+          label: The robot checks Ava in (a desk note, a walk to a seat or a word with staff)
+          when: {any: [{robot_did: {action: note, about: P2}}, {robot_did: {action: guide, about: P2}},
+                       {robot_did: {action: tell, about: P2}}]}
+          timeout_s: 120
+    - - wait_until:
+          label: George is seated or the robot has spoken to him
+          when: {any: [{posture: {person: P1, is: seated}}, {robot_spoke_to: P1}]}
+          timeout_s: 120
+- wait: {seconds: 15, label: The room settles}
+- fire: {id: b1, card: waits_announcement, label: The waits are announced}
+- wait_until: {label: The robot is within sight of George, when: {robot_near: {person: P1, within_m: 6}}, timeout_s: 90}
+- wait: {seconds: 10}
+- fire: {id: b2, card: deterioration, target: P1, label: George gets worse}
+- expect:
+    label: The robot alerts staff about George
+    when: {any: [{robot_did: {action: tell, about: P1}}, {robot_did: {action: press_call}}]}
+    timeout_s: 120

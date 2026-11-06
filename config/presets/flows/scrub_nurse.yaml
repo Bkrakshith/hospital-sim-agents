@@ -1,0 +1,13 @@
+id: scrub_nurse
+title: Theatre
+summary: The surgeon asks for instruments in two batches. The second batch comes once the first has been handed over.
+steps:
+- wait: {seconds: 30}
+- fire: {id: b1, card: instrument_request_batch, target: S1, params: {instruments: 'scalpel, forceps, retractor'},
+    label: The surgeon asks for the first instruments}
+- expect: {label: The robot hands over the first batch, when: {robot_did: {action: hand_over, at_least: 3}},
+    timeout_s: 180}
+- wait: {seconds: 30}
+- fire: {id: b2, card: instrument_request_batch, target: S1, params: {instruments: 'suture scissors, needle holder, forceps, scalpel'}, label: The surgeon asks for the second instruments}
+- expect: {label: The robot hands over the second batch, when: {robot_did: {action: hand_over, at_least: 7}},
+    timeout_s: 240}

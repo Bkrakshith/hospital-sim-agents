@@ -255,15 +255,17 @@ def _persona_dict(c: CharacterSpec, role: RolePreset, mood: MoodPreset) -> dict:
 
 def preset_to_scenario(preset: ScenarioPreset, root: "str | Path", dest: "str | Path | None" = None, *,
                        characters: "list[CharacterSpec] | None" = None, scenario_extra: "dict | None" = None,
-                       cast_extra: "dict[str, dict] | None" = None, robot_extra: "dict | None" = None):
+                       cast_extra: "dict[str, dict] | None" = None, robot_extra: "dict | None" = None,
+                       flow=None):
     """Stage a loadable scenario folder for a preset and load it. The Studio compiler passes its own
     characters (default: the preset's), top-level scenario fields (scenario_extra), per-cast-entry fields
-    such as memory_key (cast_extra, by character id) and robot block fields (robot_extra)."""
+    such as memory_key (cast_extra, by character id) and robot block fields (robot_extra). flow: the scenario flow
+    to stage (default: the preset's own, config/presets/flows/<id>.yaml), pruned to the cast."""
     from .loader import load_scenario
     root = Path(root)
     dest = Path(dest) if dest is not None else Path(tempfile.mkdtemp(prefix=f"preset_{preset.id}_"))
     roles, moods = load_roles(root), load_moods(root)
-    for sub in ("cards", "storyboards", "scenarios"):
+    for sub in ("cards", "storyboards", "scenarios", "flows"):
         (dest / sub).mkdir(parents=True, exist_ok=True)
     if not (dest / "site").exists():
         try:
@@ -299,6 +301,13 @@ def preset_to_scenario(preset: ScenarioPreset, root: "str | Path", dest: "str | 
                   **(robot_extra or {})},
         "robot_brief": preset.robot_brief, "objects": preset.objects,
         "ladder": {int(k): v for k, v in preset.ladder.items()}, "cast": cast}
+    from ..flows.spec import dump_flow, preset_flow, prune_flow
+    if flow is None:
+        flow = preset_flow(root, preset.id)
+    if flow is not None:
+        flow = prune_flow(flow, [e["id"] for e in cast])
+        (dest / "flows" / f"{preset.id}.yaml").write_text(dump_flow(flow))
+        scenario["flow"] = f"../flows/{preset.id}.yaml"
     scenario.update(scenario_extra or {})
     path = dest / "scenarios" / f"{preset.id}.yaml"
     path.write_text(yaml.safe_dump(scenario, sort_keys=False))

@@ -19,7 +19,7 @@ from ..runlog import RunTail
 from .compile import compile_project, robot_profile_for
 from .project import Project, ProjectError
 
-TAIL_STREAMS = ("status", "says", "audio", "tokens", "robot_pose", "objects")
+TAIL_STREAMS = ("status", "says", "audio", "tokens", "robot_pose", "objects", "flow")
 SAYS_TAIL = 20
 RUN_FOLDER = re.compile(r"^Run folder: (.+)$")
 STOP_GRACE_S = 10.0  # after the stop message the run must have begun its orderly stop, else SIGINT
@@ -228,6 +228,7 @@ class Runner:
         self._cost = 0.0  # this run folder's
         self._robot: dict = {}
         self._objects: list = []
+        self._flow: Optional[dict] = None  # the scenario flow's tree with each step's state (the director writes it)
         self._t = 0.0
 
     def _read_log(self) -> None:
@@ -299,6 +300,8 @@ class Runner:
                 objs = rec.get("objects")
                 if isinstance(objs, (list, dict)):
                     self._objects = objs
+            elif stream == "flow" and isinstance(rec.get("tree"), dict):
+                self._flow = rec["tree"]
 
     def _phase(self) -> str:
         if self._proc is None:
@@ -341,6 +344,7 @@ class Runner:
                 "budget_usd": self._project.budget_usd if self._project else None,
                 "tokens": dict(self._tokens), "people": list(self._people.values()),
                 "robot": dict(self._robot), "objects": self._objects, "says_tail": list(self._says),
+                "flow": self._flow,
                 "phase": phase,
                 "has_report": bool(rd is not None and (rd / "report.html").is_file()),
             }

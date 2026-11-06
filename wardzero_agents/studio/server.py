@@ -463,6 +463,31 @@ def make_app(ctx: Ctx) -> web.Application:
         ctx.projects.save(project)
         return j(project.model_dump(mode="json"))
 
+    # the scenario flow (a behaviour tree): which one the next run uses, as data and as a tree
+    def _deck():
+        from ..config.loader import _load_deck
+        return _load_deck(ctx.config_root / "cards" / "studio.yaml")
+
+    @r.get("/api/projects/{id}/flow")
+    async def get_flow(request):
+        from . import flows
+        project = _project(ctx, request)
+        preset = ctx.presets[project.scenario_id]
+        return j(flows.view(flows.state(ctx.config_root, ctx.data, project, preset)))
+
+    @r.post("/api/projects/{id}/flow")
+    async def adapt_flow_now(request):
+        """Adapt the flow to the project's prompt now (a model call), so the user can look at it before a run."""
+        from ..flows.spec import FlowError
+        from . import flows
+        project = _project(ctx, request)
+        preset = ctx.presets[project.scenario_id]
+        try:
+            st = await flows.ensure(ctx.config_root, ctx.data, project, preset, deck=_deck(), site=ctx.site)
+        except FlowError as e:
+            raise ApiError(400, str(e)) from None
+        return j(flows.view(st))
+
     @r.delete("/api/projects/{id}")
     async def delete_project(request):
         await _not_while_running(ctx, "Delete the project")
@@ -718,6 +743,14 @@ def make_app(ctx: Ctx) -> web.Application:
         project = ctx.projects.get(pid)
         project = auto_staff.ensure(project, ctx.presets.get(project.scenario_id), ctx.site)
         check_sim(ctx, project)
+        if not ctx.runner.busy():  # a prompt the user changed: its flow is adapted first, then the run starts
+            from ..flows.spec import FlowError
+            from . import flows
+            try:
+                await flows.ensure(ctx.config_root, ctx.data, project, ctx.presets[project.scenario_id],
+                                   deck=_deck(), site=ctx.site)
+            except FlowError as e:
+                raise ApiError(400, f"{e}. Change the prompt, or press Restore preset.") from None
         await asyncio.to_thread(check_isaac_start, ctx, project)
         conn = read_connection(ctx.data)
         if domain_conflict(conn["robot_domain"]):

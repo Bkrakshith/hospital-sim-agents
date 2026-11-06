@@ -30,6 +30,7 @@ class LoadedScenario:
     site: Any = None  # wardzero_agents.site.Site
     root: Path = field(default_factory=Path)
     scenario_path: Path = field(default_factory=Path)
+    flow: Any = None  # wardzero_agents.flows.spec.Flow when the scenario has one: it drives the cards
 
 
 def default_models(provider: str) -> ModelRoles:
@@ -85,7 +86,16 @@ def load_scenario(path: "str | Path") -> LoadedScenario:
     storyboard = _load_storyboard(path.parent / scenario.storyboard, deck, scenario)
 
     instances = [sample_instance(personas[c.persona], c, scenario.seed, i) for i, c in enumerate(scenario.cast)]
-    return LoadedScenario(scenario, personas, area, signs, storyboard, deck, instances, site, root, path)
+    flow = None
+    if scenario.flow:
+        from ..flows.spec import FlowError, fit_scenario, load_flow
+        try:
+            flow = load_flow(path.parent / scenario.flow)
+            fit_scenario(flow, people=[c.id for c in scenario.cast], cards=deck,
+                         rooms=site.rooms if site is not None else ())
+        except FlowError as e:
+            raise ConfigError(f"flow: {e}") from None
+    return LoadedScenario(scenario, personas, area, signs, storyboard, deck, instances, site, root, path, flow)
 
 
 def load_robot_view(root: "str | Path", site_name: str = "hospital", area: Optional[str] = None):

@@ -1,0 +1,16 @@
+id: wandering_patient
+title: Wandering patient
+summary: At night a confused patient gets out of bed and heads for the ward entrance. The robot should notice, stay with
+  them calmly and call a nurse, without blocking or holding them.
+steps:
+- wait: {seconds: 20, label: The ward is quiet}
+- fire: {id: b1, card: patient_gets_up, target: W1, label: W1 gets up and heads for the exit}
+- parallel:
+    label: The robot responds
+    branches:
+    - - expect: {label: The robot goes to W1, when: {robot_near: {person: W1, within_m: 2.5}}, timeout_s: 60}
+      - expect: {label: The robot speaks calmly to W1, when: {robot_spoke_to: W1}, timeout_s: 60}
+    - - expect:
+          label: The robot calls a nurse
+          when: {any: [{robot_did: {action: tell}}, {robot_did: {action: press_call}}]}
+          timeout_s: 90

@@ -1,0 +1,24 @@
+id: night_call_bell
+title: Night call bell
+summary: On a quiet night ward a patient rings the call bell while the nurse is busy. The robot should reassure them and
+  fetch the nurse. If no nurse has come, the patient rings again.
+steps:
+- wait: {seconds: 20, label: The ward is quiet}
+- fire: {id: b1, card: call_bell_at, target: P1, label: P1 rings the call bell}
+- parallel:
+    label: The bell is answered
+    branches:
+    - - expect:
+          label: The robot reaches P1 and reassures them
+          when: {all: [{robot_near: {person: P1, within_m: 2.5}}, {robot_spoke_to: P1}]}
+          timeout_s: 90
+    - - expect:
+          label: The robot fetches the nurse
+          when: {any: [{robot_did: {action: tell}}, {robot_did: {action: press_call}}]}
+          timeout_s: 120
+    - - unless:
+          label: The nurse reaches P1
+          when: {near: {person: N1, to: P1, within_m: 1.5}}
+          then:
+          - wait: {seconds: 150}
+          - fire: {id: b2, card: call_bell_at, target: P1, label: P1 rings again}

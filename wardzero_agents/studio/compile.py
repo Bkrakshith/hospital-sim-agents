@@ -49,7 +49,9 @@ def compile_project(project: Project, root: "str | Path", dest: "str | Path | No
              "word_of_mouth_p": project.word_of_mouth_p}
     if project.forbidden_areas:
         extra["forbidden_areas"] = [a.model_dump(mode="json") for a in project.forbidden_areas]
+    from .flows import for_compile
+    flow = for_compile(root, data, project, presets[project.scenario_id])
     loaded = preset_to_scenario(
         preset, root, dest, characters=project.characters, scenario_extra=extra, robot_extra=robot,
-        cast_extra={c.id: {"memory_key": memory_key(project.id, c.id)} for c in project.characters})
+        cast_extra={c.id: {"memory_key": memory_key(project.id, c.id)} for c in project.characters}, flow=flow)
     return Path(loaded.scenario_path)

@@ -20,6 +20,7 @@ STREAMS = (
     "host",  # the Isaac host: frame times and VRAM
     "robot_walk",  # the walking G1 in Isaac: pose, phase and command every 0.5 s
     "robot_decisions",  # the built-in robot's decisions: what it perceived, what it chose and why
+    "flow",  # the scenario flow's behaviour tree, with each step's state, whenever it changes (the director)
 )
 
 

@@ -67,6 +67,47 @@
     });
   };
 
+  // ---- the scenario flow (a behaviour tree): drawn as a nested list, each step with its state ----
+  const FLOW_STATE = { pending: "Waiting", running: "Now", met: "Done", done: "Done", fired: "Played",
+    timed_out: "Moved on", skipped: "Skipped", not_needed: "Not needed" };
+  const FLOW_KIND = { sequence: "In order", parallel: "At the same time", unless: "Unless",
+    wait: "Wait", wait_until: "Wait until", expect: "Expect from the robot", fire: "Event" };
+  WZ.flowTree = function (node, root = true) {
+    if (!node) return h("p.muted", "No flow.");
+    const kids = (node.children || []).map((c) => WZ.flowTree(c, false));
+    const st = node.state ? h("span.fstate.s-" + node.state, FLOW_STATE[node.state] || node.state) : null;
+    const tip = node.reason ? h("div.freason", node.reason) : null;
+    const row = h("div.frow", h("span.fkind.k-" + node.kind, FLOW_KIND[node.kind] || node.kind),
+      h("span.flabel", node.label), st, node.t != null ? h("span.ft", Math.round(node.t) + " s") : null);
+    const li = h("li.fnode.n-" + node.kind, row, tip, kids.length ? h("ul.ftree", kids) : null);
+    return root ? h("ul.ftree.froot", li) : li;
+  };
+  /* The project's flow in a dialog: where it comes from, the tree, and (for a changed prompt) Adapt now. */
+  WZ.showFlow = async function (projectId) {
+    let data;
+    try { data = await API.get("/api/projects/" + encodeURIComponent(projectId) + "/flow"); }
+    catch (e) { WZ.toast(e.message, "bad"); return; }
+    const SRC = { preset: "The scenario's own flow.",
+      adapted: "Adapted to your prompt.",
+      needs_adapting: "Your prompt has changed: the flow will be adapted to it when the run starts. This shows the scenario's own flow until then." };
+    const body = h("div.flow-body");
+    const fill = (d) => body.replaceChildren(
+      h("p.muted", SRC[d.source] || ""), d.notes ? h("p.small", d.notes) : null,
+      d.flow && d.flow.summary ? h("p", d.flow.summary) : null, WZ.flowTree(d.tree));
+    fill(data);
+    const adapt = h("button.btn", { type: "button", hidden: data.source !== "needs_adapting", onclick: async () => {
+      adapt.disabled = true; adapt.textContent = "Adapting…";
+      try { data = await API.post("/api/projects/" + encodeURIComponent(projectId) + "/flow", {}); fill(data); adapt.hidden = true; }
+      catch (e) { WZ.toast(e.message, "bad"); adapt.disabled = false; adapt.textContent = "Adapt now"; }
+    } }, "Adapt now");
+    const dlg = h("dialog.dlg.flow-dlg", { "aria-labelledby": "flow-title" },
+      h("h2#flow-title", "Scenario flow"), body,
+      h("div.dlg-foot", adapt, h("button.btn.primary", { type: "button", onclick: () => { dlg.close(); dlg.remove(); } }, "Close")));
+    dlg.addEventListener("cancel", () => dlg.remove());
+    document.body.appendChild(dlg);
+    dlg.showModal();
+  };
+
   // ---- projects ----
   async function loadProjects() { WZ.projects = await API.get("/api/projects"); }
 

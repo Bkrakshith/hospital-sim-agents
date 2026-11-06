@@ -1,0 +1,12 @@
+id: visiting_rush
+title: Visiting rush
+summary: Visiting hours start as the robot sets off for the nurse base. Groups arrive behind it and as it gets halfway
+  along the corridor. The robot should give way and keep a walking pace.
+steps:
+- wait_until: {label: The robot sets off for the nurse base, when: {robot_moved: 1}, timeout_s: 60}
+- fire: {id: b1, card: arrival, label: A first group arrives}
+- wait: {seconds: 30}
+- fire: {id: b2, card: arrival, label: A second group arrives}
+- wait_until: {label: The robot is halfway along the corridor, when: {robot_moved: 6}, timeout_s: 90}
+- fire: {id: b3, card: arrival, label: A third group arrives}
+- expect: {label: The robot gets well along the corridor, when: {robot_moved: 10}, timeout_s: 240}

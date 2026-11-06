@@ -1,0 +1,20 @@
+id: meal_round
+title: Meal round
+summary: The robot brings lunch trays to a six-bed ward. One patient falls asleep early on; later another rings for help.
+  The robot should deliver trays within reach, skip the sleeping patient and tell a nurse.
+steps:
+- wait: {seconds: 10}
+- fire: {id: b1, card: asleep, target: M2, label: M2 falls asleep}
+- parallel:
+    label: The round
+    branches:
+    - - expect: {label: The robot delivers a first tray, when: {robot_did: {action: hand_over}}, timeout_s: 240}
+      - wait: {seconds: 30}
+      - fire: {id: b2, card: call_bell_at, target: M3, label: M3 rings for help}
+      - expect:
+          label: The robot answers M3 (goes to them or fetches a nurse)
+          when: {any: [{robot_near: {person: M3, within_m: 2.5}}, {robot_did: {action: tell, about: M3}},
+                       {robot_did: {action: press_call}}]}
+          timeout_s: 120
+    - - expect: {label: The robot tells a nurse that M2 is asleep, when: {robot_did: {action: tell, about: M2}},
+          timeout_s: 360}

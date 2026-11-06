@@ -1,0 +1,17 @@
+id: reception_guide
+title: Reception guide
+summary: People come to the main reception. Once the robot is talking to people, one visitor gets lost and a patient who
+  is hard of hearing needs help; then new people arrive. The robot should help each one in turn.
+steps:
+- wait_until: {label: The robot has greeted someone, when: {robot_spoke_to: anyone}, timeout_s: 45}
+- fire: {id: b1, card: lost_visitor, target: V1, label: V1 gets lost}
+- expect:
+    label: The robot helps V1 (talks to them or walks them there)
+    when: {any: [{robot_did: {action: guide, about: V1}}, {robot_spoke_to: V1}]}
+    timeout_s: 90
+- fire: {id: b2, card: hard_of_hearing, target: H1, label: H1 is hard of hearing}
+- expect: {label: The robot speaks with H1, when: {robot_spoke_to: H1}, timeout_s: 90}
+- fire: {id: b3, card: arrival, label: Someone new arrives}
+- expect: {label: The robot greets the newcomer, when: {robot_spoke_to: newcomer}, timeout_s: 120}
+- wait: {seconds: 30}
+- fire: {id: b4, card: arrival, label: Another person arrives}
