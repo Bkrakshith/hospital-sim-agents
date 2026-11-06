@@ -250,3 +250,36 @@ def test_the_report_counts_people_inside_furniture_and_the_robot_against_furnitu
     assert M.people_in_furniture_s(d) == pytest.approx(3.0)
     assert M.robot_near_furniture_s(d) == pytest.approx(6.0)  # 1.8 is within 0.3 m of the desk's cells
     assert "people_in_furniture_s" in M.METRIC_NAMES and "robot_near_furniture_s" in M.METRIC_NAMES
+
+
+def test_the_robot_and_a_person_walking_towards_each_other_keep_apart(reception, tmp_path):
+    s = svc(reception, tmp_path)
+    w = s.world
+    put(w, "V1", -2.5, -1.0)
+    s.on_goal(-2.0, -0.8, None)  # the robot heads for the person ...
+    s.on_intent(Intent(id="a1", person="V1", t=0.0, kind="approach", target="g1"))  # ... who walks up to it
+    gaps = []
+    for _ in range(200):
+        s.step(0.1)
+        gaps.append(gap(w, "V1"))
+    assert min(gaps) >= rt.PERSON_KEEP_M - 0.1 and gaps[-1] >= 0.9
+
+
+def test_held_with_someone_too_close_it_steps_back_then_carries_on(reception, tmp_path):
+    s = svc(reception, tmp_path)
+    w = s.world
+    for pid in ("V2", "H1"):
+        put(w, pid, -9.0, -1.0)
+    s.on_goal(-3.5, -1.0, None)
+    s.step(0.1)
+    p = w.people["V1"]
+    put(w, "V1", w.robot.x + 0.5 * math.cos(w.robot.yaw), w.robot.y + 0.5 * math.sin(w.robot.yaw))  # right in front
+    gaps, arrived = [], False
+    for _ in range(600):
+        o = s.step(0.1)
+        gaps.append(gap(w, "V1"))
+        if any(r.get("kind") == "goal" and r["ok"] for r in o.task_results):
+            arrived = True
+            break
+    assert max(gaps[:40]) >= rt.BACK_OFF_M  # it stepped back first
+    assert arrived  # and then got where it was going (the same goal, not given up)

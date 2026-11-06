@@ -63,6 +63,7 @@ APPROACH_M = 1.2  # how close the robot comes to a person it walks up to
 SEAT_ASIDE_M = 1.0  # showing a seat, the robot stands this far to the side of the seat's front, out of the way in
 # keeping clear of people while it walks (any goal, its own or a task's):
 PERSON_KEEP_M = 0.7  # centre to centre: body radius 0.3 + a person's 0.25 + 0.15 m
+STOP_CLOSE_M = 0.9  # anyone in front closer than this holds it at once (the walking G1 needs room to stop)
 STOP_AHEAD_M = 1.2  # someone this close ahead of it (and nearer than its goal) holds it
 LATERAL_M = 0.6  # ... "ahead" is within this of its line of travel
 REPLAN_S = 2.0  # held this long: it routes round the people in the way
@@ -546,11 +547,13 @@ class RobotTasks:
             ahead, lat = dx * c + dy * s_, abs(-dx * s_ + dy * c)
             if ahead <= 0.0:
                 continue
+            d = math.hypot(dx, dy)
+            in_front = ahead >= 0.5 * d  # within 60 degrees of its heading: someone beside it is not in its way
             if self._guide is not None and pid == self._guide["pid"]:  # the person it leads: only when really close
-                if math.hypot(dx, dy) < PERSON_KEEP_M:
+                if d < PERSON_KEEP_M and in_front:
                     return pid
                 continue
-            if math.hypot(dx, dy) < PERSON_KEEP_M or (ahead < STOP_AHEAD_M and lat < LATERAL_M and ahead < left + 0.3):
+            if (d < STOP_CLOSE_M and in_front) or (ahead < STOP_AHEAD_M and lat < LATERAL_M and ahead < left + 0.3):
                 return pid
         return None
 
@@ -605,26 +608,36 @@ class RobotTasks:
             self._held_s = 0.0
             if not moving:
                 self._held_total = 0.0
-        if moving or not self.mobile or self._guide is not None or self._tell is not None:
+        if not self.mobile or getattr(self, "_backing", False) or (moving and not hold):
             self._close_s = 0.0
             return
-        near = [(math.hypot(q.x - r.x, q.y - r.y), q) for _, q in self._others()]
+        led = self._guide["pid"] if self._guide is not None else None
+        near = [(math.hypot(q.x - r.x, q.y - r.y), q) for pid, q in self._others() if pid != led]
         near = [(d, q) for d, q in near if d < BACK_OFF_M]
         self._close_s = self._close_s + dt if near else 0.0
         if not near or self._close_s < BACK_OFF_S or t - self._backed_at < BACK_OFF_COOLDOWN_S:
             return
         d, q = min(near, key=lambda e: e[0])
         ux, uy = ((r.x - q.x) / d, (r.y - q.y) / d) if d > 1e-6 else (math.cos(r.yaw + math.pi), math.sin(r.yaw + math.pi))
-        free = getattr(r.router, "is_clear", None) or getattr(r.router, "is_free", None)
-        for k in (1.0, 0.7, 0.45):
-            for turn in (0.0, 0.6, -0.6, 1.2, -1.2):
-                a = math.atan2(uy, ux) + turn
-                x, y = r.x + math.cos(a) * BACK_OFF_STEP_M * k, r.y + math.sin(a) * BACK_OFF_STEP_M * k
-                if (free is None or free(x, y)) and not w.site.grid.blocked(x, y):
+        checks = [c for c in (getattr(r.router, "is_clear", None), getattr(r.router, "is_free", None)) if c] or [None]
+        for free in checks:  # clear of the furniture's hard band if it can, else of the soft one (by a desk)
+            for k in (1.0, 0.7, 0.45):
+                for turn in (0.0, 0.6, -0.6, 1.2, -1.2):
+                    a = math.atan2(uy, ux) + turn
+                    x, y = r.x + math.cos(a) * BACK_OFF_STEP_M * k, r.y + math.sin(a) * BACK_OFF_STEP_M * k
+                    if math.hypot(x - q.x, y - q.y) < d + 0.25 or (free is not None and not free(x, y)) \
+                            or w.site.grid.blocked(x, y):
+                        continue  # it must really get further from them
                     self._n_safety += 1
                     self._backed_at, self._close_s = t, 0.0
                     face = math.atan2(q.y - y, q.x - x)
-                    self._set_goal(f"{SAFETY}-{self._n_safety}", x, y, face, t, exempt=None)
+                    if moving:  # held on its way somewhere: step back, then carry on with the same goal (and id)
+                        self._backing = True
+                        self._holding = False
+                        r.speed_scale = 1.0
+                        r.set_goal(x, y, face, ())
+                    else:
+                        self._set_goal(f"{SAFETY}-{self._n_safety}", x, y, face, t, exempt=None)
                     return
 
     # ---- goals ---------------------------------------------------------------------------
@@ -694,6 +707,12 @@ class RobotTasks:
                 del self._spray[aid]
                 self._result(aid, "extinguish", True, "ok", t)
         ev = w.robot.take_goal_event()
+        if ev is not None and getattr(self, "_backing", False):  # the step back is done: back on its way
+            self._backing = False
+            if self._goal_xy is not None:
+                x, y, yaw, exempt = self._goal_xy
+                w.robot.set_goal(x, y, yaw, self._avoid(exempt))
+            ev = None
         if ev is not None:
             gid = self.goal_id
             if not str(gid).startswith(SAFETY):

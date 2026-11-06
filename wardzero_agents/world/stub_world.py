@@ -69,7 +69,7 @@ ALARM_DB = 100.0
 APPROACH_KINDS = ("approach", "attend")
 # where a person is sent to stand (walking up to someone, following the robot) is moved to free floor: out of the
 # furniture's clearance band, this far from the robot and from other people, within SPOT_SEARCH_M of the first choice
-SPOT_ROBOT_M = 0.95
+SPOT_ROBOT_M = 1.2  # an Isaac character may stop up to 0.4 m short of or past its spot: still 0.8 m off the robot
 SPOT_PEOPLE_M = 0.6
 SPOT_SEARCH_M = 1.6
 KEEP_SIT = ("sit_idle", "use_phone", "read_sign", "gesture")  # quick things that do not cancel sitting down
@@ -631,7 +631,7 @@ class StubWorld:
         if not self.loaded.scenario.robot.enabled:
             return None
         rx, ry = self.robot.x, self.robot.y
-        keep = self.robot.radius + CONTACT_MARGIN_M + 0.15
+        keep = max(self.robot.radius + CONTACT_MARGIN_M + 0.15, SPOT_ROBOT_M)
         d = math.hypot(goal[0] - rx, goal[1] - ry)
         moved = 1e-6 < d < keep
         if moved:

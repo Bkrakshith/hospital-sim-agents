@@ -5,6 +5,8 @@ from pathlib import Path
 
 import pytest
 
+from wardzero_agents.world.stub_world import SPOT_ROBOT_M
+
 from wardzero_agents.config.loader import load_scenario
 from wardzero_agents.contracts import Intent
 from wardzero_agents.isaac_host import people as pe
@@ -622,4 +624,4 @@ def test_a_walk_past_the_robot_goes_round_it_by_the_worlds_route():
     assert world.route_for("P", (4.0, 2.0)) == [(0.0, 2.0), (2.0, 3.2), (4.0, 2.0)]  # straight line hits the robot
     assert world.route_for("P", (0.0, 5.0)) is None  # clear of it: walk straight
     far = world.route_for("P", (2.3, 2.0))  # a goal inside the contact distance is moved out of it
-    assert math.hypot(far[-1][0] - 2.0, far[-1][1] - 2.0) == pytest.approx(0.3 + CONTACT_MARGIN_M + 0.15)
+    assert math.hypot(far[-1][0] - 2.0, far[-1][1] - 2.0) == pytest.approx(max(0.3 + CONTACT_MARGIN_M + 0.15, SPOT_ROBOT_M))

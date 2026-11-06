@@ -74,7 +74,8 @@ def test_approach_stops_short_of_robot():
     step_until(w, 60.0)
     s = st(w, "P5")
     r = w.loaded.scenario.robot
-    assert math.hypot(s.x - r.x, s.y - r.y) == pytest.approx(1.0, abs=0.1)
+    # a conversational distance, moved out to the 1.2 m ring an Isaac character keeps from the robot
+    assert 1.15 <= math.hypot(s.x - r.x, s.y - r.y) <= 1.45
     assert s.state == "done"
     assert math.cos(s.yaw - math.atan2(r.y - s.y, r.x - s.x)) > 0.99
 
