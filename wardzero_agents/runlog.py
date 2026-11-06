@@ -18,6 +18,7 @@ STREAMS = (
     "decisions", "intents", "says", "nudges", "reflex", "world",
     "cards", "audio", "status", "tokens", "fairness", "summaries", "objects", "robot_tasks", "robot_pose",
     "host",  # the Isaac host: frame times and VRAM
+    "robot_walk",  # the walking G1 in Isaac: pose, phase and command every 0.5 s
 )
 
 

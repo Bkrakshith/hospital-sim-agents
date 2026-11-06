@@ -216,8 +216,9 @@ class SonicWalker:
                 "y": round(float(root[1]), 3), "z": round(float(root[2]), 3), "yaw": round(yaw_of(wxyz), 3),
                 "tilt_deg": round(tilt_deg(wxyz), 1), "mode": int(c.mode), "speed": round(float(c.speed), 2),
                 "status": c.status, "face": None if c.face_yaw is None else round(float(c.face_yaw), 3)})
-        except OSError:
-            pass
+        except Exception as exc:  # the log is a nicety: never let it stop the legs
+            log.warning("robot_walk record failed: %s", exc)
+            self.runlog = None
 
     # ---- per frame (host) ----------------------------------------------------------------------------
     def begin_frame(self) -> None:
