@@ -9,8 +9,9 @@ steps:
     branches:
     - - expect:
           label: The robot checks Ava in (a desk note, a walk to a seat or a word with staff)
-          when: {any: [{robot_did: {action: note, about: P2}}, {robot_did: {action: guide, about: P2}},
-                       {robot_did: {action: tell, about: P2}}]}
+          when: {any: [{robot_did: {action: note, about: P2, since_step: true}},
+                       {robot_did: {action: guide, about: P2, since_step: true}},
+                       {robot_did: {action: tell, about: P2, since_step: true}}]}
           timeout_s: 120
     - - wait_until:
           label: George is seated or the robot has spoken to him
@@ -23,5 +24,6 @@ steps:
 - fire: {id: b2, card: deterioration, target: P1, label: George gets worse}
 - expect:
     label: The robot alerts staff about George
-    when: {any: [{robot_did: {action: tell, about: P1}}, {robot_did: {action: press_call}}]}
+    when: {any: [{robot_did: {action: tell, about: P1, since_step: true}},
+                 {robot_did: {action: press_call, since_step: true}}]}
     timeout_s: 120

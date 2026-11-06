@@ -40,39 +40,47 @@ flowchart TD
 
 ## Evacuation guide (`evacuation_guide`)
 
-The fire alarm sounds in the lobby once the scene is under way. A fire then blocks one route and one person freezes. The robot should send people the right way out and help the person who froze.
+The fire alarm sounds in the lobby once the scene is under way. At the same moment a fire at the main entrance blocks that way out, and one person freezes. The robot should get everyone out the other way, including the patient in A&E waiting, and help the person who froze.
 
 ```mermaid
 flowchart TD
   n1(("Run starts"))
   n2["Wait until: The scene is under way (the robot has spoken to someone) (up to 45 s)"]
   n1 --> n2
-  n3[["The fire alarm sounds [alarm]"]]
+  n3{{"At the same time: The fire alarm sounds and a fire at the main entrance blocks that way out"}}
   n2 --> n3
-  n4["Wait 20 s"]
+  n4[["The fire alarm sounds [alarm]"]]
   n3 --> n4
-  n5{{"At the same time: A fire in the main corridor blocks that way out"}}
-  n4 --> n5
-  n6[["A fire starts [fire_start]"]]
-  n5 --> n6
-  n7[["The route is blocked [route_blocked]"]]
-  n5 --> n7
-  n8(("All done"))
-  n6 --> n8
-  n7 --> n8
-  n9["Wait until: V2 is on the move (up to 20 s)"]
+  n5[["A fire starts at the main entrance [fire_start]"]]
+  n3 --> n5
+  n6[["The way out is blocked (west) [route_blocked]"]]
+  n3 --> n6
+  n7[["The way out is blocked (centre) [route_blocked]"]]
+  n3 --> n7
+  n8[["The way out is blocked (east) [route_blocked]"]]
+  n3 --> n8
+  n9(("All done"))
+  n4 --> n9
+  n5 --> n9
+  n6 --> n9
+  n7 --> n9
   n8 --> n9
-  n10[["V2 freezes [freeze]"]]
+  n10{{"At the same time: Everyone gets out"}}
   n9 --> n10
-  n11{{"At the same time: Everyone gets out"}}
+  n11["Wait until: V2 is on the move (up to 20 s)"]
   n10 --> n11
-  n12(["Expect: The robot helps V2 (up to 90 s)"])
+  n12[["V2 freezes [freeze]"]]
   n11 --> n12
-  n13(["Expect: Everyone has left the lobby (up to 240 s)"])
-  n11 --> n13
-  n14(("All done"))
-  n12 --> n14
-  n13 --> n14
+  n13(["Expect: The robot helps V2 (up to 90 s)"])
+  n12 --> n13
+  n14(["Expect: The robot gets V1 and V2 out of the lobby (up to 240 s)"])
+  n10 --> n14
+  n15(["Expect: The robot gets P1 out of A&E waiting (up to 240 s)"])
+  n10 --> n15
+  n16(("All done"))
+  n13 --> n16
+  n14 --> n16
+  n15 --> n16
 ```
 
 ## Meal round (`meal_round`)
@@ -157,18 +165,22 @@ flowchart TD
   n2 --> n3
   n4(["Expect: The robot helps V1 (talks to them or walks them there) (up to 90 s)"])
   n3 --> n4
-  n5[["H1 is hard of hearing [hard_of_hearing]"]]
+  n5["Wait until: V1 has reached the ward entrance or the robot is still with them (up to 120 s)"]
   n4 --> n5
-  n6(["Expect: The robot speaks with H1 (up to 90 s)"])
+  n6[["H1 is hard of hearing [hard_of_hearing]"]]
   n5 --> n6
-  n7[["Someone new arrives [arrival]"]]
+  n7[["H1 cannot find the way either [lost_visitor]"]]
   n6 --> n7
-  n8(["Expect: The robot greets the newcomer (up to 120 s)"])
+  n8(["Expect: The robot speaks with H1 (up to 90 s)"])
   n7 --> n8
-  n9["Wait 30 s"]
+  n9[["Someone new arrives [arrival]"]]
   n8 --> n9
-  n10[["Another person arrives [arrival]"]]
+  n10(["Expect: The robot greets the newcomer (up to 120 s)"])
   n9 --> n10
+  n11["Wait 30 s"]
+  n10 --> n11
+  n12[["Another person arrives [arrival]"]]
+  n11 --> n12
 ```
 
 ## Specimen run (`specimen_run`)

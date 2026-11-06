@@ -324,6 +324,33 @@ def test_since_step_ignores_speech_before_the_step():
     assert holds({"robot_spoke_to": "anyone"}, v)
 
 
+def _evacuation(robot_did_at):
+    """The evacuation flow with V2 walking from the start; robot_did_at(t) is what the robot has done by then."""
+    p = PRESETS["evacuation_guide"]
+    flow = load_flow(flows_dir(CONFIG) / "evacuation_guide.yaml")
+    people = {c.id: st(c.id, c.x, c.y, "walking" if c.id == "V2" else "standing") for c in p.characters}
+    e = FlowEngine(flow, DECK)
+    fired_t = {}
+    t = 0.0
+    while t < 120:
+        for f in e.tick(FlowView(t=t, statuses=people, robot_xy=(p.robot_start.x, p.robot_start.y), present=set(people),
+                                 cast=set(people), robot_said_to={"V1"} if t >= 10 else set(),
+                                 robot_said_at={"V1": [10.0]} if t >= 10 else {},
+                                 robot_did=robot_did_at(t))):
+            fired_t[f.card] = f.t
+        t += 0.5
+    return e, fired_t
+
+
+def test_since_step_robot_did_counts_only_new_actions():
+    e, fired = _evacuation(lambda t: [(2.0, "guide", "V2")] if t >= 2.0 else [])
+    assert "freeze" in fired and fired["freeze"] > 2.0
+    assert _node_by_label(e.tree(), "The robot helps V2")["state"] == "timed_out"  # the guide came before the freeze
+    e, fired = _evacuation(lambda t: [(2.0, "guide", "V2")] + ([(t, "guide", "V2")] if t >= 60 else []))
+    node = _node_by_label(e.tree(), "The robot helps V2")
+    assert node["state"] == "met" and node["t"] == 60.0
+
+
 def test_robot_did_keeps_reading_entries_without_a_time():
     v = view(10.0, robot_did=[("guide", "P1"), (4.0, "tell", "P1")])
     assert holds({"robot_did": {"action": "guide", "about": "P1"}}, v)
