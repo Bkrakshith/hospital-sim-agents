@@ -61,8 +61,27 @@ Each message is a JSON object with a unique `id` and an `action`:
 | `take` | `item` | Picks up an unheld item within 0.8 m. |
 | `extinguish` | `fire` | Sprays until the fire is out or the robot moves away. |
 | `press_call` | none | Chimes at the nearest nurse base. |
-| `guide_start` | `track`, `place` | Heads to the place; the person is offered a walk. |
+| `guide_start` | `track`, `place` | Walks to the place at the person's pace; the person is offered a walk and can follow. |
 | `guide_stop` | none | Cancels guiding. |
+| `tell_staff` | `about` (a track), optional `message` (text) | Walks to the reception counter (on a ward: the nurse base), faces the desk and says `message` to the member of staff there. |
+
+`tell_staff`, for example:
+
+```json
+{"id": "rb4", "action": "tell_staff", "about": "t2", "message": "The lady by the entrance needs a nurse, please."}
+```
+
+The staff member hears it only if they are within hearing (the audio model, and within 5 m): they are often away from
+the desk. If they heard it, they also learn who the person is and where, and decide for themselves whether to go and
+help. The result is `ok` with reason `told`, or `ok: false` with `no_staff_to_tell` (nobody at a desk or nurse base
+in this scenario), `staff_not_at_desk` (nobody heard it), `no_route`, `unknown_track` or `superseded` (another goal
+replaced the walk there). The robot is never told where the staff member is. A robot that cannot walk speaks from
+where it stands. Without a `message` the robot says "Excuse me, someone here needs help from a nurse."
+
+While guiding, the robot waits when the person is more than 2.5 m behind it and walks on when they are within 2 m;
+anyone else within 1.5 m slows it to 0.3 m/s. At the place it waits up to 20 s for the person, says goodbye and walks
+back to where it started (a goal with id `<action id>-return`). If the person never comes within 2.5 m for 30 s the
+guide is given up (its goal ends `cancelled`). The person counts as guided only when they themselves reach the place.
 
 An unknown action or a malformed message gets a result with `ok: false` and reason
 `unknown_action` or `bad_request`.
@@ -82,8 +101,8 @@ A goal (from `goal_pose`, or the walking part of `guide_start`) reports its outc
 ```
 
 `reason` for a goal is one of `arrived`, `stuck`, `no_route`, `superseded` (a newer goal
-replaced it) or `cancelled`. Goal ids are `goal_pose-N` for `goal_pose` and the action id for
-a guide. Action results carry no `kind`, so a consumer must key results on the pair
+replaced it) or `cancelled`. Goal ids are `goal_pose-N` for `goal_pose`, the action id for
+a guide or for the walk of a `tell_staff`, and `<id>-return` for the walk back after a guide. Action results carry no `kind`, so a consumer must key results on the pair
 `(id, kind)`: an action and a goal can share an id.
 
 ## Message shapes

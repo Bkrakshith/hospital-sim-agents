@@ -23,7 +23,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Literal, Optional
 
 from ..llm.gateway import PERMANENT_ERRORS, LLMRequest, LLMResult
-from .profile import G1_CLAUDE, G1_NAME, RobotProfile, get_profile
+from .profile import G1_CLAUDE, G1_NAME, RobotProfile, get_profile, profile_for_sim
 
 log = logging.getLogger("robot_claude")
 
@@ -38,11 +38,11 @@ LLM_OFF_AFTER = 3  # permanent failures in a row (bad key, bad model) before the
 ROBOT_BUDGET_SHARE = 0.25  # of the scenario's budget_usd: the robot has its own budget
 MAX_SAY_CHARS = 400
 
-Action = Literal["none", "go_to", "guide", "hand_over", "take", "extinguish", "press_call", "wait"]
-ACTIONS = ("none", "go_to", "guide", "hand_over", "take", "extinguish", "press_call", "wait")
+Action = Literal["none", "go_to", "guide", "hand_over", "take", "extinguish", "press_call", "tell_staff", "wait"]
+ACTIONS = ("none", "go_to", "guide", "hand_over", "take", "extinguish", "press_call", "tell_staff", "wait")
 MOVING_ACTIONS = ("go_to", "guide")
 NEEDS = {"hand_over": ("item", "target"), "take": ("item",), "extinguish": ("target",),
-         "guide": ("target", "destination"), "go_to": ("destination",)}
+         "guide": ("target", "destination"), "go_to": ("destination",), "tell_staff": ("target",)}
 
 SYSTEM_RULES = """You are the robot described under YOUR BODY, working in a UK hospital and doing the job in your task brief. People around you are real people with their own worries. You act through a few simple actions and by speaking.
 
@@ -51,7 +51,7 @@ How you work
 - A box that is low and long means a person lying down. A box about 1.2 m tall means someone seated. About 1.7 m tall means standing. Someone lying on the floor, away from a bed, may need urgent help.
 - Speak in short, plain, warm sentences, the way a good receptionist or ward helper would. Use the place names as given in the lists (for example "Main entrance"), never codes, identifiers or words joined by underscores.
 - Be truthful. Do not claim to have done something you have not done, and do not promise what your body cannot do. Your abilities are listed in your briefing; stay inside them.
-- When you are unsure, or someone seems unwell, in distress or in danger, fetch a human: press the call button for staff and tell the person you have done so.
+- When you are unsure, or someone seems unwell, in distress or in danger, fetch a human: tell the staff (tell_staff, with the person's track: you go to the reception desk, or the nurse base on a ward, and tell them) or press the call button for staff, and tell the person what you have done.
 - Safety comes first: keep clear of people, never block an escape route or a doorway, and do not touch anyone. Do not use the extinguisher unless a fire is in range and putting it out is part of your job.
 - Do not repeat yourself. If you have just said something and nothing has changed, choose "none" or "wait" and say nothing.
 
@@ -60,14 +60,16 @@ Reply with one JSON object and nothing else.
 - say: what you say aloud now, or an empty string to stay silent.
 - toward_track: the track you are speaking to or attending to, or an empty string.
 - action: one of the allowed actions in the schema. "none" means do nothing new; "wait" means stand still and stop any movement.
-- target: the track for hand_over, the fire for extinguish, or the track for guide; otherwise an empty string.
+- target: the track for hand_over, the fire for extinguish, or the track for guide or tell_staff; otherwise an empty string.
 - item: the item id for hand_over or take; otherwise an empty string.
 - destination: a place name from your lists for go_to or guide; otherwise an empty string.
 - place: for hand_over only, optionally [x, y, z] in metres where you hold the item out (z inside your reach); otherwise an empty list.
+- message: for tell_staff, what you say to the staff member about the person (who they are, what they need); otherwise an empty string.
 - reason: one short sentence on why, for the record."""
 
 NO_WALK_RULE = ("You are standing at a fixed post and cannot walk in this build; to help someone get "
-                "somewhere, give clear directions or press the call button for staff.")
+                "somewhere, give clear directions or press the call button for staff. tell_staff speaks to the "
+                "staff from where you stand.")
 WALK_RULE = ("You can walk. To take someone somewhere, use guide with their track and the place name; to go "
              "somewhere yourself, use go_to.")
 
@@ -86,8 +88,8 @@ def decision_schema(profile: RobotProfile) -> dict:
         "type": "object",
         "properties": {"say": s, "toward_track": s, "action": {"type": "string", "enum": list(actions_for(profile))},
                        "target": s, "item": s, "destination": s,
-                       "place": {"type": "array", "items": {"type": "number"}}, "reason": s},
-        "required": ["say", "toward_track", "action", "target", "item", "destination", "place", "reason"],
+                       "place": {"type": "array", "items": {"type": "number"}}, "message": s, "reason": s},
+        "required": ["say", "toward_track", "action", "target", "item", "destination", "place", "message", "reason"],
         "additionalProperties": False,
     }
 
@@ -102,6 +104,7 @@ class RobotDecision:
     place: Optional[list[float]]
     reason: str
     destination: Optional[str] = None  # a place label for go_to and guide (an addition to the brief's fields)
+    message: Optional[str] = None  # tell_staff: what the robot says to the staff member
 
 
 @dataclass
@@ -233,7 +236,7 @@ def parse_decision(data: Any, profile: RobotProfile, mind: "Optional[RobotMind]"
     d = RobotDecision(say=say[:MAX_SAY_CHARS] if say else None, toward_track=_opt_str(data, "toward_track"),
                       action=action, target=_opt_str(data, "target"), item=_opt_str(data, "item"),
                       place=[float(v) for v in place] or None, reason=reason.strip(),
-                      destination=_opt_str(data, "destination"))
+                      destination=_opt_str(data, "destination"), message=_opt_str(data, "message"))
     for need in NEEDS.get(action, ()):
         if getattr(d, need) is None:
             raise ValueError(f"{action} needs {need}")
@@ -273,6 +276,10 @@ def decision_outputs(d: RobotDecision, mind: "RobotMind", aid: str) -> Outputs:
         out.action = {"id": aid, "action": "extinguish", "fire": d.target}
     elif a == "press_call":
         out.action = {"id": aid, "action": "press_call"}
+    elif a == "tell_staff":
+        out.action = {"id": aid, "action": "tell_staff", "about": d.target}
+        if d.message:
+            out.action["message"] = speakable(d.message[:MAX_SAY_CHARS], mind.site)
     elif a == "guide":
         out.action = {"id": aid, "action": "guide_start", "track": d.target, "place": mind.place_id(d.destination)}
     elif a == "go_to":
@@ -282,7 +289,7 @@ def decision_outputs(d: RobotDecision, mind: "RobotMind", aid: str) -> Outputs:
     elif a == "wait":
         out.stop = True
     if out.action or out.goal:
-        mind.note(f"You started {a} as {aid}.")
+        mind.note(f"You started {a} as {aid}" + (f" for track {d.target}." if a in ("guide", "tell_staff", "hand_over") else "."))
     return out
 
 
@@ -589,7 +596,7 @@ async def _run(args) -> int:
         print(f"Robot config error: {exc}", file=sys.stderr)
         return 2
     cfg = view.robot
-    profile = get_profile(cfg.profile)
+    profile = profile_for_sim(get_profile(cfg.profile), getattr(view, "sim", "stub"))
     rt = topics.robot_topics(cfg.ns)
     loop = asyncio.get_running_loop()
     stop = asyncio.Event()
