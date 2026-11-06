@@ -46,6 +46,7 @@ import math
 from dataclasses import dataclass, field
 from typing import Optional
 
+from wardzero_agents.config.presets import ROLE_INTENTS
 from wardzero_agents.contracts import AudioEvent, Nudge
 from wardzero_agents.world import audio
 from wardzero_agents.world.objects import EXTINGUISH_RANGE_M, ROBOT_EXTINGUISH_PER_S
@@ -188,18 +189,34 @@ class RobotTasks:
                 return self._result(aid, "hand_over", False, why, t)
         why = w._check_hand_over("g1", pid, item.id, place)
         lying = q.bed is not None and q.posture == "lying" and not q.sitting_up
+        name = self._item_name(item)
         if why == "out_of_reach_receiver" and lying and self._receiver_ok(q, place, item.kind, sitting_up=True):
-            # lying flat (a tray never counts then): the offer stays open and she is asked to sit up for it; the
-            # hand-over is checked again when she answers
+            # lying flat (a tray never counts then): the offer stays open and she is asked for it; accepting sits her
+            # up, and the hand-over is checked again when she answers
             self._out.nudges.append(Nudge(person=pid, t=t, card=HAND_OVER_CARD, message=(
-                f"The robot is holding out {item.label or item.kind.replace('_', ' ')} for you. You are lying flat: to "
-                f"take it, sit up in bed (sit_up_in_bed), then accept it (accept_item).")))
+                f"The robot is holding out the {name} for you. You are lying flat: if you want it, accept it "
+                f"(accept_item) and you sit up in bed to take it, with no separate sit_up_in_bed needed; if not, "
+                f"refuse it (refuse_item).")))
         elif why != "ok":
             return self._result(aid, "hand_over", False, why, t)
+        elif q.kind != "static" and "accept_item" in ROLE_INTENTS.get(q.inst.role, ()):
+            # someone up and about: nothing else tells them an offer is open, and it closes after a few seconds
+            no = "reject_item" if "reject_item" in ROLE_INTENTS.get(q.inst.role, ()) else "refuse_item"
+            self._out.nudges.append(Nudge(person=pid, t=t, card=HAND_OVER_CARD, message=(
+                f"The robot is holding out the {name} to you. If you want it, take it (accept_item); if not, refuse "
+                f"it ({no}).")))
         old = w._offers.get(pid)
         if old is not None and old["giver"] == "g1":  # one result per action: close the old offer
             self._result(old["intent"], "hand_over", False, "superseded", t)
         w._offers[pid] = {"giver": "g1", "item": item.id, "place": place, "t": t, "intent": aid}
+
+    @staticmethod
+    def _item_name(item) -> str:
+        """What a person is told the robot holds out: an instrument by its name, else the kind and its label."""
+        what = item.kind.replace("_", " ")
+        if item.kind == "instrument" and item.label:
+            return item.label
+        return f"{what} ({item.label})" if item.label else what
 
     def _receiver_ok(self, q, place, kind, sitting_up=None) -> bool:
         w = self.world

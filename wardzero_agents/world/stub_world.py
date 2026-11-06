@@ -1347,9 +1347,14 @@ class StubWorld:
             p.sitting_up = True
         elif kind == "lie_back":
             p.sitting_up = False
+            self._lay_back[pid] = t
         elif kind == "call_bell":
             out += self._ring_bell(p, t)
         elif kind in ("accept_item", "refuse_item"):
+            o = self._offers.get(pid)
+            if kind == "accept_item" and in_bed and not p.sitting_up and o is not None and o["giver"] == ROBOT_ID \
+                    and self._lay_back.get(pid, -math.inf) < o["t"]:
+                p.sitting_up = True  # taking the robot's tray: she sits up for it (one answer is enough)
             self._responses[pid] = (kind, t)
         elif kind == "call_for_help":
             out.append(self.say(pid, intent.text or "Help, I need a nurse here!", intent.addressee, t))
