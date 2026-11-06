@@ -202,6 +202,9 @@ class IsaacHost:
     def start_app(self) -> None:
         from isaacsim import SimulationApp
 
+        # WARDZERO_KIT_ARGS: extra Kit settings for this process, e.g. Kit's derived-data cache and log on another disk
+        # ("--/UJITSO/datastore/localCachePath=/big/disk/kitcache --/log/file=/big/disk/kit.log"); Kit reads sys.argv
+        sys.argv += [a for a in os.environ.get("WARDZERO_KIT_ARGS", "").split() if a.startswith("--/")]
         self.app = SimulationApp({"headless": not self.args.headed, "renderer": self.args.renderer,
                                   "width": 1280, "height": 720})
         if self.args.texture_max:  # before the stage opens: textures larger than this are downsampled on load
