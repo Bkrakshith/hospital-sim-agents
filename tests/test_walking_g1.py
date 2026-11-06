@@ -468,3 +468,17 @@ def test_at_its_post_the_follow_camera_eases_to_the_desk_view_and_back():
         eye, target = cam.update((post[0] + 2.0, post[1], 0.0))
     assert cam.w == 0.0 and eye == pytest.approx(R.chase_view((cam.x, cam.y, cam.yaw))[0])
     assert R.ChaseCam().update((0, 0, 0)) == R.chase_view((0, 0, 0))  # no post: the plain chase camera
+
+
+def test_a_task_layer_speed_cap_does_not_slow_the_g1_in_a_door():
+    body, sonic, grid = make_body(x=4.0, y=4.0)
+    body.follower.door_lines = [((5.0, 3.0), (5.0, 5.0))]
+    body.follower.set_route([(8.0, 4.0)])  # already lined up on the leaf, 1 m before the door line
+    body.speed_cap = 0.3  # reception's task layer: a person near
+    body.step(0.04, grid, [])
+    assert body.command.mode == rf.SLOW_WALK and body.command.speed == pytest.approx(0.6)
+    body.x = 1.5
+    body._next_follow = 0.0
+    body.follower.set_route([(3.0, 4.0)])
+    body.step(0.04, grid, [])
+    assert body.command.speed == pytest.approx(0.3)

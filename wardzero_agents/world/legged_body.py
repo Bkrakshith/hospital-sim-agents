@@ -168,8 +168,8 @@ class LeggedBody(RobotBody):
         cmd = f.update(self._t, (self.x, self.y, self.yaw), self.doors, others)
         if cmd.mode == SLOW_WALK:
             top = self.max_speed * min(1.0, self.speed_scale)
-            if self.speed_cap is not None:
-                top = min(top, self.speed_cap)
+            if self.speed_cap is not None and not f._in_door_zone(self.x, self.y):
+                top = min(top, self.speed_cap)  # not while it pushes a door's closer: 0.3 m/s wedges it (door spike)
             cmd = FollowerCommand(cmd.mode, max(MIN_WALK_SPEED, min(cmd.speed, top)), cmd.move_yaw, cmd.face_yaw,
                                   cmd.status, cmd.slow)
         self.command = cmd
