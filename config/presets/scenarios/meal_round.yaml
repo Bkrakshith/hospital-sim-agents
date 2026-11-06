@@ -1,7 +1,8 @@
 id: meal_round
 title: Meal round
 prompt: >-
-  The robot brings lunch trays to patients in a six-bed ward. One patient is asleep and one cannot sit up.
+  The robot brings lunch trays to patients in a six-bed ward. One patient is asleep and one is slow to sit up after
+  an operation.
   Each tray must reach the right patient, at a height and place they can reach.
 focus_rooms: [B1, B2, B3, B4, B5, B6]
 known_places: [Ward_Entrance, Ward_Corridor, B1, B2, B3, B4, B5, B6, nurse_base_ward]
@@ -18,7 +19,7 @@ characters:
   - {id: M1, name: Margaret Hall, sex: female, age_band: 71+, role: patient, mood: happy, room: B1, x: 25.109, y: 27.29, yaw: 1.571, bed: B1}
   - {id: M2, name: George Wright, sex: male, age_band: 71+, role: patient, mood: relieved, room: B2, x: 25.101, y: 19.098, yaw: -1.571, bed: B2}
   - {id: M3, name: Joan Mason, sex: female, age_band: 51-70, role: patient, mood: anxious, room: B3, x: 25.109, y: 16.204, yaw: 1.571, bed: B3,
-     role_prompt: "You cannot sit up on your own after your operation. You can only reach what is placed on the over-bed table close beside you. If a tray is out of reach, you cannot eat it and you say so. [Naithani 2008]"}
+     role_prompt: "After your operation it hurts to sit up, but you can sit up in bed when someone asks you to. You can only reach what is placed on the over-bed table close beside you. If a tray is out of reach, you cannot eat it and you say so. [Naithani 2008]"}
   - {id: N1, name: Hannah Taylor, sex: female, age_band: 31-50, role: ward_nurse, mood: stressed, room: Ward_WS2, x: 21.5, y: 12.1, yaw: 0.0}
 objects:
   - {kind: tray, id: tray_M1, label: "Margaret Hall - soft diet", owner: M1, holder: g1, x: 19.0, y: 6.0, z: 1.0}
