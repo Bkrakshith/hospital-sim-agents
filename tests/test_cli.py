@@ -646,3 +646,78 @@ def test_snapshot_restore_of_a_missing_snapshot_saves_nothing(capsys):
     seeded_memory()
     assert main(["memory", "snapshot", "restore", "nope"]) == 2
     assert not list((data_dir() / "snapshots").glob("pre-restore-*"))
+
+
+# ---- a robot that cannot reach the scenario's task -----------------------------------------
+@pytest.fixture
+def isaac_install(tmp_path, monkeypatch):
+    isaac = tmp_path / "isaacsim"
+    isaac.mkdir()
+    (isaac / "python.sh").write_text("#!/bin/sh\n")
+    for name, env in (("stage.usd", "WARDZERO_STAGE_USD"), ("collision.usd", "WARDZERO_COLLISION_USD")):
+        (tmp_path / name).write_text("x")
+        monkeypatch.setenv(env, str(tmp_path / name))
+    monkeypatch.setattr(cli, "ISAAC_ROOT", isaac)
+
+
+def _preset_scenario(tmp_path, pid):
+    from wardzero_agents.config.presets import load_scenario_presets, preset_to_scenario
+    cfg = ROOT / "config"
+    loaded = preset_to_scenario(load_scenario_presets(cfg)[pid], cfg, tmp_path / f"cfg_{pid}")
+    return str(loaded.scenario_path)
+
+
+@pytest.mark.parametrize("walks", [False, True])
+def test_static_robot_warns_for_an_unreachable_fire(walks, fake_llm, launched, isaac_install, monkeypatch, capsys,
+                                                     tmp_path):
+    from wardzero_agents.robots import profile
+    monkeypatch.setattr(profile, "g1_walks_in_isaac", lambda: walks)
+    assert main(["run", _preset_scenario(tmp_path, "ward_fire"), "--sim", "isaac", "--no-report"]) == 0
+    out = capsys.readouterr().out
+    (children,) = launched
+    run_dir = Path(opt(argv_of(children, "isaac_host"), "--run-dir"))
+    meta = json.loads((run_dir / "meta.json").read_text())
+    if walks:
+        assert "WARNING" not in out and "robot_cannot_reach_task" not in meta
+    else:
+        assert "WARNING" in out and "fire" in out and "fetch_sonic.py" in out and "hhumans doctor" in out
+        assert meta["robot_cannot_reach_task"] is True
+
+
+def test_reach_warning_judges_the_robot_after_overrides(monkeypatch, capsys, tmp_path):
+    # a batch arm swaps the robot through overrides["robot"]: the warning is about that robot, not the scenario's
+    import argparse
+    import dataclasses
+    from wardzero_agents.robots import profile
+    monkeypatch.setattr(profile, "g1_walks_in_isaac", lambda: False)
+    real = profile.get_profile
+    monkeypatch.setattr(profile, "get_profile", lambda name: dataclasses.replace(
+        profile.G1_CLAUDE, name="walker", can_move=True, base="legged") if name == "walker" else real(name))
+    loaded = load_scenario(_preset_scenario(tmp_path, "ward_fire"))
+    args = argparse.Namespace(no_robot=False)
+    g1 = loaded.scenario.robot.model_dump()
+    walker = {**g1, "profile": "walker"}
+    loaded.scenario.robot = loaded.scenario.robot.model_copy(update={"profile": "walker"})
+    meta: dict = {}
+    cli._warn_if_task_out_of_reach("isaac", loaded, args, meta, {"robot": {**walker, "profile": "g1_claude"}})
+    assert "WARNING" in capsys.readouterr().out and meta["robot_cannot_reach_task"] is True
+    loaded.scenario.robot = loaded.scenario.robot.model_copy(update={"profile": "g1_claude"})
+    meta = {}
+    cli._warn_if_task_out_of_reach("isaac", loaded, args, meta, {"robot": walker})
+    assert "WARNING" not in capsys.readouterr().out and "robot_cannot_reach_task" not in meta
+
+
+def test_no_reach_warning_without_a_fire_criterion_or_in_the_stub(fake_llm, launched, isaac_install, monkeypatch,
+                                                                  capsys, tmp_path):
+    from wardzero_agents.robots import profile
+    monkeypatch.setattr(profile, "g1_walks_in_isaac", lambda: False)
+    # evacuation_guide has a fire far from the robot, but none of its criteria asks for the fire to be out
+    assert main(["run", _preset_scenario(tmp_path, "evacuation_guide"), "--sim", "isaac", "--no-report"]) == 0
+    assert "WARNING" not in capsys.readouterr().out
+    # in the stub the G1 walks, so ward_fire's fire is within reach
+    assert main(["run", _preset_scenario(tmp_path, "ward_fire"), "--sim", "stub", "--no-report"]) == 0
+    assert "WARNING" not in capsys.readouterr().out
+    for children in launched:
+        sim = next(c for c in children if c.ends_run)
+        meta = json.loads((Path(opt(sim.argv, "--run-dir")) / "meta.json").read_text())
+        assert "robot_cannot_reach_task" not in meta

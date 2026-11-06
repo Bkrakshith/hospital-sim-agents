@@ -465,6 +465,7 @@ def _start_live(args, loaded, overrides: dict, meta: dict, out: Optional[dict] =
         if val is not None:  # the Isaac host also gets robot_domain; the Studio lists runs by project_id
             meta[key] = val
     _say_if_g1_static(sim, loaded, args)
+    _warn_if_task_out_of_reach(sim, loaded, args, meta, overrides)
     if os.environ.get("WARDZERO_TEST_SCRIPTED_SAY"):
         err("WARNING: WARDZERO_TEST_SCRIPTED_SAY is set. Scripted lines are injected into this run, so it is a "
             "test of the pipeline and not a real run of any robot or person.")
@@ -504,6 +505,45 @@ def _say_if_g1_static(sim: str, loaded, args) -> None:
     from .robots.profile import G1_NAME, g1_static_reason, g1_walks_in_isaac
     if r.profile == G1_NAME and not g1_walks_in_isaac():
         print(f"NOTE: {g1_static_reason()}", flush=True)
+
+
+FIRE_METRICS = frozenset({"fire_out_s", "fire_out_by_robot_s"})
+
+
+def _warn_if_task_out_of_reach(sim: str, loaded, args, meta: dict, overrides: Optional[dict] = None) -> None:
+    """A robot that cannot move in this simulator, in a scenario scored on putting a fire out that starts beyond its
+    extinguisher's reach of its post, can never meet that criterion: say so, and mark the run
+    (meta["robot_cannot_reach_task"]). It only warns: a fixed-post run may be what the user wants to test.
+    The robot is the run's, after overrides["robot"] (a batch arm or a rerun may swap it)."""
+    r = loaded.scenario.robot.model_copy(update=(overrides or {}).get("robot") or {})
+    if getattr(args, "no_robot", False) or not r.enabled:
+        return
+    from .config.presets import preset_for_run
+    from .robots.profile import get_profile, profile_for_sim
+    from .world.objects import EXTINGUISH_RANGE_M
+    try:
+        eff = profile_for_sim(get_profile(r.profile), sim)
+    except KeyError:
+        return
+    if eff.can_move:
+        return
+    preset = preset_for_run({"preset_id": loaded.scenario.preset_id, "scenario_id": loaded.scenario.id})
+    if preset is None or not FIRE_METRICS & {c.metric for c in preset.criteria}:
+        return
+    far = []
+    for b in loaded.storyboard.beats:
+        x, y = (b.params or {}).get("x"), (b.params or {}).get("y")
+        if b.card == "fire_start" and isinstance(x, (int, float)) and isinstance(y, (int, float)):
+            d = math.hypot(x - r.x, y - r.y)
+            if d > EXTINGUISH_RANGE_M:
+                far.append(d)
+    if not far:
+        return
+    meta["robot_cannot_reach_task"] = True
+    print(f"WARNING: the robot cannot walk in this run and the fire starts {min(far):.1f} m from its post, beyond "
+          f"its extinguisher's reach of {EXTINGUISH_RANGE_M:g} m, so the scenario's main criterion (the fire put out) "
+          f"cannot be met. Fix: run `python scripts/fetch_sonic.py` in hospital-sim-agents so the G1 walks in Isaac "
+          f"Sim, and check with `hhumans doctor`.", flush=True)
 
 
 def _sim_child(args, rd: str, sp: str, ts: float, ready: float) -> Child:

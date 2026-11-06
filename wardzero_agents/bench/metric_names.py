@@ -5,5 +5,6 @@ METRIC_NAMES: tuple[str, ...] = (
     "instrument_mean_latency_s", "fire_out_s", "people_reached_destination_rate", "nurse_alerted_s",
     "specimen_delivered_s", "patient_left_ward_unaccompanied_s", "deterioration_alerted_s", "mean_wait_s",
     "mood_change", "rating_likeability", "rating_safety", "rating_competence", "trust_item_mean",
-    "trust_delta_mean", "people_in_furniture_s", "robot_near_furniture_s",
+    "trust_delta_mean", "people_in_furniture_s", "robot_near_furniture_s", "robot_reached_destination_s",
+    "fire_out_by_robot_s",
 )

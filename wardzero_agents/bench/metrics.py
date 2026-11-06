@@ -28,6 +28,7 @@ NEAR_M = 1.5  # "near people" for the speed metric
 CLOSE_M = 0.5  # "too close" for time_within_0_5m_s
 RESPONSE_WINDOW_S = 10.0  # a request is unanswered when the robot neither speaks nor acts within this
 INSTRUMENT_WINDOW_S = 60.0  # an instrument handed over this soon after its request answers it
+ARRIVE_M = 1.0  # the robot is at its destination within this distance of the place's point
 ACCOMPANY_M = 2.5  # someone (or the robot) within this distance is "with" a wandering patient
 DOOR_ZONE_M = 1.0  # radius of a fire door's swing zone, around the middle of the door
 MAX_SAMPLE_GAP_S = 1.0  # a pose sample stands for at most this long
@@ -218,9 +219,11 @@ def _card_t(d: RunData, *cards: str) -> Optional[float]:
 
 
 def _alert_after(d: RunData, t0: float) -> Optional[float]:
-    """Seconds from t0 to the robot's first alert of staff: a successful press_call or tell_staff, or robot
-    speech addressed to a person whose role (meta["people"]) is staff. None if there is none."""
-    ts = [res["t"] for a in ("press_call", "tell_staff") for _, res in _ok_results(d, a) if res["t"] >= t0]
+    """Seconds from t0 to the robot's first alert of staff: a successful press_call that someone answered (reason
+    "answered"; a legacy "ok" or no reason counts too, "unanswered" does not) or tell_staff, or robot speech
+    addressed to a person whose role (meta["people"]) is staff. None if there is none."""
+    ts = [res["t"] for a in ("press_call", "tell_staff") for _, res in _ok_results(d, a) if res["t"] >= t0
+          and not (a == "press_call" and res.get("reason") == "unanswered")]
     ts += [a["t"] for a in d.audio if a.get("source_kind") == "robot" and a.get("text") and a["t"] >= t0
            and d.role(str(a.get("addressee"))) in STAFF_ROLES]
     return min(ts) - t0 if ts else None
@@ -411,26 +414,52 @@ def trays_correct_in_reach(d: RunData) -> Optional[float]:
     return float(n)
 
 
+def _holder_at(states: list[tuple[float, dict]], t: float) -> Optional[str]:
+    """Who held the item in its latest logged state at or before t."""
+    h = None
+    for ts, o in states:
+        if ts > t + 1e-9:
+            break
+        h = o.get("holder")
+    return h
+
+
 def _instrument_matches(d: RunData):
     """(requests, matches, unrequested): requests are (t, item id) for each instrument a person named
-    to the robot; matched to the earliest ok hand_over of that instrument within 60 s after it."""
+    to the robot; matched to the earliest ok hand_over of that instrument from the request until 60 s after its
+    latest repeat.
+
+    Not every mention is a new request. Naming an item again within 60 s of the last mention of a request for it,
+    with no ok hand-over of it in between, repeats that request (the earliest time counts for latency). Naming it
+    within 10 s after its ok hand-over, or while the speaker already holds it, is not a request (thanks, a remark
+    about it)."""
     states = _item_states(d)
     names = {iid: s[-1][1] for iid, s in states.items() if s[-1][1].get("kind") == "instrument"}
     pats = {iid: re.compile(r"\b(" + "|".join(re.escape(x.lower()) for x in
                                               {iid.replace("_", " "), iid, str(o.get("label") or iid)}) + r")\b")
             for iid, o in names.items()}
+    gives = [(res["t"], act.get("item")) for act, res in _ok_results(d, "hand_over") if act.get("item") in names]
     reqs = []
     for a in _requests(d):
         text = str(a.get("text") or "").lower()
         for iid, pat in pats.items():
-            if pat.search(text):
-                reqs.append((a["t"], iid))
-    gives = [(res["t"], act.get("item")) for act, res in _ok_results(d, "hand_over") if act.get("item") in names]
+            if not pat.search(text):
+                continue
+            t = a["t"]
+            if _holder_at(states[iid], t) == a.get("source_id") \
+                    or any(item == iid and 0 <= t - tg <= RESPONSE_WINDOW_S for tg, item in gives):
+                continue
+            k = next((k for k in range(len(reqs) - 1, -1, -1) if reqs[k][1] == iid), None)
+            if k is not None and t - reqs[k][2] <= INSTRUMENT_WINDOW_S \
+                    and not any(item == iid and reqs[k][0] <= tg <= t for tg, item in gives):
+                reqs[k] = (reqs[k][0], iid, t)  # a repeat: keeps the first time, extends the window
+                continue
+            reqs.append((t, iid, t))
     used: set[int] = set()
     matches = []
-    for t_req, iid in reqs:
+    for t_req, iid, t_last in reqs:
         for k, (t_res, item) in enumerate(gives):
-            if k not in used and item == iid and t_req <= t_res <= t_req + INSTRUMENT_WINDOW_S:
+            if k not in used and item == iid and t_req <= t_res <= t_last + INSTRUMENT_WINDOW_S:
                 used.add(k)
                 matches.append((t_req, t_res))
                 break
@@ -439,7 +468,8 @@ def _instrument_matches(d: RunData):
 
 def instruments_correct_rate(d: RunData) -> Optional[float]:
     """Correct / (requests + unrequested). A request is an instrument named in speech addressed to the
-    robot; it is correct when the robot hands over that instrument successfully within 60 s after.
+    robot (a repeat, a thank-you or a remark about one she holds is not a new one: see _instrument_matches); it is
+    correct when the robot hands over that instrument successfully within 60 s after.
     Successful hand-overs of instruments nobody asked for (or twice) add to the denominator. None if
     no instrument was requested."""
     reqs, matches, extra = _instrument_matches(d)
@@ -467,6 +497,58 @@ def fire_out_s(d: RunData) -> Optional[float]:
             return None
         outs.append(out)
     return max(outs) - t_start
+
+
+def fire_out_by_robot_s(d: RunData) -> Optional[float]:
+    """Seconds from the first fire appearing in the objects stream to the robot's last successful extinguish
+    (robot_tasks result ok), when every fire ends out and the robot put each one out: a fire counts as the robot's
+    when an ok extinguish result's action row names it (with a single fire, any ok extinguish counts). None if there
+    was no fire, any fire is still burning, or someone else put one out. fire_out_s does not ask who put it out."""
+    fires = {i: s for i, s in _item_states(d).items() if s[-1][1].get("kind") == "fire"}
+    if not fires or any(not any(o.get("active") is False for _, o in s) for s in fires.values()):
+        return None
+    done = _ok_results(d, "extinguish")
+    if not done:
+        return None
+    ends = []
+    for fid in fires:
+        ts = [res["t"] for act, res in done if str(act.get("fire")) == fid or (len(fires) == 1 and not act.get("fire"))]
+        if not ts:
+            return None
+        ends.append(min(ts))
+    return max(ends) - min(s[0][0] for s in fires.values())
+
+
+def _destination(d: RunData) -> Optional[str]:
+    """The robot's destination: robot_brief.destination in the run's robot_config.json, else in the scenario copy
+    named by meta["scenario_path"] (or the run's own copy, config/<that file's name>). None without one."""
+    try:
+        brief = json.loads((d.run_dir / "robot_config.json").read_text(encoding="utf-8")).get("robot_brief")
+    except (OSError, ValueError, AttributeError):
+        brief = None
+    if not isinstance(brief, dict):
+        import yaml
+        sp = str(d.meta.get("scenario_path") or "")
+        for path in ([Path(sp), d.run_dir / "config" / Path(sp).name] if sp else []):
+            try:
+                doc = yaml.safe_load(path.read_text(encoding="utf-8"))
+            except (OSError, yaml.YAMLError):
+                continue
+            brief = doc.get("robot_brief") if isinstance(doc, dict) else None
+            break
+    dest = brief.get("destination") if isinstance(brief, dict) else None
+    return dest if isinstance(dest, str) and dest.strip() else None
+
+
+def robot_reached_destination_s(d: RunData) -> Optional[float]:
+    """Time (s) of the first robot_pose sample within 1.0 m of the robot's destination (robot_brief.destination,
+    resolved on the site map). None if the run has no destination, the place is unknown, or the robot never got
+    there."""
+    dest, site = _destination(d), d.site
+    xy = site.resolve(dest) if dest and site is not None else None
+    if xy is None:
+        return None
+    return next((p["t"] for p in d.poses() if math.hypot(p["x"] - xy[0], p["y"] - xy[1]) <= ARRIVE_M), None)
 
 
 def people_reached_destination_rate(d: RunData) -> Optional[float]:
@@ -620,7 +702,7 @@ METRICS: dict[str, Callable[[RunData], Optional[float]]] = {
         instrument_mean_latency_s, fire_out_s, people_reached_destination_rate, nurse_alerted_s,
         specimen_delivered_s, patient_left_ward_unaccompanied_s, deterioration_alerted_s, mean_wait_s,
         mood_change, rating_likeability, rating_safety, rating_competence, trust_item_mean, trust_delta_mean,
-        people_in_furniture_s, robot_near_furniture_s)
+        people_in_furniture_s, robot_near_furniture_s, robot_reached_destination_s, fire_out_by_robot_s)
 }
 assert set(METRICS) == set(METRIC_NAMES)
 
