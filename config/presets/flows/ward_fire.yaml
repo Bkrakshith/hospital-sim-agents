@@ -13,4 +13,7 @@ steps:
     branches:
     - - fire: {id: b3, card: staff_evacuate, target: N1, label: N1 starts moving patients}
     - - fire: {id: b4, card: staff_evacuate, target: N2, label: N2 starts moving patients}
-- expect: {label: The robot puts the fire out, when: {fire_out: true}, timeout_s: 180}
+- expect:
+    label: The robot puts the fire out
+    when: {all: [{fire_out: true}, {robot_did: {action: extinguish}}]}
+    timeout_s: 180

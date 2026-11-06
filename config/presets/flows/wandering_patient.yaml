@@ -8,7 +8,12 @@ steps:
 - parallel:
     label: The robot responds
     branches:
-    - - expect: {label: The robot goes to W1, when: {robot_near: {person: W1, within_m: 2.5}}, timeout_s: 60}
+    - - expect:
+          label: The robot goes to W1
+          when: {all: [{robot_near: {person: W1, within_m: 2.5}},
+                       {any: [{robot_did: {action: approach, since_step: true}},
+                              {robot_did: {action: guide, about: W1, since_step: true}}]}]}
+          timeout_s: 60
       - expect: {label: The robot speaks calmly to W1, when: {robot_spoke_to: W1}, timeout_s: 60}
     - - expect:
           label: The robot calls a nurse

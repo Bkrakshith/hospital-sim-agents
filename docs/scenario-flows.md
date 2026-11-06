@@ -185,25 +185,23 @@ flowchart TD
 
 ## Specimen run (`specimen_run`)
 
-The robot carries a specimen box from the ward to the porter at the main lifts. Traffic builds as it goes - a nurse wheels a patient to the lifts, and people arrive as it reaches the corridor and the lift lobby.
+The robot carries a specimen box from the ward to the porter at the main lifts. Traffic builds as it goes - a porter wheels a patient to the lifts, and people arrive as it reaches the corridor and the lift lobby.
 
 ```mermaid
 flowchart TD
   n1(("Run starts"))
-  n2(["Expect: The robot picks up the specimen box (up to 60 s)"])
+  n2[["A porter wheels W2 to the lifts [escort_patient]"]]
   n1 --> n2
-  n3[["A nurse wheels W2 to the lifts [escort_patient]"]]
+  n3["Wait until: The robot sets off down the corridor (up to 90 s)"]
   n2 --> n3
-  n4["Wait until: The robot sets off down the corridor (up to 90 s)"]
+  n4[["Someone arrives [arrival]"]]
   n3 --> n4
-  n5[["Someone arrives [arrival]"]]
+  n5["Wait until: The robot is near the lift lobby (up to 90 s)"]
   n4 --> n5
-  n6["Wait until: The robot is near the lift lobby (up to 90 s)"]
+  n6[["Someone else arrives [arrival]"]]
   n5 --> n6
-  n7[["Someone else arrives [arrival]"]]
+  n7(["Expect: The robot hands the box to the porter (up to 180 s)"])
   n6 --> n7
-  n8(["Expect: The robot hands the box to the porter (up to 180 s)"])
-  n7 --> n8
 ```
 
 ## Visiting rush (`visiting_rush`)
@@ -225,7 +223,7 @@ flowchart TD
   n5 --> n6
   n7[["A third group arrives [arrival]"]]
   n6 --> n7
-  n8(["Expect: The robot gets well along the corridor (up to 240 s)"])
+  n8(["Expect: The robot gets most of the way to the nurse base (up to 300 s)"])
   n7 --> n8
 ```
 

@@ -437,3 +437,32 @@ def test_the_director_keeps_when_the_robot_spoke_to_each_person(tmp_path):
     assert v.robot_said_to == {"P2"} and v.robot_said_at == {"P2": [2.0, 8.0]}
     assert holds({"robot_spoke_to": {"person": "P2", "since_step": True}}, v, t0=8.0)
     assert not holds({"robot_spoke_to": {"person": "P2", "since_step": True}}, v, t0=8.5)
+
+
+def _run_preset(pid, *, view_kw=lambda t: {}, until=None):
+    p = PRESETS[pid]
+    flow = load_flow(flows_dir(CONFIG) / f"{pid}.yaml")
+    people = {c.id: st(c.id, c.x, c.y) for c in p.characters}
+    e = FlowEngine(flow, DECK)
+    fired, t = [], 0.0
+    while t <= (until or p.duration_min * 60) and not e.finished:
+        start = (p.robot_start.x, p.robot_start.y)
+        fired += [(f.t, f.card) for f in e.tick(FlowView(t=t, statuses=people, robot_xy=start, robot_start=start,
+                                                         present=set(people), cast=set(people), **view_kw(t)))]
+        t += 0.5
+    return e, fired
+
+
+def test_specimen_run_fires_the_escort_at_the_start():
+    e, fired = _run_preset("specimen_run", until=5.0)
+    assert fired == [(0.0, "escort_patient")]  # nothing to wait for: the box starts in the robot's hand
+
+
+def test_ward_fire_expect_needs_the_robot_to_extinguish():
+    label = next(n.label for n in FlowEngine(load_flow(flows_dir(CONFIG) / "ward_fire.yaml"))._ctx.nodes
+                 if n.kind == "expect")
+    e, _ = _run_preset("ward_fire", view_kw=lambda t: {"fires": {"f1": True}})  # a nurse put it out
+    assert _node_by_label(e.tree(), label)["state"] == "timed_out"
+    e, _ = _run_preset("ward_fire", view_kw=lambda t: {"fires": {"f1": True},
+                                                        "robot_did": [(70.0, "extinguish", None)] if t >= 70 else []})
+    assert _node_by_label(e.tree(), label)["state"] == "met"

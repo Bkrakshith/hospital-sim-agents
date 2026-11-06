@@ -9,4 +9,4 @@ steps:
 - fire: {id: b2, card: arrival, label: A second group arrives}
 - wait_until: {label: The robot is halfway along the corridor, when: {robot_moved: 6}, timeout_s: 90}
 - fire: {id: b3, card: arrival, label: A third group arrives}
-- expect: {label: The robot gets well along the corridor, when: {robot_moved: 10}, timeout_s: 240}
+- expect: {label: The robot gets most of the way to the nurse base, when: {robot_moved: 15.5}, timeout_s: 300}
