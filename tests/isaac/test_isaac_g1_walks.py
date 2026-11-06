@@ -81,7 +81,17 @@ def test_the_g1_walks_to_the_ward_doors_and_back_in_a_recorded_run(tmp_path):
     run = Path(m.group(1).strip())
     assert code == 0, text[-3000:]
 
-    goals = [r for r in rows(run, "robot_tasks") if r.get("kind") == "result" and r.get("action") == "goal"]
+    check_walk(run)
+    OUT.mkdir(parents=True, exist_ok=True)
+    for t in (10, 30, 60, 90, 120):
+        subprocess.run([ffmpeg_exe(), "-y", "-v", "error", "-ss", str(t), "-i", str(run / "video" / "follow.mp4"),
+                        "-frames:v", "1", str(OUT / f"follow_{t:03d}s.png")], check=False)
+    shutil.copy(log_path, OUT / "run.log")
+
+
+def check_walk(run: Path) -> dict:
+    """The walk's evidence from a run folder (also usable on a kept run: check_walk(Path(...)))."""
+    goals = [r for r in rows(run, "robot_tasks") if r.get("action") == "goal" and "reason" in r]
     walker = [r for r in rows(run, "host") if r.get("kind") == "walker"]
     final = [r for r in rows(run, "host") if r.get("kind") == "final"]
     fell = [r for r in rows(run, "world") if r.get("kind") == "robot_fell"]
@@ -94,8 +104,4 @@ def test_the_g1_walks_to_the_ward_doors_and_back_in_a_recorded_run(tmp_path):
     for name in ("overhead.mp4", "follow.mp4"):
         mp4 = run / "video" / name
         assert mp4.is_file() and probe(mp4)["duration"] > 60, name
-    OUT.mkdir(parents=True, exist_ok=True)
-    for t in (10, 30, 60, 90, 120):
-        subprocess.run([ffmpeg_exe(), "-y", "-v", "error", "-ss", str(t), "-i", str(run / "video" / "follow.mp4"),
-                        "-frames:v", "1", str(OUT / f"follow_{t:03d}s.png")], check=False)
-    shutil.copy(log_path, OUT / "run.log")
+    return evidence
