@@ -20,6 +20,7 @@ import yaml
 from aiohttp import WSMsgType, web
 from pydantic import ValidationError
 
+from ..config.models import ForbiddenArea
 from ..config.presets import (DEFAULT_CONFIG_ROOT, CharacterSpec, RobotStart, load_moods, load_roles,
                               load_scenario_presets)
 from ..panel.server import MAX_BODY, WS_PERIOD_S, WS_SEND_TIMEOUT_S, BadRequest, _body, _dumps, _err, _guard
@@ -39,6 +40,7 @@ PROBE_TIMEOUT_S = 8.0  # the probe runs in the background; requests never wait f
 PROBE_EVERY_S = 3.0
 NO_LIGHTS = {"controller_seen": False, "sensors_subscribed": False, "commands_seen": False}
 JOB_LOG_MAX = 40000
+MAX_AREAS = 30  # forbidden areas per project
 KEY_ENV = ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_AUTH_TOKEN", "WARDZERO_KEY_FILE")
 
 
@@ -464,7 +466,8 @@ def make_app(ctx: Ctx) -> web.Application:
         d.setdefault("id", chars.new_character_id(p.characters))
         d.setdefault("room", "")
         d.setdefault("yaw", 0.0)
-        c = chars.check_character(CharacterSpec.model_validate(d), ctx.site, ctx.roles, ctx.moods, p.characters)
+        c = chars.apply_start_seated(CharacterSpec.model_validate(d), None, ctx.site, p.characters)
+        c = chars.check_character(c, ctx.site, ctx.roles, ctx.moods, p.characters)
         p = p.model_copy(update={"characters": [*p.characters, c]})
         ctx.projects.save(p)
         return j(c.model_dump(mode="json"), 201)
@@ -483,6 +486,7 @@ def make_app(ctx: Ctx) -> web.Application:
             d.setdefault("bed", None)
         new = CharacterSpec.model_validate({**old.model_dump(mode="json"), **d, "id": cid})
         others = [c for c in p.characters if c.id != cid]
+        new = chars.apply_start_seated(new, old, ctx.site, others, ticked=d.get("start_seated") is True)
         new = chars.check_character(new, ctx.site, ctx.roles, ctx.moods, others)
         p = p.model_copy(update={"characters": [new if c.id == cid else c for c in p.characters]})
         ctx.projects.save(p)
@@ -496,6 +500,41 @@ def make_app(ctx: Ctx) -> web.Application:
         if not any(c.id == cid for c in p.characters):
             raise ApiError(404, f"no character '{cid}'")
         ctx.projects.save(p.model_copy(update={"characters": [c for c in p.characters if c.id != cid]}))
+        return j({"ok": True})
+
+    # forbidden areas: rectangles the robot must keep out of
+    @r.post("/api/projects/{id}/areas")
+    async def add_area(request):
+        await _not_while_running(ctx, "Edit the forbidden areas")
+        p = _project(ctx, request)
+        d = await _body(request)
+        if len(p.forbidden_areas) >= MAX_AREAS:
+            raise ProjectError(f"A project can have at most {MAX_AREAS} forbidden areas.")
+        taken = {a.id for a in p.forbidden_areas}
+        n = 1
+        while f"fa{n}" in taken:
+            n += 1
+        name = str(d.get("name") or "").strip()
+        if not name:
+            raise ProjectError("Give the forbidden area a name.")
+        area = ForbiddenArea.model_validate({**{k: d.get(k) for k in ("x0", "y0", "x1", "y1")},
+                                             "id": f"fa{n}", "name": name})
+        xmin, xmax, ymin, ymax = ctx.site.bounds
+        if area.x1 < xmin or area.x0 > xmax or area.y1 < ymin or area.y0 > ymax:
+            raise ProjectError("The forbidden area is outside the hospital.")
+        if any(a.name.lower() == area.name.lower() for a in p.forbidden_areas):
+            raise ProjectError(f"There is already a forbidden area called '{area.name}'.")
+        ctx.projects.save(p.model_copy(update={"forbidden_areas": [*p.forbidden_areas, area]}))
+        return j(area.model_dump(mode="json"), 201)
+
+    @r.delete("/api/projects/{id}/areas/{aid}")
+    async def delete_area(request):
+        await _not_while_running(ctx, "Edit the forbidden areas")
+        p = _project(ctx, request)
+        aid = request.match_info["aid"]
+        if not any(a.id == aid for a in p.forbidden_areas):
+            raise ApiError(404, f"no forbidden area '{aid}'")
+        ctx.projects.save(p.model_copy(update={"forbidden_areas": [a for a in p.forbidden_areas if a.id != aid]}))
         return j({"ok": True})
 
     # memory

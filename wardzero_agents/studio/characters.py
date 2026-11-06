@@ -10,6 +10,8 @@ from ..config.presets import CharacterSpec, MoodPreset, RolePreset
 from .project import Project, ProjectError
 
 SEAT_SNAP_M = 0.3
+WAITING_ROOM = "AE_Waiting"  # "Start seated" picks one of this room's seats (A1-A3, B1-B3, C1, D3)
+STAND_OFF_M = 1.0  # unticking "Start seated" stands the person this far in front of the seat
 _CID = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,15}$")
 
 
@@ -23,6 +25,70 @@ def new_character_id(existing: list[CharacterSpec]) -> str:
     while f"C{n}" in taken:
         n += 1
     return f"C{n}"
+
+
+def waiting_seats(site) -> list:
+    """The A&E waiting-room seats a character can start seated on (staff-only seats left out)."""
+    return [s for s in site.seats.values()
+            if site.room_at(s.x, s.y) == WAITING_ROOM and not getattr(s, "staff_only", False)]
+
+
+def _seat_taken(seat, others: list[CharacterSpec]) -> bool:
+    return any(math.hypot(seat.x - o.x, seat.y - o.y) <= SEAT_SNAP_M and not o.bed for o in others)
+
+
+def _waiting_seat_at(site, x: float, y: float):
+    return next((s for s in waiting_seats(site) if math.hypot(s.x - x, s.y - y) <= SEAT_SNAP_M), None)
+
+
+def _stand_in_front(site, seat, others: list[CharacterSpec]) -> tuple[float, float, float]:
+    """A free standing spot STAND_OFF_M in front of a seat (facing away from it), else beside or behind it."""
+    for turn in (0.0, math.pi / 2, -math.pi / 2, math.pi):
+        for dist in (STAND_OFF_M, 0.8, 1.2, 0.6):
+            a = seat.yaw + turn
+            x, y = round(seat.x + dist * math.cos(a), 2), round(seat.y + dist * math.sin(a), 2)
+            near_seat = any(math.hypot(q.x - x, q.y - y) <= SEAT_SNAP_M for q in site.seats.values())
+            crowded = any(math.hypot(o.x - x, o.y - y) < 0.5 for o in others)
+            if not near_seat and not crowded and site.check_place(x, y) is None:
+                return x, y, seat.yaw
+    raise ProjectError(f"There is no room to stand in front of seat {seat.id}.")
+
+
+def apply_start_seated(new: CharacterSpec, old: Optional[CharacterSpec], site,
+                       others: list[CharacterSpec], ticked: bool = False) -> CharacterSpec:
+    """Act on the "Start seated" box before the usual checks.
+
+    Ticked (newly, or on a new character): sit them on the free A&E waiting seat nearest to where they are;
+    every seat taken is an error. Unticked while still on their seat: stand them 1 m in front of it.
+    Moved (dragged) while ticked: they stay seated only when dropped on a free waiting seat, unless the box
+    was sent ticked with the move (ticked: the dialog), which seats them nearest to the new spot."""
+    was = bool(old and old.start_seated)
+    moved = old is not None and (abs(new.x - old.x) > 1e-6 or abs(new.y - old.y) > 1e-6)
+    if new.start_seated and new.bed:
+        raise ProjectError("A patient in a bed cannot also start seated.")
+    if new.start_seated and was and moved and not ticked:
+        seat = _waiting_seat_at(site, new.x, new.y)
+        if seat is None or _seat_taken(seat, others):
+            return new.model_copy(update={"start_seated": False})
+        return new.model_copy(update={"x": seat.x, "y": seat.y, "yaw": seat.yaw, "room": WAITING_ROOM})
+    if new.start_seated and not (was and not moved):
+        here = _waiting_seat_at(site, new.x, new.y)
+        if here is not None and not _seat_taken(here, others):
+            seat = here
+        else:
+            free = [s for s in waiting_seats(site) if not _seat_taken(s, others)]
+            if not free:
+                raise ProjectError(f"All {len(waiting_seats(site))} A&E waiting seats are taken, "
+                                   f"so {new.name or new.id} cannot start seated.")
+            seat = min(free, key=lambda s: math.hypot(s.x - new.x, s.y - new.y))
+        return new.model_copy(update={"x": seat.x, "y": seat.y, "yaw": seat.yaw, "room": WAITING_ROOM,
+                                      "bed": None})
+    if not new.start_seated and was and not moved:
+        seat = _waiting_seat_at(site, new.x, new.y)
+        if seat is not None:
+            x, y, yaw = _stand_in_front(site, seat, others)
+            return new.model_copy(update={"x": x, "y": y, "yaw": yaw, "room": site.room_at(x, y) or new.room})
+    return new
 
 
 def check_character(c: CharacterSpec, site, roles: dict[str, RolePreset], moods: dict[str, MoodPreset],
@@ -45,6 +111,12 @@ def check_character(c: CharacterSpec, site, roles: dict[str, RolePreset], moods:
     if not all(math.isfinite(v) for v in (c.x, c.y, c.yaw)):
         raise ProjectError("The position must be numbers.")
     occupied = [o.bed for o in others if o.bed]
+    if c.start_seated:
+        seat = _waiting_seat_at(site, c.x, c.y)
+        if c.bed or seat is None:
+            raise ProjectError(f"{c.name or c.id} starts seated, so they must be on an A&E waiting seat.")
+        if _seat_taken(seat, others):
+            raise ProjectError(f"Seat {seat.id} is already taken.")
     if c.bed:
         bed = site.beds.get(c.bed)
         if bed is None:
