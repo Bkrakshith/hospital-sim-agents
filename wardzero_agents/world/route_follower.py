@@ -6,8 +6,8 @@ Quick 2D and in Isaac match.
 
 Each ``update`` (any rate; 10 Hz is plenty) takes the sim time, the measured pose, door points and people
 positions, and returns a ``FollowerCommand``: mode IDLE or SLOW_WALK, a speed, and world-frame movement and facing
-yaw angles. It walks facing the next waypoint, slows to 0.3 m/s within 1.5 m of a door or a person (0.6 m/s
-otherwise), turns in place (IDLE with a facing) when the waypoint is far off to the side, and ends with
+yaw angles. It walks facing the next waypoint, slows to 0.3 m/s within 1.5 m of a person (0.6 m/s otherwise, doors
+included: the door spike found the G1 passes a door leaf cleanly at 0.6 m/s and gets stuck against it at 0.3), turns in place (IDLE with a facing) when the waypoint is far off to the side, and ends with
 ``arrived``, ``stuck`` (no progress for 5 s of sim time) or ``fell``.
 
 Cross-track correction: the robot steers at a point ``lookahead`` metres ahead of its foot on the current route segment
@@ -32,7 +32,7 @@ from typing import Iterable, Optional, Sequence
 # Same numbers as GEAR-SONIC's planner modes.
 IDLE, SLOW_WALK = 0, 1
 OPEN_SPEED = 0.6  # m/s commanded in open space
-SLOW_SPEED = 0.3  # m/s within SLOW_RADIUS of a door or a person
+SLOW_SPEED = 0.3  # m/s within SLOW_RADIUS of a person (not of a door: at 0.3 m/s the G1 stalled against a leaf)
 SLOW_RADIUS = 1.5
 ARRIVE_M = 0.3
 WAYPOINT_M = 0.4
@@ -79,7 +79,7 @@ class RouteFollower:
                  stuck_s: float = STUCK_S, stuck_m: float = STUCK_M, yaw_tol: float = YAW_TOL,
                  turn_in_place: float = TURN_IN_PLACE, walk_again: float = WALK_AGAIN, settle_s: float = SETTLE_S,
                  correct_gain: float = CORRECT_GAIN, retarget: float = RETARGET,
-                 lookahead: float = LOOKAHEAD_M) -> None:
+                 lookahead: float = LOOKAHEAD_M, slow_near_doors: bool = False) -> None:
         self.router = router
         self.open_speed, self.slow_speed, self.slow_radius = open_speed, slow_speed, slow_radius
         self.arrive_m, self.waypoint_m = arrive_m, waypoint_m
@@ -87,6 +87,7 @@ class RouteFollower:
         self.yaw_tol, self.turn_in_place, self.walk_again = yaw_tol, turn_in_place, walk_again
         self.settle_s, self.correct_gain, self.retarget = settle_s, correct_gain, retarget
         self.lookahead = lookahead
+        self.slow_near_doors = slow_near_doors
         self.path: list[tuple[float, float]] = []
         self._prev: Optional[tuple[float, float]] = None  # start of the current route segment
         self.final_yaw: Optional[float] = None
@@ -228,7 +229,8 @@ class RouteFollower:
         face = self._face(bearing, yaw, settled)
         if self._in_place:
             return FollowerCommand(IDLE, 0.0, None, face, TURNING)
-        slow = near_any(x, y, doors, self.slow_radius) or near_any(x, y, people, self.slow_radius)
+        slow = near_any(x, y, people, self.slow_radius) or (
+            self.slow_near_doors and near_any(x, y, doors, self.slow_radius))
         speed = self.slow_speed if slow else self.open_speed
         return FollowerCommand(SLOW_WALK, speed, face, face, FOLLOWING, slow)
 

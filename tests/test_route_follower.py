@@ -102,14 +102,17 @@ def test_walks_a_route_with_turns_and_ends_facing_the_final_yaw():
     assert any(x.status == rf.TURNING for x in cmds)  # 90 deg corners turn in place first
 
 
-def test_slow_near_doors_and_people_only():
+def test_slow_near_people_only_not_doors():
     f = RouteFollower()
     f.set_route([(10.0, 0.0)])
     assert f.update(0.0, (0.0, 0.0, 0.0)).speed == 0.6
-    assert f.update(0.1, (0.0, 0.0, 0.0), doors=[(1.4, 0.3)]).speed == 0.3
+    assert f.update(0.1, (0.0, 0.0, 0.0), doors=[(1.4, 0.3)]).speed == 0.6  # door spike: 0.3 m/s stalls at a leaf
     c = f.update(0.2, (0.0, 0.0, 0.0), people=[(0.0, -1.5)])
     assert c.speed == 0.3 and c.slow
     assert f.update(0.3, (0.0, 0.0, 0.0), doors=[(1.6, 0.0)], people=[(-1.2, 1.0)]).speed == 0.6
+    g = RouteFollower(slow_near_doors=True)  # the old behaviour, still available
+    g.set_route([(10.0, 0.0)])
+    assert g.update(0.0, (0.0, 0.0, 0.0), doors=[(1.4, 0.3)]).speed == 0.3
 
 
 def test_a_waypoint_behind_turns_in_place_before_walking():
@@ -154,8 +157,7 @@ def test_router_goal_through_a_doorway_with_the_2d_body():
     assert math.hypot(body.x - 10.0, body.y - 4.5) < rf.ARRIVE_M + 0.05
     assert abs(wrap(body.yaw - math.pi / 2)) <= rf.YAW_TOL
     through = [s for s in statuses if abs(s[2][0] - 6.0) < 0.5 and s[0] == rf.FOLLOWING]
-    assert through and all(s[1] == rf.SLOW_SPEED for s in through)  # slow in the doorway
-    assert any(s[1] == rf.OPEN_SPEED for s in statuses)
+    assert through and all(s[1] == rf.OPEN_SPEED for s in through)  # through the doorway at walking speed
 
 
 def test_a_guided_person_does_not_slow_the_2d_body_but_others_do():

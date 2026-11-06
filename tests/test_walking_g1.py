@@ -220,7 +220,7 @@ def test_a_goal_walks_past_the_desk_and_arrives_facing_the_goal_yaw():
     assert math.hypot(sonic.x - 14.0, sonic.y - 1.0) < rf.ARRIVE_M + 0.05
     assert abs(rf.wrap(sonic.yaw + math.pi / 2)) <= rf.YAW_TOL
     walking = [c for c in sonic.commands if c.mode == P.SLOW_WALK]
-    assert walking and max(c.speed for c in walking) == pytest.approx(0.6) and min(c.speed for c in walking) == 0.3
+    assert walking and all(c.speed == pytest.approx(0.6) for c in walking)  # doors do not slow it (door spike)
     assert len(sonic.commands) < 200  # the facing is held steady: the planner is not asked again every tick
 
 
