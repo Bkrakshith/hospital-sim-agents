@@ -356,6 +356,11 @@ class StubWorld:
                 pos = self._pos(intent.target) or self._resolve_place(intent.target)
                 if pos is not None:
                     p.yaw = math.atan2(pos[1] - p.y, pos[0] - p.x)
+                if not intent.overlay:
+                    # the mind's own look_at is its current activity: it ends at once, so the mind
+                    # gets "intent done" and decides again (a reflex glance is an overlay and does not)
+                    self._begin(p, intent)
+                    self._finish(p)
             return []
         if kind == "talk":
             return [self.say(intent.person, intent.text or "", intent.addressee, intent.t)]

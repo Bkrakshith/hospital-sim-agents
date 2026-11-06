@@ -66,8 +66,11 @@ def _str_or_none(v: Any) -> Optional[str]:
 
 
 def check_decision(data: Any, area: "WaitingArea", signs: Iterable["Sign"], roster: Iterable[str],
-                   robot_id: str = "g1", role: Optional[str] = None) -> tuple[Optional[dict], Optional[str]]:
-    """Normalise a decision; role limits which intent kinds are valid (None: the basics). Returns (decision, None) or (None, "invalid_target" | "invalid_decision")."""
+                   robot_id: str = "g1", role: Optional[str] = None, site: Any = None) -> tuple[Optional[dict], Optional[str]]:
+    """Normalise a decision; role limits which intent kinds are valid (None: the basics). Returns (decision, None) or (None, "invalid_target" | "invalid_decision").
+
+    With the site, any place the site resolves is a valid target too: the persona card names rooms
+    ("AE_Waiting") and the world walks to them."""
     try:
         intent = data["intent"]
         kind = intent["kind"]
@@ -94,7 +97,7 @@ def check_decision(data: Any, area: "WaitingArea", signs: Iterable["Sign"], rost
             return None, "invalid_target"
     if kind in NEEDS_TARGET and target is None:
         return None, "invalid_target"
-    if target is not None and target not in known:
+    if target is not None and target not in known and not (site is not None and site.resolve(target) is not None):
         return None, "invalid_target"
     if kind == "talk":
         text = text or say
@@ -227,7 +230,7 @@ def build_graph(deps: "MindDeps", checkpointer: Any = None):
             # the roster as it is now: people who arrived after this graph was built count too
             roster = [i.person_id for i in loaded.instances]
             decision, error = check_decision(res.data, loaded.area, loaded.signs, roster, deps.robot_id,
-                                             inst.role)
+                                             inst.role, site=loaded.site)
         data = res.data if isinstance(res.data, dict) else None
         deps.runlog.write("decisions", {
             "t": state["t"], "person": person, "triggers": list(state["triggers"]),

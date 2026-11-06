@@ -446,3 +446,17 @@ def test_a_route_keeps_clear_of_a_disc_when_it_can(site):
     assert closest(r.route(a, b)) < 0.2
     assert closest(r.route(a, b, [(*robot, 0.75)])) >= 0.6
     assert r.route(a, (2.9, 1.9), [(*robot, 0.75)]) is not None  # an end inside the disc stays reachable
+
+
+def test_a_room_listed_in_places_you_know_is_a_valid_walk_target():
+    # The persona card lists rooms next to the start room ("AE_Waiting"); the world resolves them,
+    # so the decision check must accept them too (it rejected them as invalid_target).
+    from wardzero_agents.mind.graph import check_decision
+    area = __import__("wardzero_agents.config.loader", fromlist=["load_robot_view"]).load_robot_view(CONFIG)[1]
+    site = load_site(CONFIG)
+    base = {"say": None, "addressee": None, "mood": "stressed", "patience_delta": 0.0, "reason": "r"}
+    walk = {**base, "intent": {"kind": "walk_to", "target": "AE_Waiting", "text": None}}
+    ok, err = check_decision(walk, area, [], ["P2"], role="patient", site=site)
+    assert err is None and ok["intent"]["target"] == "AE_Waiting"
+    bad = {**base, "intent": {"kind": "walk_to", "target": "narnia", "text": None}}
+    assert check_decision(bad, area, [], ["P2"], role="patient", site=site) == (None, "invalid_target")

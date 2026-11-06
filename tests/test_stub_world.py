@@ -455,3 +455,21 @@ def test_spawn_never_overwrites_an_existing_n_id():
     w.people["N2"] = w.people["P2"]
     pid = w.spawn("coughing_adult", 1.0)
     assert pid == "N3" and w.people["N1"] is w.people["P1"] and w.people["N2"] is w.people["P2"]
+
+
+def test_look_at_as_the_main_activity_ends_so_the_mind_decides_again():
+    # A mind's look_at (overlay false) is its current activity: it must report done, or the person
+    # waits for an "intent done" that never comes and stands still until the patience timer.
+    w = make()
+    w.apply_intent(I("look_at", id="look", target="g1"))
+    s = st(w, "P5")
+    assert s.intent_id == "look" and s.intent_kind == "look_at" and s.state == "done"
+
+
+def test_a_reflex_look_at_overlay_leaves_the_current_activity_alone():
+    w = make()
+    w.apply_intent(I("wait_standing", id="base"))
+    w.apply_intent(I("walk_to", id="walk", target="entrance"))
+    w.apply_intent(I("look_at", id="glance", target="g1", overlay=True))
+    s = st(w, "P5")
+    assert s.intent_id == "walk" and s.state == "running"
