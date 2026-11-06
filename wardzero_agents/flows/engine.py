@@ -27,24 +27,42 @@ class FlowView(WorldView):
     robot_start: tuple[float, float] = (0.0, 0.0)
     cast: set[str] = field(default_factory=set)  # the people there at the start (an arrival is a newcomer)
     robot_said_to: set[str] = field(default_factory=set)
+    robot_said_at: dict[str, list[float]] = field(default_factory=dict)  # person -> when the robot spoke to them
     said_to_robot: set[str] = field(default_factory=set)
-    robot_did: list[tuple[str, Optional[str]]] = field(default_factory=list)  # (action, person or None)
+    robot_did: list[tuple] = field(default_factory=list)  # (t, action, person or None); (action, person): time unknown
     fires: dict[str, bool] = field(default_factory=dict)  # fire id -> out
     room_at: Callable[[float, float], Optional[str]] = lambda x, y: None
 
 
 # ---- conditions ---------------------------------------------------------------------------------------------------
-def holds(c: dict, v: FlowView) -> bool:
+def _since(a, t0: Optional[float]) -> Optional[float]:
+    """The time from which a condition counts events: the step's start with ``since_step: true``, else None (all)."""
+    return t0 if isinstance(a, dict) and a.get("since_step") is True and t0 is not None else None
+
+
+def _did(v: FlowView):
+    """The robot's actions as (t, action, person); t is None for an entry without a time (an old caller)."""
+    for r in v.robot_did:
+        yield (r[0], r[1], r[2]) if len(r) == 3 else (None, r[0], r[1])
+
+
+def holds(c: dict, v: FlowView, t0: Optional[float] = None) -> bool:
+    """Whether the condition holds. ``t0`` is when the step began; ``since_step`` conditions count from it."""
     k, a = next(iter(c.items()))
     st = v.statuses
     if k == "all":
-        return all(holds(x, v) for x in a)
+        return all(holds(x, v, t0) for x in a)
     if k == "any":
-        return any(holds(x, v) for x in a)
+        return any(holds(x, v, t0) for x in a)
     if k == "not":
-        return not holds(a, v)
+        return not holds(a, v, t0)
     if k in ("robot_spoke_to", "spoke_to_robot"):
         said = v.robot_said_to if k == "robot_spoke_to" else v.said_to_robot
+        since = _since(a, t0)
+        if isinstance(a, dict):
+            a = a["person"]
+        if since is not None:  # only words at or after the step began
+            said = {p for p, ts in v.robot_said_at.items() if any(t >= since for t in ts)}
         if a == "anyone":
             return bool(said)
         if a == "newcomer":
@@ -66,7 +84,9 @@ def holds(c: dict, v: FlowView) -> bool:
         inside = s is not None and s.posture != "gone" and v.room_at(s.x, s.y) == a["room"]
         return inside if k == "in_room" else (s is not None and not inside)
     if k == "robot_did":
-        n = sum(1 for act, who in v.robot_did if act == a["action"] and (a.get("about") is None or who == a["about"]))
+        since = _since(a, t0)
+        n = sum(1 for t, act, who in _did(v) if act == a["action"] and (a.get("about") is None or who == a["about"])
+                and (since is None or (t is not None and t >= since)))
         return n >= int(a.get("at_least", 1))
     if k == "robot_moved":
         return math.hypot(v.robot_xy[0] - v.robot_start[0], v.robot_xy[1] - v.robot_start[1]) >= float(a)
@@ -118,7 +138,7 @@ class _Until(_Step):
 
     def update(self):
         v = self.ctx.view
-        if holds(self.body["when"], v):
+        if holds(self.body["when"], v, self.t0):
             self.state, self.t = MET, v.t
             return S.SUCCESS
         if v.t - self.t0 >= float(self.body["timeout_s"]):
@@ -157,9 +177,12 @@ class _Check(py_trees.behaviour.Behaviour):
     def __init__(self, ctx: _Ctx, when: dict, owner: "_Unless"):
         super().__init__(name="unless")
         self.ctx, self.when, self.owner = ctx, when, owner
+        self.t0: Optional[float] = None  # when the unless began (it is checked afresh every tick)
 
     def update(self):
-        if holds(self.when, self.ctx.view):
+        if self.t0 is None:
+            self.t0 = self.ctx.view.t
+        if holds(self.when, self.ctx.view, self.t0):
             self.owner.resolved(self.ctx.view.t)
             return S.SUCCESS
         return S.FAILURE

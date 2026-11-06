@@ -286,3 +286,271 @@ def test_a_run_folder_copy_keeps_the_flow_so_the_run_loads_it(tmp_path):
     again = load_scenario(copied)
     assert again.flow is not None and again.flow.steps == loaded.flow.steps
     assert (tmp_path / "run" / "config" / "ae_waiting.yaml").exists() or again.scenario.flow
+
+
+# ---- steps credit only what the robot did after the step began -----------------------------------------------------
+def _node_by_label(tree: dict, label: str) -> dict:
+    if tree["label"] == label:
+        return tree
+    for c in tree["children"]:
+        try:
+            return _node_by_label(c, label)
+        except KeyError:
+            pass
+    raise KeyError(label)
+
+
+def test_since_step_ignores_speech_before_the_step():
+    flow = Flow(id="x", title="x", steps=[
+        {"wait": {"seconds": 20}},
+        {"expect": {"label": "new words to P1", "when": {"robot_spoke_to": {"person": "P1", "since_step": True}},
+                    "timeout_s": 60}}])
+    e = FlowEngine(flow)
+    t = 0.0
+    while t < 25:
+        said = {"P1": [10.0]} if t >= 10 else {}
+        e.tick(view(t, robot_said_to=set(said), robot_said_at=said))
+        t += 0.5
+    assert _node_by_label(e.tree(), "new words to P1")["state"] == "running"  # the words at t=10 came before it
+    e.tick(view(25.0, robot_said_to={"P1"}, robot_said_at={"P1": [10.0, 25.0]}))
+    node = _node_by_label(e.tree(), "new words to P1")
+    assert node["state"] == "met" and node["t"] == 25.0
+    # without since_step any words count, as before
+    v = view(30.0, robot_said_to={"P1"}, robot_said_at={"P1": [10.0]})
+    assert holds({"robot_spoke_to": "P1"}, v) and holds({"robot_spoke_to": {"person": "P1"}}, v)
+    assert holds({"robot_spoke_to": {"person": "P1", "since_step": True}}, v, t0=5.0)
+    assert not holds({"robot_spoke_to": {"person": "P1", "since_step": True}}, v, t0=20.0)
+    assert not holds({"robot_spoke_to": {"person": "anyone", "since_step": True}}, v, t0=20.0)
+    assert holds({"robot_spoke_to": "anyone"}, v)
+
+
+def _evacuation(robot_did_at):
+    """The evacuation flow with V2 walking from the start; robot_did_at(t) is what the robot has done by then."""
+    p = PRESETS["evacuation_guide"]
+    flow = load_flow(flows_dir(CONFIG) / "evacuation_guide.yaml")
+    people = {c.id: st(c.id, c.x, c.y, "walking" if c.id == "V2" else "standing") for c in p.characters}
+    e = FlowEngine(flow, DECK)
+    fired_t = {}
+    t = 0.0
+    while t < 120:
+        for f in e.tick(FlowView(t=t, statuses=people, robot_xy=(p.robot_start.x, p.robot_start.y), present=set(people),
+                                 cast=set(people), robot_said_to={"V1"} if t >= 10 else set(),
+                                 robot_said_at={"V1": [10.0]} if t >= 10 else {},
+                                 robot_did=robot_did_at(t))):
+            fired_t[f.card] = f.t
+        t += 0.5
+    return e, fired_t
+
+
+def test_since_step_robot_did_counts_only_new_actions():
+    e, fired = _evacuation(lambda t: [(2.0, "guide", "V2")] if t >= 2.0 else [])
+    assert "freeze" in fired and fired["freeze"] > 2.0
+    assert _node_by_label(e.tree(), "The robot helps V2")["state"] == "timed_out"  # the guide came before the freeze
+    e, fired = _evacuation(lambda t: [(2.0, "guide", "V2")] + ([(t, "guide", "V2")] if t >= 60 else []))
+    node = _node_by_label(e.tree(), "The robot helps V2")
+    assert node["state"] == "met" and node["t"] == 60.0
+
+
+def test_robot_did_keeps_reading_entries_without_a_time():
+    v = view(10.0, robot_did=[("guide", "P1"), (4.0, "tell", "P1")])
+    assert holds({"robot_did": {"action": "guide", "about": "P1"}}, v)
+    assert not holds({"robot_did": {"action": "guide", "about": "P1", "since_step": True}}, v, t0=0.0)
+    assert holds({"robot_did": {"action": "tell", "about": "P1", "since_step": True}}, v, t0=4.0)
+    assert not holds({"robot_did": {"action": "tell", "about": "P1", "since_step": True}}, v, t0=4.5)
+
+
+def test_since_step_is_checked_by_the_schema():
+    ok = {"robot_did": {"action": "guide", "about": "V1", "since_step": True}}
+    Flow(id="x", title="x", steps=[{"expect": {"label": "l", "when": ok, "timeout_s": 5}}])
+    Flow(id="x", title="x", steps=[{"expect": {"label": "l", "when": {"robot_spoke_to": {"person": "V1", "since_step": True}},
+                                               "timeout_s": 5}}])
+    for bad in ({"robot_did": {"action": "guide", "since_step": "yes"}},
+                {"robot_spoke_to": {"person": "V1", "since_step": 1}},
+                {"robot_spoke_to": {"since_step": True}},
+                {"spoke_to_robot": {"person": "V1", "since_step": True}},
+                {"robot_near": {"person": "V1", "within_m": 2, "since_step": True}}):
+        with pytest.raises(ValueError):
+            Flow(id="x", title="x", steps=[{"expect": {"label": "l", "when": bad, "timeout_s": 5}}])
+    f = Flow(id="x", title="x", steps=[{"expect": {"label": "l", "when": {"robot_spoke_to": {"person": "Q9"}},
+                                                   "timeout_s": 5}}])
+    with pytest.raises(FlowError, match="no person 'Q9'"):
+        fit_scenario(f, people={"P1"}, cards=DECK, rooms=SITE.rooms)
+    assert prune_flow(f, ["P1"]).steps[0] != f.steps[0]  # a wait on a missing person is dropped
+
+
+def _director(tmp_path, preset="ae_waiting"):
+    from wardzero_agents.contracts import Roster, RosterEntry
+    from wardzero_agents.ros.director_node import DirectorService
+    from wardzero_agents.runlog import RunLog
+
+    class Out:
+        def publish(self, kind, obj):
+            pass
+
+    loaded = preset_to_scenario(PRESETS[preset], CONFIG, tmp_path / "staged")
+    d = DirectorService(loaded, RunLog(tmp_path / "run"), Out(), run_id="r1")
+    d.on_roster(Roster(t=0, people=[RosterEntry(id=i.person_id, persona=i.persona_id, display_name=i.display_name)
+                                    for i in loaded.instances]))
+    for c in PRESETS[preset].characters:
+        d.on_status(Status(person=c.id, t=0.0, x=c.x, y=c.y, yaw=0, posture="standing", progress=0, state="idle"))
+    return d
+
+
+def test_unanswered_press_call_is_not_an_alert(tmp_path):
+    call = {"robot_did": {"action": "press_call"}}
+    d = _director(tmp_path / "a")
+    d.ingest("robot_tasks", {"kind": "result", "id": "a1", "action": "press_call", "ok": True, "reason": "unanswered",
+                             "t": 5.0})
+    assert not holds(call, d.view(6.0))
+    for i, reason in enumerate(("answered", "ok", None)):
+        d = _director(tmp_path / f"b{i}")
+        rec = {"kind": "result", "id": "a1", "action": "press_call", "ok": True, "t": 5.0}
+        if reason is not None:
+            rec["reason"] = reason
+        d.ingest("robot_tasks", rec)
+        assert holds(call, d.view(6.0)), reason
+        assert holds({"robot_did": {"action": "press_call", "since_step": True}}, d.view(6.0), t0=5.0)
+        assert not holds({"robot_did": {"action": "press_call", "since_step": True}}, d.view(6.0), t0=5.5)
+
+
+def test_guided_arrival_is_recorded(tmp_path):
+    d = _director(tmp_path)
+    d.ingest("robot_tasks", {"t": 3.0, "kind": "guide", "event": "start", "id": "a1", "person": "P2", "place": "x"})
+    d.ingest("robot_tasks", {"t": 9.0, "kind": "guide", "event": "end", "id": "a1", "person": "P2",
+                             "reason": "arrived"})
+    d.ingest("robot_tasks", {"t": 12.0, "kind": "guide", "event": "end", "id": "a2", "person": "P1",
+                             "reason": "left_behind"})
+    assert [(a, p) for _, a, p in d.robot_did] == [("guide", "P2"), ("guided", "P2")]
+    assert d.robot_did[1][0] == 9.0
+    v = d.view(10.0)
+    assert holds({"robot_did": {"action": "guided", "about": "P2"}}, v)
+    assert not holds({"robot_did": {"action": "guided", "about": "P1"}}, v)
+
+
+def test_the_director_keeps_when_the_robot_spoke_to_each_person(tmp_path):
+    d = _director(tmp_path)
+    d.ingest("audio", {"source_kind": "robot", "addressee": "P2", "text": "Hello", "t": 2.0})
+    d.ingest("audio", {"source_kind": "robot", "addressee": "P2", "text": "This way", "t": 8.0})
+    assert d.robot_said_to == {"P2"}  # the set view old callers read
+    assert d.robot_said_at == {"P2": [2.0, 8.0]}
+    v = d.view(9.0)
+    assert v.robot_said_to == {"P2"} and v.robot_said_at == {"P2": [2.0, 8.0]}
+    assert holds({"robot_spoke_to": {"person": "P2", "since_step": True}}, v, t0=8.0)
+    assert not holds({"robot_spoke_to": {"person": "P2", "since_step": True}}, v, t0=8.5)
+
+
+def _run_preset(pid, *, view_kw=lambda t: {}, until=None):
+    p = PRESETS[pid]
+    flow = load_flow(flows_dir(CONFIG) / f"{pid}.yaml")
+    people = {c.id: st(c.id, c.x, c.y) for c in p.characters}
+    e = FlowEngine(flow, DECK)
+    fired, t = [], 0.0
+    while t <= (until or p.duration_min * 60) and not e.finished:
+        start = (p.robot_start.x, p.robot_start.y)
+        fired += [(f.t, f.card) for f in e.tick(FlowView(t=t, statuses=people, robot_xy=start, robot_start=start,
+                                                         present=set(people), cast=set(people), **view_kw(t)))]
+        t += 0.5
+    return e, fired
+
+
+def test_specimen_run_fires_the_escort_at_the_start():
+    e, fired = _run_preset("specimen_run", until=5.0)
+    assert fired == [(0.0, "escort_patient")]  # nothing to wait for: the box starts in the robot's hand
+
+
+def test_ward_fire_expect_needs_the_robot_to_extinguish():
+    label = next(n.label for n in FlowEngine(load_flow(flows_dir(CONFIG) / "ward_fire.yaml"))._ctx.nodes
+                 if n.kind == "expect")
+    e, _ = _run_preset("ward_fire", view_kw=lambda t: {"fires": {"f1": True}})  # a nurse put it out
+    assert _node_by_label(e.tree(), label)["state"] == "timed_out"
+    e, _ = _run_preset("ward_fire", view_kw=lambda t: {"fires": {"f1": True},
+                                                        "robot_did": [(70.0, "extinguish", None)] if t >= 70 else []})
+    assert _node_by_label(e.tree(), label)["state"] == "met"
+
+
+def test_a_check_in_in_the_same_turn_as_the_greeting_counts(tmp_path):
+    # the robot greets Ava and sends the desk note in one decision: both rows carry the same time, and the director
+    # sees the greeting (and starts the check-in step) on a later tick
+    d = _director(tmp_path)
+    d.tick(12.0)
+    d.ingest("audio", {"source_kind": "robot", "addressee": "P2", "text": "Welcome, I have let the desk know",
+                       "t": 12.3})
+    d.ingest("robot_tasks", {"kind": "note", "about": "P2", "read": True, "t": 12.3})
+    assert _node_by_label(d.engine.tree(), "The robot greets Ava")["state"] == "running"
+    t = 12.5
+    while t < 20:
+        d.tick(t)
+        t += 0.5
+    node = _node_by_label(d.engine.tree(), "The robot checks Ava in (a desk note, a walk to a seat or a word with staff)")
+    assert node["state"] == "met"
+
+
+def _reception(robot_xy_at, robot_did_at=lambda t: [], until=200.0):
+    """The reception flow: the robot greets V1 at t=4.8 and speaks to V1 again at t=10, after V1 gets lost."""
+    p = PRESETS["reception_guide"]
+    flow = load_flow(flows_dir(CONFIG) / "reception_guide.yaml")
+    people = {c.id: st(c.id, c.x, c.y) for c in p.characters}
+    e = FlowEngine(flow, DECK)
+    fired, t = {}, 0.0
+    while t <= until:
+        said = {"V1": [x for x in (4.8, 10.0) if x <= t]}
+        said = {k: v for k, v in said.items() if v}
+        for f in e.tick(FlowView(t=t, statuses=people, robot_xy=robot_xy_at(t), present=set(people), cast=set(people),
+                                 robot_said_to=set(said), robot_said_at=said, robot_did=robot_did_at(t),
+                                 room_at=SITE.room_at)):
+            fired.setdefault(f.card + (f.target or ""), f.t)
+        t += 0.5
+    return e, fired
+
+
+def test_reception_waits_until_the_robot_has_finished_with_v1():
+    v1 = (-1.2 + 0.8, -1.0)  # the robot stands next to V1
+    e, fired = _reception(lambda t: v1 if t < 70 else (5.0, 5.0))  # it is with V1 until t=70, then walks off
+    assert fired["lost_visitorV1"] == 5.0
+    assert fired["hard_of_hearingH1"] == 70.0 and fired["lost_visitorH1"] == 70.0
+    # a guide that brings V1 to the place ends the wait, even with the robot still beside V1
+    e, fired = _reception(lambda t: v1, robot_did_at=lambda t: [(8.0, "guide", "V1")] +
+                          ([(40.0, "guided", "V1")] if t >= 40 else []))
+    assert fired["hard_of_hearingH1"] == 40.0
+
+
+def _evacuation_outcomes(*, moves, robot_did_at, said_at):
+    """The evacuation flow; moves(t) gives where people have gone by then. The alarm comes at t=5."""
+    p = PRESETS["evacuation_guide"]
+    flow = load_flow(flows_dir(CONFIG) / "evacuation_guide.yaml")
+    e = FlowEngine(flow, DECK)
+    t = 0.0
+    while t <= 300 and not e.finished:
+        people = {c.id: st(c.id, *moves(t).get(c.id, (c.x, c.y))) for c in p.characters}
+        said = {k: [x for x in v if x <= t] for k, v in said_at.items()}
+        said = {k: v for k, v in said.items() if v}
+        e.tick(FlowView(t=t, statuses=people, robot_xy=(p.robot_start.x, p.robot_start.y), present=set(people),
+                        cast=set(people), robot_said_to=set(said), robot_said_at=said, robot_did=robot_did_at(t),
+                        room_at=SITE.room_at))
+        t += 0.5
+    return e
+
+
+LOBBY = "The robot gets V1 and V2 out of the lobby"
+P1_OUT = "The robot gets P1 out of A&E waiting"
+
+
+def test_evacuation_credits_only_people_the_robot_got_out():
+    out = {"V1": (3.0, 10.0), "V2": (3.5, 10.0), "P1": (0.0, 5.0)}  # Main_Corridor, Main_Corridor, Lobby
+    # everyone walks out on their own; the robot only spoke to V1 before the alarm
+    e = _evacuation_outcomes(moves=lambda t: out if t >= 30 else {}, robot_did_at=lambda t: [],
+                             said_at={"V1": [4.8]})
+    assert _node_by_label(e.tree(), LOBBY)["state"] == "timed_out"
+    assert _node_by_label(e.tree(), P1_OUT)["state"] == "timed_out"
+    # after the alarm the robot guides V1, speaks to V2 and guides P1, and each of them leaves
+    did = lambda t: [x for x in ((20.0, "guide", "V1"), (40.0, "guide", "P1")) if x[0] <= t]  # noqa: E731
+    e = _evacuation_outcomes(moves=lambda t: {k: v for k, v in out.items() if t >= (60 if k == "P1" else 30)},
+                             robot_did_at=did, said_at={"V1": [4.8], "V2": [25.0]})
+    assert _node_by_label(e.tree(), LOBBY)["state"] == "met"
+    assert _node_by_label(e.tree(), P1_OUT)["state"] == "met"
+    # P1 leaves A&E waiting, but the robot never guided P1
+    e = _evacuation_outcomes(moves=lambda t: {k: v for k, v in out.items() if t >= 30},
+                             robot_did_at=lambda t: [x for x in ((20.0, "guide", "V1"),) if x[0] <= t],
+                             said_at={"V1": [4.8], "V2": [25.0], "P1": [26.0]})
+    assert _node_by_label(e.tree(), LOBBY)["state"] == "met"
+    assert _node_by_label(e.tree(), P1_OUT)["state"] == "timed_out"

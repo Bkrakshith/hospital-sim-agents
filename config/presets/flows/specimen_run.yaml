@@ -1,13 +1,12 @@
 id: specimen_run
 title: Specimen run
 summary: The robot carries a specimen box from the ward to the porter at the main lifts. Traffic builds as it goes - a
-  nurse wheels a patient to the lifts, and people arrive as it reaches the corridor and the lift lobby.
+  porter wheels a patient down the main corridor, and people arrive as it reaches the corridor and the lift lobby.
 steps:
-- expect: {label: The robot picks up the specimen box, when: {robot_did: {action: take}}, timeout_s: 60}
-- fire: {id: b0, card: escort_patient, target: TR1, params: {patient: W2, place: Main_LiftLobby},
-    label: A nurse wheels W2 to the lifts}
+- fire: {id: b0, card: escort_patient, target: TR1, params: {patient: W2, place: Main_Corridor},
+    label: A porter wheels W2 down the main corridor}
 - wait_until: {label: The robot sets off down the corridor, when: {robot_moved: 3}, timeout_s: 90}
 - fire: {id: b1, card: arrival, label: Someone arrives}
-- wait_until: {label: The robot is near the lift lobby, when: {robot_near: {person: PO1, within_m: 8}}, timeout_s: 90}
+- wait_until: {label: The robot is near the lift lobby, when: {robot_near: {person: PO1, within_m: 4}}, timeout_s: 90}
 - fire: {id: b2, card: arrival, label: Someone else arrives}
 - expect: {label: The robot hands the box to the porter, when: {robot_did: {action: hand_over}}, timeout_s: 180}

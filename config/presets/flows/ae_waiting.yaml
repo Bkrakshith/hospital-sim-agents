@@ -23,5 +23,6 @@ steps:
 - fire: {id: b2, card: deterioration, target: P1, label: George gets worse}
 - expect:
     label: The robot alerts staff about George
-    when: {any: [{robot_did: {action: tell, about: P1}}, {robot_did: {action: press_call}}]}
+    when: {any: [{robot_did: {action: tell, about: P1, since_step: true}},
+                 {robot_did: {action: press_call, since_step: true}}]}
     timeout_s: 120

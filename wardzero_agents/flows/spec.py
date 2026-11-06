@@ -14,19 +14,27 @@ Steps (each is a one-key mapping):
 
 Conditions (``when``, a one-key mapping):
   robot_spoke_to: <person id | anyone | newcomer>     the robot said something to them
+                  or {person, since_step?}
   spoke_to_robot: <person id | anyone>                they said something to the robot
   robot_near:     {person, within_m}
   near:           {person, to, within_m}              one person is near another
   posture:        {person, is}                        standing | walking | seated | lying | gone
   in_room:        {person, room}
   not_in_room:    {person, room}
-  robot_did:      {action, about?, at_least?}          guide | seat | tell | note | press_call | hand_over | take |
-                                                       extinguish | approach   (about: person id, where it is known;
-                                                       at_least: how many times, default 1)
+  robot_did:      {action, about?, at_least?, since_step?}
+                                                       guide | guided | seat | tell | note | press_call | hand_over |
+                                                       take | extinguish | approach   (about: person id, where it is
+                                                       known; at_least: how many times, default 1; guided: a person
+                                                       the robot walked somewhere arrived; press_call: a call that
+                                                       reached a member of staff)
   robot_moved:    <metres from where it started>
   fire_out:       true                                 every fire in the scene is out
   elapsed:        <seconds since the run started>
   all: [conditions]   any: [conditions]   not: <condition>
+
+``since_step: true`` (robot_spoke_to and robot_did only) counts only what the robot did at or after the step that
+holds the condition began, so earlier words or actions (a greeting before the event) do not meet it. Without it they
+count everything since the run started.
 """
 from __future__ import annotations
 
@@ -39,7 +47,8 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 STEP_KINDS = ("wait", "wait_until", "expect", "fire", "parallel", "unless")
 COND_KINDS = ("robot_spoke_to", "spoke_to_robot", "robot_near", "near", "posture", "in_room", "not_in_room", "robot_did",
               "robot_moved", "fire_out", "elapsed", "all", "any", "not")
-ROBOT_ACTIONS = ("guide", "seat", "tell", "note", "press_call", "hand_over", "take", "extinguish", "approach")
+ROBOT_ACTIONS = ("guide", "guided", "seat", "tell", "note", "press_call", "hand_over", "take", "extinguish",
+                 "approach")
 POSTURES = ("standing", "walking", "seated", "lying", "gone")
 PEOPLE_WORDS = ("anyone", "newcomer")
 MAX_TIMEOUT_S = 3600.0
@@ -94,6 +103,16 @@ def _keys(v, need, may, what: str) -> dict:
     return v
 
 
+def _since_step(v: dict, what: str) -> None:
+    if "since_step" in v and not isinstance(v["since_step"], bool):
+        raise ValueError(f"{what} since_step takes true or false")
+
+
+def spoken_person(v) -> str:
+    """The person a robot_spoke_to or spoke_to_robot condition names (it is a string or {person, since_step})."""
+    return v["person"] if isinstance(v, dict) else v
+
+
 def check_cond(c) -> None:
     k, v = _one(c, COND_KINDS, "condition")
     if k in ("all", "any"):
@@ -103,6 +122,11 @@ def check_cond(c) -> None:
             check_cond(x)
     elif k == "not":
         check_cond(v)
+    elif k == "robot_spoke_to" and isinstance(v, dict):
+        v = _keys(v, ("person",), ("since_step",), k)
+        _since_step(v, k)
+        if not isinstance(v["person"], str) or not v["person"]:
+            raise ValueError(f"{k} needs a person id, anyone or newcomer")
     elif k in ("robot_spoke_to", "spoke_to_robot"):
         if not isinstance(v, str) or not v:
             raise ValueError(f"{k} needs a person id, anyone or newcomer")
@@ -119,7 +143,8 @@ def check_cond(c) -> None:
     elif k in ("in_room", "not_in_room"):
         _keys(v, ("person", "room"), (), k)
     elif k == "robot_did":
-        v = _keys(v, ("action",), ("about", "at_least"), k)
+        v = _keys(v, ("action",), ("about", "at_least", "since_step"), k)
+        _since_step(v, k)
         if "at_least" in v:
             _num(v["at_least"], "at_least", 1, 100)
         if v["action"] not in ROBOT_ACTIONS:
@@ -208,7 +233,7 @@ def fit_scenario(flow: Flow, *, people, cards, rooms) -> None:
         if k in ("wait_until", "expect", "unless"):
             for ck, cv in walk_conds(v["when"]):
                 if ck in ("robot_spoke_to", "spoke_to_robot"):
-                    person(cv, ck)
+                    person(spoken_person(cv), ck)
                 elif ck in ("robot_near", "posture", "in_room", "not_in_room", "near"):
                     person(cv["person"], ck)
                     if ck == "near":
@@ -225,7 +250,7 @@ def _names_missing(c: dict, people: set) -> bool:
     for k, v in walk_conds(c):
         names = []
         if k in ("robot_spoke_to", "spoke_to_robot"):
-            names = [v]
+            names = [spoken_person(v)]
         elif k in ("robot_near", "posture", "in_room", "not_in_room"):
             names = [v["person"]]
         elif k == "near":

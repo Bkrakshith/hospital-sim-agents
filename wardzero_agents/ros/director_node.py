@@ -47,6 +47,12 @@ class Outbox(Protocol):
     # kinds: "nudge", "reflex", "world", "control" (contract models), "event", "timeline" (dicts)
 
 
+def _rec_t(rec: dict, default: float) -> float:
+    """A run log record's sim time (the director's own clock when it has none)."""
+    t = rec.get("t")
+    return float(t) if isinstance(t, (int, float)) and not isinstance(t, bool) and math.isfinite(t) else default
+
+
 def _dump(m) -> dict:
     return m.model_dump(mode="json", by_alias=True)
 
@@ -96,9 +102,9 @@ class DirectorService:
             self.engine = StoryboardEngine(loaded.storyboard, loaded.deck)
         self.cast = {c.id for c in sc.cast}
         self.robot_xy = (sc.robot.x, sc.robot.y)  # live, from robot_pose
-        self.robot_said_to: set[str] = set()
+        self.robot_said_at: dict[str, list[float]] = {}  # person -> when the robot spoke to them
         self.said_to_robot: set[str] = set()
-        self.robot_did: list[tuple[str, Optional[str]]] = []
+        self.robot_did: list[tuple[float, str, Optional[str]]] = []  # (t, action, person or None)
         self.fires: dict[str, bool] = {}
         self.executor = CardExecutor(loaded.deck, {i.person_id: i for i in loaded.instances},
                                      loaded.personas, sc.seed)
@@ -123,6 +129,11 @@ class DirectorService:
         self._deck = deck_list(loaded)
         self._state: dict = {}
         self._refresh()
+
+    @property
+    def robot_said_to(self) -> set[str]:
+        """Everyone the robot has spoken to in the run."""
+        return set(self.robot_said_at)
 
     # ---- inputs --------------------------------------------------------------------------
     def on_roster(self, roster: Roster) -> None:
@@ -197,23 +208,30 @@ class DirectorService:
         elif stream == "audio":
             if rec.get("source_kind") != "robot":
                 return
+            t = _rec_t(rec, self.t)
             to = rec.get("addressee")
             if isinstance(to, str) and to:
-                self.robot_said_to.add(to)
+                heard = {to}
             else:
                 rx, ry = self.robot_xy
-                self.robot_said_to |= {pid for pid, st in self.statuses.items()
-                                       if st.posture != "gone" and math.hypot(st.x - rx, st.y - ry) <= SPOKE_NEAR_M}
+                heard = {pid for pid, st in self.statuses.items()
+                         if st.posture != "gone" and math.hypot(st.x - rx, st.y - ry) <= SPOKE_NEAR_M}
+            for pid in heard:
+                self.robot_said_at.setdefault(pid, []).append(t)
         elif stream == "robot_tasks":
-            kind = rec.get("kind")
+            kind, t = rec.get("kind"), _rec_t(rec, self.t)
             if kind == "guide" and rec.get("event") in ("start", "seat"):
-                self.robot_did.append(("guide" if rec["event"] == "start" else "seat", rec.get("person")))
+                self.robot_did.append((t, "guide" if rec["event"] == "start" else "seat", rec.get("person")))
+            elif kind == "guide" and rec.get("event") == "end" and rec.get("reason") == "arrived":
+                self.robot_did.append((t, "guided", rec.get("person")))  # they reached the place it walked them to
             elif kind == "tell" and rec.get("heard"):
-                self.robot_did.append(("tell", rec.get("about")))
+                self.robot_did.append((t, "tell", rec.get("about")))
             elif kind == "note":
-                self.robot_did.append(("note", rec.get("about")))
+                self.robot_did.append((t, "note", rec.get("about")))
             elif kind == "result" and rec.get("ok") and rec.get("action") in ROBOT_ACTIONS:
-                self.robot_did.append((rec["action"], None))
+                if rec["action"] == "press_call" and rec.get("reason") == "unanswered":
+                    return  # the call reached no member of staff: nobody was alerted
+                self.robot_did.append((t, rec["action"], None))
         elif stream == "objects":
             for o in rec.get("objects") or []:
                 if isinstance(o, dict) and o.get("kind") == "fire" and isinstance(o.get("id"), str):
@@ -230,7 +248,9 @@ class DirectorService:
             return FlowView(t=t, statuses=dict(self.statuses), robot_xy=self.robot_xy,
                             seated_since=dict(self.seated_since), present=present,
                             robot_start=(self.robot.x, self.robot.y), cast=set(self.cast),
-                            robot_said_to=set(self.robot_said_to), said_to_robot=set(self.said_to_robot),
+                            robot_said_to=set(self.robot_said_at),
+                            robot_said_at={p: list(ts) for p, ts in self.robot_said_at.items()},
+                            said_to_robot=set(self.said_to_robot),
                             robot_did=list(self.robot_did), fires=dict(self.fires),
                             room_at=site.room_at if site is not None else (lambda x, y: None))
         return WorldView(t=t, statuses=dict(self.statuses), robot_xy=(self.robot.x, self.robot.y),
