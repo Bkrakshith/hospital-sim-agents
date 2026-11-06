@@ -116,18 +116,20 @@ def _load_site_and_area(root: Path, scenario: Scenario):
         from ..site import Landmark as SLandmark, Seat as SSeat
         for lid, lm in area.landmarks.items():
             site.landmarks[lid] = SLandmark(lid, lm.x, lm.y, lm.label)
-        for st in area.seats:
-            site.seats[st.id] = SSeat(st.id, st.x, st.y, st.yaw)
+        for st in area.seats + area.staff_seats:
+            site.seats[st.id] = SSeat(st.id, st.x, st.y, st.yaw, st.staff_only)
         return site, area
     area = WaitingArea(
-        seats=[Seat(id=q.id, x=q.x, y=q.y, yaw=q.yaw, row=q.id[:1]) for q in site.seats.values()],
+        seats=[Seat(id=q.id, x=q.x, y=q.y, yaw=q.yaw, row=q.id[:1]) for q in site.seats.values() if not q.staff_only],
+        staff_seats=[Seat(id=q.id, x=q.x, y=q.y, yaw=q.yaw, row=q.id[:1], staff_only=True)
+                     for q in site.seats.values() if q.staff_only],
         landmarks={k: Landmark(x=m.x, y=m.y, label=m.label or k) for k, m in site.landmarks.items()},
         entrance="entrance", exits=["entrance"], nurse_call_point="nurse_call_point")
     return site, area
 
 
 def _cross_check(scenario: Scenario, personas: dict[str, Persona], area: WaitingArea, site=None) -> None:
-    seat_ids = {s.id for s in area.seats}
+    seat_ids = {s.id for s in area.seats + area.staff_seats}
     occupied_beds: dict[str, str] = {}
     person_ids = [c.id for c in scenario.cast]
     taken: dict[str, str] = {}

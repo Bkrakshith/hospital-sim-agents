@@ -345,7 +345,7 @@ def _where_pos(status: Status, area: Optional[WaitingArea]) -> str:
     if area is None:
         return f"You are {status.posture}."
     if status.posture == "seated":
-        seat = min(area.seats, key=lambda s: math.hypot(s.x - status.x, s.y - status.y), default=None)
+        seat = min(area.seats + area.staff_seats, key=lambda s: math.hypot(s.x - status.x, s.y - status.y), default=None)
         if seat is not None and math.hypot(seat.x - status.x, seat.y - status.y) <= SEAT_MATCH_M:
             return f"You are seated at seat {seat.id}."
     near = min(area.landmarks.items(), key=lambda kv: math.hypot(kv[1].x - status.x, kv[1].y - status.y),

@@ -54,7 +54,9 @@ def check_character(c: CharacterSpec, site, roles: dict[str, RolePreset], moods:
         # the bed is solid in the occupancy grid, so a bed patient takes the bed's own pose
         return c.model_copy(update={"x": bed.x, "y": bed.y, "yaw": bed.yaw, "room": bed.room})
     # a seat is solid in the occupancy grid too; a click near a free seat sits the person in it
-    seat = min(site.seats.values(), key=lambda s: math.hypot(s.x - c.x, s.y - c.y), default=None)
+    # staff-only chairs (the receptionist's, R1) are never snapped to
+    seat = min((s for s in site.seats.values() if not getattr(s, "staff_only", False)),
+               key=lambda s: math.hypot(s.x - c.x, s.y - c.y), default=None)
     if seat is not None and math.hypot(seat.x - c.x, seat.y - c.y) <= SEAT_SNAP_M:
         if any(math.hypot(seat.x - o.x, seat.y - o.y) <= SEAT_SNAP_M and not o.bed for o in others):
             raise ProjectError(f"Seat {seat.id} is already taken.")

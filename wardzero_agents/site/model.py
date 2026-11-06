@@ -98,6 +98,7 @@ class Seat:
     x: float
     y: float
     yaw: float = 0.0
+    staff_only: bool = False  # a staff chair (the receptionist's): placement never snaps to it, visitors never sit in it
 
 
 @dataclass
@@ -215,7 +216,8 @@ def load_site(root: "str | Path") -> Site:
                              [tuple(p) for p in r["poly"]]) for r in j["rooms"]},
         beds={b["id"]: Bed(b["id"], b["room"], b["x"], b["y"], b["yaw"]) for b in j["beds"]},
         landmarks={k: Landmark(k, v["x"], v["y"], v.get("label", "")) for k, v in j["landmarks"].items()},
-        seats={s["id"]: Seat(s["id"], s["x"], s["y"], s.get("yaw", 0.0)) for s in j["seats"]},
+        seats={s["id"]: Seat(s["id"], s["x"], s["y"], s.get("yaw", 0.0), bool(s.get("staff_only", False)))
+               for s in j["seats"]},
         furniture={f["id"]: Furniture(f["id"], f["kind"], f["x"], f["y"], f.get("yaw", 0.0), f.get("w", 0.0),
                                       f.get("d", 0.0), f.get("h", 0.0)) for f in j["furniture"]},
         bounds=tuple(j["bounds"]), grid=grid, walls=j.get("walls", []), doors=j.get("doors", []),

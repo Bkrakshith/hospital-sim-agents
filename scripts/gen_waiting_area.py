@@ -25,7 +25,19 @@ LANDMARKS = {
     "ward_doors": (11.20, 7.25, "Doors to the wards and lifts"),
     "toilets": (-11.50, 1.20, "Toilets (placeholder position)"),
     "nurse_call_point": (5.60, 3.00, "Where a nurse is called from (placeholder position)"),
+    # The reception desk (furniture reception_desk) spans x -0.69..4.65, y 1.99..4.41. The G1's post (1.05, 1.62) is on
+    # the visitor side, south of it; the staff side is the strip north of the desk (y 4.5..5.0, wall at 5.2).
+    "reception_staff": (2.00, 4.75, "Behind the reception desk, where the receptionist sits"),
+    "reception_counter": (2.00, 1.55, "Reception counter, the visitor side of the desk"),
+    # 2 m past the C2C3_East double doors (x 11.2, opening y 6.27..8.24): a guide to the ward goes through the doors.
+    "ward_entrance": (13.20, 7.25, "Ward entrance, through the doors to the wards"),
 }
+
+# Staff-only seats: never used to snap a placed character or to "start seated"; a person who is not staff cannot sit
+# there. R1 is the receptionist's chair behind the desk, facing south over the desk to the lobby.
+STAFF_SEATS = [
+    {"id": "R1", "x": 2.00, "y": 4.75, "yaw": round(-math.pi / 2, 4), "row": "reception_desk", "staff_only": True},
+]
 
 
 def load_chairs():
@@ -51,6 +63,7 @@ def build(lc):
             })
     return {
         "seats": seats,
+        "staff_seats": [dict(s) for s in STAFF_SEATS],
         "landmarks": {k: {"x": x, "y": y, "label": label} for k, (x, y, label) in LANDMARKS.items()},
         "entrance": "entrance",
         "exits": ["entrance", "clinic_corridor", "ward_doors"],
