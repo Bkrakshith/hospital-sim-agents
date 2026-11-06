@@ -43,7 +43,7 @@ from wardzero_agents.world.objects import (
 from wardzero_agents.world.reach import giver_reach_ok, receiver_zone_ok
 from wardzero_agents.world.oracle import Entity, Pose, visible
 from wardzero_agents.world.perception import Tracks
-from wardzero_agents.world.robot_body import RobotBody
+from wardzero_agents.world.robot_body import CONTACT_MARGIN_M, RobotBody
 
 ROBOT_ID = "g1"
 ROUTE_BLOCK_RADIUS_M = 1.5  # a route_blocked event seals this radius for routing
@@ -566,6 +566,25 @@ class StubWorld:
     # A person in ``body_driven`` is not walked by step(): a body (Isaac's character) does the walking, sitting
     # and standing, and tells the world when each phase of the plan has ended. The plan, the validation and the
     # intent's state machine stay exactly the same.
+    def route_for(self, pid: str, goal: tuple[float, float]) -> Optional[list]:
+        """A body's route from where the person is to goal, keeping clear of the robot as the world's own walks do (the
+        Isaac characters walk it waypoint by waypoint). A goal inside the robot's contact distance is moved out of it."""
+        p = self._get(pid)
+        if not self.loaded.scenario.robot.enabled:
+            return None
+        rx, ry = self.robot.x, self.robot.y
+        keep = self.robot.radius + CONTACT_MARGIN_M + 0.15
+        d = math.hypot(goal[0] - rx, goal[1] - ry)
+        moved = 1e-6 < d < keep
+        if moved:
+            goal = (rx + (goal[0] - rx) * keep / d, ry + (goal[1] - ry) * keep / d)
+        dx, dy = goal[0] - p.x, goal[1] - p.y
+        L2 = dx * dx + dy * dy
+        u = 0.0 if L2 < 1e-12 else max(0.0, min(1.0, ((rx - p.x) * dx + (ry - p.y) * dy) / L2))
+        if not moved and math.hypot(rx - (p.x + u * dx), ry - (p.y + u * dy)) >= keep:
+            return None  # the straight walk keeps clear of the robot: no route needed
+        return self.router.route((p.x, p.y), goal, self._robot_disc(p))
+
     def walk_goal(self, pid: str) -> Optional[tuple[float, float]]:
         """Where the head walk phase of this person's plan is going now (a followed person moves), or None."""
         p = self._get(pid)

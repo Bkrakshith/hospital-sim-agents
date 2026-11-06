@@ -596,3 +596,30 @@ def test_pick_bedside_prefers_a_side_the_navmesh_can_reach():
     assert pi.pick_bedside(bed, lambda x, y: x > 10.0, lambda x, y: True)[0] < 10.0  # a blocked side is never chosen
     nothing = pi.pick_bedside(bed, lambda x, y: False, lambda x, y: False)
     assert abs(nothing[0] - 10.0) == pytest.approx(pi.BEDSIDE_M)  # none reachable: the first free one
+
+
+def test_a_walk_past_the_robot_goes_round_it_by_the_worlds_route():
+    """The receptionist walked the NavMesh's straight line along the counter right through the G1: a walk whose straight
+    line passes the robot follows the world's route round it, waypoint by waypoint, and stops short of it."""
+    from pathlib import Path
+    from types import SimpleNamespace
+    from wardzero_agents.world.robot_body import CONTACT_MARGIN_M
+    w = SimpleNamespace()
+    import wardzero_agents.world.stub_world as sw
+    world = sw.StubWorld.__new__(sw.StubWorld)
+    world.loaded = SimpleNamespace(scenario=SimpleNamespace(robot=SimpleNamespace(enabled=True)))
+    world.robot = SimpleNamespace(x=2.0, y=2.0, radius=0.3)
+    calls = []
+
+    class R:
+        def route(self, a, b, avoid=()):
+            calls.append((a, b, avoid))
+            return [a, (2.0, 3.2), b]
+    world.router = R()
+    world.people = {"P": SimpleNamespace(x=0.0, y=2.0)}
+    world._get = lambda pid: world.people[pid]
+    world._robot_disc = lambda p: ((2.0, 2.0, 0.75),)
+    assert world.route_for("P", (4.0, 2.0)) == [(0.0, 2.0), (2.0, 3.2), (4.0, 2.0)]  # straight line hits the robot
+    assert world.route_for("P", (0.0, 5.0)) is None  # clear of it: walk straight
+    far = world.route_for("P", (2.3, 2.0))  # a goal inside the contact distance is moved out of it
+    assert math.hypot(far[-1][0] - 2.0, far[-1][1] - 2.0) == pytest.approx(0.3 + CONTACT_MARGIN_M + 0.15)

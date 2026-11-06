@@ -36,6 +36,7 @@ STUCK_S = 6.0  # a running walk that has moved less than STUCK_MOVE_M in this lo
 STUCK_MOVE_M = 0.1
 TIMEOUT_FACTOR = 3.0  # a walk gets this many times its nominal time, plus TIMEOUT_EXTRA_S
 TIMEOUT_EXTRA_S = 20.0
+WAYPOINT_REACH_M = 0.6  # a route waypoint counts as passed this close (the last one is the goal itself)
 REROUTE_M = 0.5  # a walk to a person who moves is re-issued when they have moved this far
 SPEED_RANGE = (0.4, 1.8)
 EYE_Z = 1.55
@@ -102,6 +103,7 @@ class PersonController:
         self._phase = None  # the plan phase being carried out (compared by identity)
         self._task: Optional[int] = None
         self._goal: Optional[tuple[float, float]] = None
+        self._wps: list = []  # route waypoints still to pass before the goal (the world's route, round the robot)
         self._retries = 0
         self._elapsed = 0.0
         self._timeout = 0.0
@@ -240,7 +242,8 @@ class PersonController:
         else:
             self._goal = self._walk_goal(world, p, ph)
             self.api.set_speed(clamp_speed(ph.speed))
-            self._issue_walk(self._goal)
+            self._plan_route(world, self._goal)
+            self._issue_walk(self._target())
             d = math.hypot(self._goal[0] - p.x, self._goal[1] - p.y)
             self._timeout = TIMEOUT_FACTOR * d / max(ph.speed, 0.1) + TIMEOUT_EXTRA_S
 
@@ -249,6 +252,23 @@ class PersonController:
         if len(p.plan) > 1 and p.plan[1].kind == "sit" and p.claim:
             return seat_approach(world.seat(p.claim))
         return goal
+
+    def _plan_route(self, world, goal) -> None:
+        """The world's route to the goal (it keeps clear of the robot): the NavMesh's straight path to the goal walked
+        the receptionist right through the G1 standing at the counter. Without one the character walks straight."""
+        route = getattr(world, "route_for", None)
+        pts = route(self.pid, goal) if route is not None else None
+        self._wps = [tuple(q) for q in pts[1:-1]] if pts and len(pts) > 2 else []
+        if pts and len(pts) >= 2:  # the goal may have been moved out of the robot's contact distance
+            self._goal = tuple(pts[-1])
+
+    def _target(self) -> tuple[float, float]:
+        return self._wps[0] if self._wps else self._goal
+
+    def _next_waypoint(self, x: float, y: float) -> None:
+        if self._wps and math.hypot(self._wps[0][0] - x, self._wps[0][1] - y) < WAYPOINT_REACH_M:
+            self._wps.pop(0)
+            self._issue_walk(self._target())
 
     def _issue_walk(self, goal: tuple[float, float]) -> None:
         self._task = self.api.move_to(goal[0], goal[1])
@@ -290,8 +310,10 @@ class PersonController:
             nd = world.walk_goal(self.pid)
             if nd is not None and math.hypot(nd[0] - self._goal[0], nd[1] - self._goal[1]) > REROUTE_M:
                 self._goal = nd
-                self._issue_walk(nd)
+                self._plan_route(world, nd)
+                self._issue_walk(self._target())
                 self._still = 0.0
+        self._next_waypoint(x, y)
         d = math.hypot(self._goal[0] - x, self._goal[1] - y)
         st = self.api.status(self._task)
         if d <= ARRIVE_BODY_M or (st == "succeeded" and d <= ARRIVE_ENDED_M):
@@ -310,7 +332,7 @@ class PersonController:
             self._retries += 1
             self._still = 0.0
             self.events.append(("retry", f"{self._retries}"))
-            self._issue_walk(self._goal)
+            self._issue_walk(self._target())
         elif self._elapsed > self._timeout:
             return self._block(world, p)
         self._set_posture(p)

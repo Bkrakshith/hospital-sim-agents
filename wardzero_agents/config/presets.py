@@ -265,7 +265,11 @@ def preset_to_scenario(preset: ScenarioPreset, root: "str | Path", dest: "str | 
     for sub in ("cards", "storyboards", "scenarios"):
         (dest / sub).mkdir(parents=True, exist_ok=True)
     if not (dest / "site").exists():
-        (dest / "site").symlink_to((root / "site").resolve())
+        try:
+            (dest / "site").symlink_to((root / "site").resolve())
+        except OSError:  # a filesystem without symlinks (exFAT, some Windows setups): a copy
+            import shutil
+            shutil.copytree((root / "site").resolve(), dest / "site")
     (dest / "signs.yaml").write_text((root / "signs.yaml").read_text())
     (dest / "cards" / "studio.yaml").write_text((root / "cards" / "studio.yaml").read_text())
     from ..site import load_site
