@@ -5,15 +5,20 @@ An action is a JSON dict {"id", "action", ...} from <ns>/task/action:
   take {item}                                     an unheld item within 0.8 m
   extinguish {fire}                               sprays until the fire is out (or the robot leaves); out of range, it
                                                   first walks to free floor SPRAY_FROM_M from the fire
-  press_call {}                                   chimes at the nearest nurse base
+  press_call {track?}                             chimes at the call point serving the robot's area (the nearest
+                                                  nurse base or triage, in its own compartment first); every staff
+                                                  member who hears it is told where the robot is, which call lights
+                                                  are on and, with track, who needs them. ok, with reason "answered"
+                                                  (someone heard it) or "unanswered" (nobody did)
   guide_start {track, place, seat?} / guide_stop {}
                                                   walks to the place at the person's pace; the person is offered a walk;
                                                   with seat, it ends beside a free seat there and shows it to them
   approach {track}                                walks up to the person (APPROACH_M from them) and faces them; to a
                                                   patient in bed, or with an item in hand, it ends where it can hand
                                                   the item over (beside the bed; in front of or beside them)
-  tell_staff {about: track, message?}             walks to the reception counter (or the ward nurse base) and tells
-                                                  the staff there that this person needs help
+  tell_staff {about: track, message?}             walks to the reception counter, or on a ward to the nearest ward
+                                                  staff member (a staff locator: the robot is led to where she is),
+                                                  tells them this person needs help, then walks back to its post
   note_desk {about: track, message}               a note on the reception desk computer: the robot does not move or
                                                   speak; the receptionist reads it when she is at the desk
 Each action ends in one result {"id", "action", "ok", "reason", "t"}; nothing here uses person ids
@@ -30,8 +35,16 @@ says SEAT_SAY and the person is told the seat (a nudge naming sit_down <seat>); 
 the seat. With no free seat in sight it says NO_SEAT_SAY and the guide ends as a plain guide to the place.
 
 Telling the staff: the staff member hears it by the audio model (and must be within 5 m); when they do, they get a
-structured message (a nudge) with the person's id, their name if they said it, and where they are. The robot is not
-told where the staff member is.
+structured message (a nudge) with the person's id, their name if they said it, and where they are. At reception the
+robot walks to the counter. On a ward it tells the nearest ward staff member: from where it stands when she is within
+5 m in sight, else it walks to free floor 1.0-1.5 m from her that can see her (else to the nurse base nearest her),
+and speaks as soon as she is within 1.5 m in sight, or when people hold it up but she is within 5 m. This is a staff
+locator: the robot's brain is never told where she is, the task layer finds her. After a tell it walked for, the robot
+walks back to its post (goal id "<id>-return").
+
+A hand-over to someone who can take things (their role has accept_item) is announced to them (a nudge naming
+accept_item, and refuse_item or, for a surgeon, reject_item). A patient lying flat is asked to accept it: accepting the
+robot's offer sits her up for it.
 
 The desk note: the result ("noted") comes at once, since the computer takes the note. The receptionist gets it as a
 nudge (what is on her screen) when she is within 1.5 m of her chair, at once or when she gets back, and only once.
@@ -100,6 +113,9 @@ NEAR_PERSON_M = 1.5  # another person this close slows the robot ...
 NEAR_PERSON_SPEED = 0.3  # ... to this (m/s)
 PERSON_AVOID_M = 0.7  # the robot's routes keep this far from people standing in the way, when they can
 TELL_RANGE_M = 5.0  # a staff member further than this from the robot is "not at the desk"
+TELL_NEAR_M = 1.5  # walking to tell a staff member, it stops and speaks once she is this close and in sight
+TELL_SPOT_M = (1.0, 1.25, 1.5)  # ... walking to free floor this far from her
+TELL_SPOTS_TRIED = 8  # the nearest few such spots are tried, then the nurse base nearest her
 TELL_DEFAULT = "Excuse me, someone here needs help from a nurse."
 GOODBYE = "Here we are. Goodbye, and take care."
 COUNTER = "reception_counter"  # where the robot stands to talk to the receptionist
@@ -573,22 +589,44 @@ class RobotTasks:
         self._result(aid, "guide_stop", True, "ok", t)
 
     # ---- telling the staff ---------------------------------------------------------------
-    def _staff_to_tell(self) -> tuple[Optional[str], Optional[tuple]]:
-        """(staff person, (x, y, yaw) where the robot stands to tell them): the receptionist at the counter, else a
-        ward staff member at the nearest nurse base. (None, None) when the scenario has neither."""
-        w = self.world
+    def _staff_to_tell(self) -> tuple[Optional[str], list]:
+        """(staff person, [(x, y, yaw), ...] where the robot may stand to tell them, best first): the receptionist at
+        the counter; else the ward staff member nearest the robot, from where it stands ([]) when she is within
+        TELL_RANGE_M in sight, else from free floor near her, else from the nurse base nearest her. (None, []) when
+        the scenario has neither."""
+        w, r = self.world, self.world.robot
         present = [(pid, q) for pid, q in w.people.items() if q.posture != "gone" and q.kind != "static"]
         desk = [pid for pid, q in present if q.inst.role in RECEPTION_ROLES]
         c, s = w.site.landmarks.get(COUNTER), w.site.landmarks.get(STAFF_SPOT)
         if desk and c is not None:
             yaw = math.atan2(s.y - c.y, s.x - c.x) if s is not None else None
-            return desk[0], (c.x, c.y, yaw)
+            return desk[0], [(c.x, c.y, yaw)]
         ward = [(pid, q) for pid, q in present if q.inst.role in WARD_STAFF_ROLES]
-        if ward:
-            bx, by = w._nurse_base(w.robot.x, w.robot.y)
-            pid = min(ward, key=lambda e: math.hypot(e[1].x - bx, e[1].y - by))[0]
-            return pid, (bx, by, None)
-        return None, None
+        if not ward:
+            return None, []
+        pid, q = min(ward, key=lambda e: math.hypot(e[1].x - r.x, e[1].y - r.y))
+        if self._in_earshot(q):
+            return pid, []
+        bx, by = w._nurse_base(q.x, q.y)
+        return pid, self._spots_near(q) + [(bx, by, None)]
+
+    def _in_earshot(self, q, within: float = TELL_RANGE_M) -> bool:
+        """q is within this of the robot, with no wall between them."""
+        w, r = self.world, self.world.robot
+        return math.hypot(q.x - r.x, q.y - r.y) <= within and w._los((r.x, r.y), (q.x, q.y))
+
+    def _spots_near(self, q) -> list[tuple]:
+        """Free floor TELL_SPOT_M from q that can see her, facing her: the nearest to the robot first."""
+        w, r = self.world, self.world.robot
+        free = getattr(r.router, "is_clear", None) or getattr(r.router, "is_free", None)
+        spots = []
+        for dist in TELL_SPOT_M:
+            for k in range(16):
+                a = 2 * math.pi * k / 16
+                x, y = q.x + dist * math.cos(a), q.y + dist * math.sin(a)
+                if not w.site.grid.blocked(x, y) and (free is None or free(x, y)) and w._los((x, y), (q.x, q.y)):
+                    spots.append((math.hypot(x - r.x, y - r.y), x, y))
+        return [(x, y, math.atan2(q.y - y, q.x - x)) for _, x, y in sorted(spots)[:TELL_SPOTS_TRIED]]
 
     def _tell_staff(self, aid, msg, t) -> None:
         w = self.world
@@ -599,20 +637,23 @@ class RobotTasks:
         if message is not None and not isinstance(message, str):
             raise TypeError("message")
         message = (message or "").strip()[:400] or TELL_DEFAULT
-        staff, spot = self._staff_to_tell()
+        staff, spots = self._staff_to_tell()
         if staff is None:
             self._log({"t": t, "kind": "tell", "id": aid, "about": pid, "staff": None, "heard": False,
                        "reason": "no_staff_to_tell"})
             return self._result(aid, "tell_staff", False, "no_staff_to_tell", t)
         if self._tell is not None:
             self._result(self._tell["id"], "tell_staff", False, "superseded", t)
-        self._tell = {"id": aid, "about": pid, "staff": staff, "message": message, "yaw0": w.robot.yaw}
-        x, y, yaw = spot
-        if not self.mobile or math.hypot(w.robot.x - x, w.robot.y - y) <= 0.3:
+        self._tell = {"id": aid, "about": pid, "staff": staff, "message": message, "yaw0": w.robot.yaw,
+                      "walked": False}
+        if not self.mobile or not spots or math.hypot(w.robot.x - spots[0][0], w.robot.y - spots[0][1]) <= 0.3:
             return self._speak_tell(t)
-        if not self._set_goal(aid, x, y, yaw, t):
-            self._tell = None
-            return self._result(aid, "tell_staff", False, "no_route", t)
+        for x, y, yaw in spots:
+            if self._set_goal(aid, x, y, yaw, t):
+                self._tell["walked"] = True
+                return
+        self._tell = None
+        return self._result(aid, "tell_staff", False, "no_route", t)
 
     def _speak_tell(self, t: float) -> None:
         tl, self._tell = self._tell, None
@@ -631,6 +672,10 @@ class RobotTasks:
         self._log({"t": t, "kind": "tell", "id": tl["id"], "about": tl["about"], "staff": tl["staff"],
                    "heard": heard, "reason": reason})
         self._result(tl["id"], "tell_staff", heard, reason, t)
+        if self.mobile and tl.get("walked"):  # walked to tell them: back to its post, as after a guide
+            x, y, yaw = self.post
+            if self._set_goal(f"{tl['id']}-return", x, y, yaw, t):
+                return
         if self.mobile:  # face the way it faced before, back towards the visitors
             w.robot.turn_to(tl["yaw0"])
 
@@ -682,7 +727,7 @@ class RobotTasks:
         name = p.inst.display_name if pid in w.named else "they have not said their name"
         rid = w.site.room_at(p.x, p.y)
         room = w.site.rooms[rid].label.split(",")[0] if rid else "the building"
-        return (f"A note from the reception robot appears on your computer screen: \"{message}\" It is about person id "
+        return (f"A note from the robot appears on your computer screen: \"{message}\" It is about person id "
                 f"{pid} ({name}), now in {room}. The robot is dealing with them. You do not need to get up unless the "
                 f"note says they need a member of staff; carry on with your work.")
 
@@ -693,10 +738,13 @@ class RobotTasks:
         name = p.inst.display_name if pid in w.named else "they have not said their name"
         rid = w.site.room_at(p.x, p.y)
         room = w.site.rooms[rid].label.split(",")[0] if rid else "the building"
-        back = f"go back to your chair (seat {staff.inst.seat})" if staff.inst.seat else "go back to your post"
-        return (f"The reception robot tells you: \"{message}\" The person who needs help is person id {pid} "
+        if staff.inst.seat:
+            then = f"help them, then go back to your chair (seat {staff.inst.seat})"
+        else:
+            then = "help, then go back to your work"
+        return (f"The robot tells you: \"{message}\" The person who needs help is person id {pid} "
                 f"({name}), in {room} at x {p.x:.1f}, y {p.y:.1f}. If you can help, go to them (approach {pid}), "
-                f"help them, then {back}.")
+                f"{then}.")
 
     # ---- keeping clear of people -------------------------------------------------------------
     def _others(self) -> list:
@@ -751,14 +799,29 @@ class RobotTasks:
         if g is not None:
             self._end_guide(t, "blocked_by_person")
         if self._tell is not None:
-            self._result(self._tell["id"], "tell_staff", False, "blocked_by_person", t)
-            self._tell = None
+            q = w.people.get(self._tell["staff"])
+            if q is not None and q.posture != "gone" and \
+                    math.hypot(q.x - w.robot.x, q.y - w.robot.y) <= TELL_RANGE_M:
+                self._speak_tell(t)  # held up near her: tell her from here
+            else:
+                self._result(self._tell["id"], "tell_staff", False, "blocked_by_person", t)
+                self._tell = None
 
     def _safety(self, t: float, dt: float) -> None:
         """Every step: hold the robot for someone in its way, route round them if they stay, and step back from
         someone standing too close to it. Pure geometry on the world's people: the same in Quick 2D and Isaac."""
         w = self.world
         r = w.robot
+        tl = self._tell
+        if tl is not None and self.mobile and r.has_goal and r._had_goal and self.goal_id == tl["id"]:
+            q = w.people.get(tl["staff"])
+            if q is not None and q.posture != "gone" and self._in_earshot(q, TELL_NEAR_M):
+                # close to the staff member it walks to: stop and tell her now (no walking into her)
+                r.cancel_goal()
+                r.speed_scale, self._holding, self._held_s, self._held_total = 1.0, False, 0.0, 0.0
+                self._goal(tl["id"], True, "arrived", t)
+                self._speak_tell(t)
+                return
         held_by_guide = self._guide is not None and self._guide["phase"] == "walking" and self._guide["held"]
         moving = r.has_goal and r._had_goal and self.mobile
         hold = moving and self._blocker() is not None

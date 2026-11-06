@@ -77,7 +77,7 @@ def _robot_reacts(req: LLMRequest, props: dict) -> Optional[dict]:
 def _staff_errand(u: str) -> Optional[dict]:
     """A member of staff the robot told about a person: go to them, say hello, then back to the chair."""
     seat = re.search(r"sat at seat (\w+)", u)
-    nudge = re.search(r"NUDGE: The reception robot tells you:.*?person id (\w+)", u)
+    nudge = re.search(r"NUDGE: The robot tells you:.*?person id (\w+)", u)
     if nudge:
         return _decision("approach", nudge.group(1))
     cur = re.search(r"Current activity: (approach|sit_down) (\w+) \((\w+)\)", u)
@@ -118,7 +118,7 @@ def default_policy(req: LLMRequest) -> dict:
     u = req.full_user
     if "NUDGE: The robot is offering to walk you" in u or re.search(r"Current activity: follow \S+ \((sent|running)\)", u):
         return _decision("follow", "g1")  # the natural reply to a guide offer, and keep following
-    if "Role: receptionist." in (req.persona_card or "") or "NUDGE: The reception robot tells you" in u:
+    if "Role: receptionist." in (req.persona_card or "") or "NUDGE: The robot tells you" in u:
         errand = _staff_errand(u + "\n" + (req.persona_card or ""))
         if errand is not None:
             return errand
