@@ -79,6 +79,8 @@ def _scripted_lines() -> list:
     """WARDZERO_TEST_SCRIPTED_SAY=<json file>: [{"t": 3.0, "who": "robot" | person id, "text": "...", "to": id}].
     An entry with "do" instead of "text" moves a person: {"t", "who": person id, "do": intent kind, "target": id,
     "point": [x, y], "speed": m/s}. A person moved by the script ignores its own mind from then on.
+    For the robot, {"t", "who": "robot", "do": "go_to", "place": landmark or room id | "post", "yaw": rad} sends it a
+    goal_pose as its brain would ("post": back to where it started, facing its start heading).
     Unset in every real run; never read by the default fake LLM."""
     path = os.environ.get("WARDZERO_TEST_SCRIPTED_SAY")
     if not path:
@@ -312,7 +314,9 @@ class SimService:
         while self._scripted and self._scripted[0]["t"] <= self.t:
             line = self._scripted[0]
             who = str(line.get("who", ""))
-            if who == "robot":
+            if who == "robot" and line.get("do") == "go_to":
+                self._scripted_go_to(line)
+            elif who == "robot":
                 if "to" in line:  # "to": null (or "") has the line heard by nobody in particular, so nobody answers it
                     self.on_robot_say(str(line["text"]), line["to"] or None)
                 else:
@@ -328,6 +332,19 @@ class SimService:
             elif self.t - line["t"] < 20.0:
                 return
             self._scripted.pop(0)
+
+    def _scripted_go_to(self, line: dict) -> None:
+        r = self.loaded.scenario.robot
+        place = str(line.get("place", ""))
+        yaw = line.get("yaw")
+        if place == "post":
+            xy, yaw = (r.x, r.y), (r.yaw if yaw is None else yaw)
+        else:
+            xy = self.world._resolve_place(place)
+        self.runlog.write("robot_tasks", {"t": self.t, "kind": "scripted_goal", "place": place,
+                                          "xy": list(xy) if xy else None})
+        if xy is not None:
+            self.on_goal(float(xy[0]), float(xy[1]), None if yaw is None else float(yaw))
 
     @property
     def held(self) -> bool:
