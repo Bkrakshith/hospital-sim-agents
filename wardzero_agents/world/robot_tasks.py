@@ -8,7 +8,9 @@ An action is a JSON dict {"id", "action", ...} from <ns>/task/action:
   guide_start {track, place, seat?} / guide_stop {}
                                                   walks to the place at the person's pace; the person is offered a walk;
                                                   with seat, it ends beside a free seat there and shows it to them
-  approach {track}                                walks up to the person (APPROACH_M from them) and faces them
+  approach {track}                                walks up to the person (APPROACH_M from them) and faces them; to a
+                                                  patient in bed, or with an item in hand, it ends where it can hand
+                                                  the item over (beside the bed; in front of or beside them)
   tell_staff {about: track, message?}             walks to the reception counter (or the ward nurse base) and tells
                                                   the staff there that this person needs help
   note_desk {about: track, message}               a note on the reception desk computer: the robot does not move or
@@ -47,6 +49,7 @@ from wardzero_agents.contracts import AudioEvent, Nudge
 from wardzero_agents.world import audio
 from wardzero_agents.world.objects import EXTINGUISH_RANGE_M, ROBOT_EXTINGUISH_PER_S
 from wardzero_agents.world.oracle import Pose
+from wardzero_agents.world.reach import giver_reach_ok, receiver_zone_ok
 
 TAKE_REACH_M = 0.8
 CHIME_DB = 55.0
@@ -60,6 +63,12 @@ SEAT_SAY = "This seat is free. Please take a seat."
 NO_SEAT_SAY = "I'm sorry, I can't see a free seat here."
 SEAT_BESIDE_M = 0.9  # the robot stands this far from the seat it shows
 APPROACH_M = 1.2  # how close the robot comes to a person it walks up to
+BEDSIDE_M = (1.0, 0.9, 1.1)  # walking up to a patient in bed: this far from the bed's middle, across it (the bed itself
+# is blocked out to about 0.7 m)
+REACH_SPOT_M = (0.85, 0.75, 0.95)  # walking up to someone with an item in hand: this far from them, where it can pass it
+PLACE_GRID_M = 0.1  # the hand-over places tried around the receiver, on this grid ...
+PLACE_SEARCH_M = 0.8  # ... out to this far from them
+HAND_OVER_CARD = "robot_hand_over"
 SEAT_ASIDE_M = 1.0  # showing a seat, the robot stands this far to the side of the seat's front, out of the way in
 # keeping clear of people while it walks (any goal, its own or a task's):
 PERSON_KEEP_M = 0.7  # centre to centre: body radius 0.3 + a person's 0.25 + 0.15 m
@@ -166,16 +175,80 @@ class RobotTasks:
             place = tuple(float(v) for v in msg["place"])
             if len(place) != 3:
                 raise ValueError("place")
-        else:  # half a metre from the receiver, towards the robot
-            d = max(math.hypot(r.x - q.x, r.y - q.y), 1e-6)
-            place = (q.x + (r.x - q.x) / d * 0.5, q.y + (r.y - q.y) / d * 0.5, 0.85 if q.bed else 1.1)
+        else:
+            place, why = self.hand_over_place((r.x, r.y), q, item.kind)
+            if place is None:
+                return self._result(aid, "hand_over", False, why, t)
         why = w._check_hand_over("g1", pid, item.id, place)
-        if why != "ok":
+        lying = q.bed is not None and q.posture == "lying" and not q.sitting_up
+        if why == "out_of_reach_receiver" and lying and self._receiver_ok(q, place, item.kind, sitting_up=True):
+            # lying flat (a tray never counts then): the offer stays open and she is asked to sit up for it; the
+            # hand-over is checked again when she answers
+            self._out.nudges.append(Nudge(person=pid, t=t, card=HAND_OVER_CARD, message=(
+                f"The robot is holding out {item.label or item.kind.replace('_', ' ')} for you. You are lying flat: to "
+                f"take it, sit up in bed (sit_up_in_bed), then accept it (accept_item).")))
+        elif why != "ok":
             return self._result(aid, "hand_over", False, why, t)
         old = w._offers.get(pid)
         if old is not None and old["giver"] == "g1":  # one result per action: close the old offer
             self._result(old["intent"], "hand_over", False, "superseded", t)
         w._offers[pid] = {"giver": "g1", "item": item.id, "place": place, "t": t, "intent": aid}
+
+    def _receiver_ok(self, q, place, kind, sitting_up=None) -> bool:
+        w = self.world
+        in_bed = q.bed is not None and q.posture == "lying"
+        return receiver_zone_ok(q.posture, in_bed, q.sitting_up if sitting_up is None else sitting_up, (q.x, q.y),
+                                q.yaw, w.site.beds.get(q.bed or ""), place, item_kind=kind)
+
+    def hand_over_place(self, giver_xy, q, kind) -> tuple[Optional[tuple], str]:
+        """(place, "ok"): where the robot standing at giver_xy holds an item out to person q, the point in reach of
+        both nearest to half a metre from them towards the robot. A patient lying in bed is taken as sitting up (she is
+        asked to). (None, out_of_reach_giver) when no such point is in the robot's reach, (None,
+        out_of_reach_receiver) when the robot could reach but she could not."""
+        w = self.world
+        z = 0.85 if q.bed else 1.1
+        d = max(math.hypot(giver_xy[0] - q.x, giver_xy[1] - q.y), 1e-6)
+        ax, ay = q.x + (giver_xy[0] - q.x) / d * 0.5, q.y + (giver_xy[1] - q.y) / d * 0.5
+        n = int(round(PLACE_SEARCH_M / PLACE_GRID_M))
+        best, bd, giver_ok = None, math.inf, False
+        for i in range(-n, n + 1):
+            for j in range(-n, n + 1):
+                p = (q.x + i * PLACE_GRID_M, q.y + j * PLACE_GRID_M, z)
+                if not giver_reach_ok(giver_xy, w.robot_reach, p):
+                    continue
+                giver_ok = True
+                if not self._receiver_ok(q, p, kind, sitting_up=True if q.bed is not None else None):
+                    continue
+                e = math.hypot(p[0] - ax, p[1] - ay)
+                if e < bd:
+                    best, bd = p, e
+        if best is not None:
+            return best, "ok"
+        return None, "out_of_reach_receiver" if giver_ok else "out_of_reach_giver"
+
+    def _reach_spots(self, q, kind: Optional[str]) -> list[tuple[float, float]]:
+        """Where the robot can stand to hand something to q, best first: beside the middle of the bed for a patient in
+        bed; with an item in hand, in front of or beside someone up and about (never behind); else []."""
+        w, r = self.world, self.world.robot
+        free = getattr(r.router, "is_free", None)
+        out = []
+        if q.bed is not None and q.posture == "lying":
+            b = w.site.beds.get(q.bed)
+            if b is None:
+                return []
+            for dist in BEDSIDE_M:
+                for side in (1.0, -1.0):
+                    out.append((b.x - side * dist * math.sin(b.yaw), b.y + side * dist * math.cos(b.yaw)))
+        elif kind is not None:
+            for dist in REACH_SPOT_M:
+                for deg in (0, 30, -30, 60, -60, 90, -90):
+                    a = q.yaw + math.radians(deg)
+                    out.append((q.x + dist * math.cos(a), q.y + dist * math.sin(a)))
+        ok = [(x, y) for x, y in out if not w.site.grid.blocked(x, y) and (free is None or free(x, y))
+              and self.hand_over_place((x, y), q, kind or "tray")[0] is not None]
+        # the nearer side first, among spots equally good
+        return sorted(ok, key=lambda s: (out.index(s) // 2 if q.bed is not None else 0,
+                                         math.hypot(s[0] - r.x, s[1] - r.y)))
 
     def _take(self, aid, msg, t) -> None:
         w = self.world
@@ -212,6 +285,18 @@ class RobotTasks:
             return self._result(aid, "approach", False, "cannot_walk", t)
         p, r = w.people[pid], w.robot
         d = math.hypot(r.x - p.x, r.y - p.y)
+        held = next((i.kind for i in w.objects.items.values() if i.holder == "g1"), None)
+        spots = self._reach_spots(p, held)
+        if spots:
+            # a patient in bed, or someone it carries something for: it ends where it can hand it over
+            if self.hand_over_place((r.x, r.y), p, held or "tray")[0] is not None and (p.bed is None or any(
+                    math.hypot(r.x - x, r.y - y) < 0.3 for x, y in spots)):
+                r.turn_to(math.atan2(p.y - r.y, p.x - r.x))
+                return self._result(aid, "approach", True, "already_there", t)
+            for x, y in spots:
+                if self._set_goal(aid, x, y, math.atan2(p.y - y, p.x - x), t, exempt=pid):
+                    self._end_guide(t, "superseded")
+                    return self._result(aid, "approach", True, "started", t)
         if d <= APPROACH_M + 0.2:
             r.turn_to(math.atan2(p.y - r.y, p.x - r.x))
             return self._result(aid, "approach", True, "already_there", t)

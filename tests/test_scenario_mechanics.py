@@ -98,3 +98,81 @@ def test_people_hear_a_call_bell_as_a_bell():
     h = Heard(source_kind="person", source_id="bell_B2", text=None, received_db=40.0, partial=False,
               addressed_to_me=False)
     assert "call bell" in _heard_line(h) and "B2" in _heard_line(h)
+
+
+# ---------- hand-overs ----------
+
+def sim(staged, preset_id, tmp_path):
+    from wardzero_agents.ros.stub_sim_node import StubSimService
+    from wardzero_agents.runlog import RunLog
+    return StubSimService(staged(preset_id), RunLog(tmp_path / "run"), wait_for=())
+
+
+def advance(s, secs, dt=0.1):
+    return [s.step(dt) for _ in range(int(round(secs / dt)))]
+
+
+def results(outs, aid):
+    return [r for o in outs for r in o.task_results if r["id"] == aid]
+
+
+def track(s, pid):
+    return s.world.tracks.track(pid)
+
+
+def test_approaching_a_patient_in_bed_ends_at_the_bed_side(staged, tmp_path):
+    s = sim(staged, "meal_round", tmp_path)
+    w = s.world
+    w.robot.teleport(20.0, 16.0, 0.0)  # in the corridor outside bedroom B3
+    s.on_task_action({"id": "a1", "action": "approach", "track": track(s, "M3")})
+    outs = advance(s, 20.0)
+    goals = [r for o in outs for r in o.task_results if r.get("kind") == "goal" and r["id"] == "a1"]
+    assert goals and goals[0]["reason"] == "arrived"
+    b = w.site.beds["B3"]
+    along = (w.robot.x - b.x) * math.cos(b.yaw) + (w.robot.y - b.y) * math.sin(b.yaw)
+    across = -(w.robot.x - b.x) * math.sin(b.yaw) + (w.robot.y - b.y) * math.cos(b.yaw)
+    assert abs(along) < 0.3 and 0.8 <= abs(across) <= 1.2  # beside the bed's middle, not off its end
+
+
+def test_a_tray_reaches_a_patient_who_sits_up_when_offered(staged, tmp_path):
+    s = sim(staged, "meal_round", tmp_path)
+    w = s.world
+    w.robot.teleport(20.0, 16.0, 0.0)
+    s.on_task_action({"id": "a1", "action": "approach", "track": track(s, "M3")})
+    advance(s, 20.0)
+    s.on_task_action({"id": "h1", "action": "hand_over", "item": "tray_M3", "to": track(s, "M3")})
+    outs = advance(s, 0.5)
+    assert not results(outs, "h1"), "the offer stays open while she sits up"
+    nudges = [n for o in outs for n in o.nudges if n.person == "M3"]
+    assert nudges and "sit_up_in_bed" in nudges[0].message
+    w.apply_intent(Intent(id="u", person="M3", t=s.t, kind="sit_up_in_bed"))
+    w.apply_intent(Intent(id="y", person="M3", t=s.t + 0.1, kind="accept_item"))
+    outs = advance(s, 1.0)
+    assert [(r["ok"], r["reason"]) for r in results(outs, "h1")] == [(True, "ok")]
+    assert w.objects.items["tray_M3"].holder == "M3"
+
+
+def test_a_hand_over_from_too_far_fails_with_a_clear_reason(staged, tmp_path):
+    s = sim(staged, "meal_round", tmp_path)
+    s.world.robot.teleport(20.0, 16.0, 0.0)
+    s.on_task_action({"id": "h1", "action": "hand_over", "item": "tray_M3", "to": track(s, "M3")})
+    outs = advance(s, 0.2)
+    assert [(r["ok"], r["reason"]) for r in results(outs, "h1")] == [(False, "out_of_reach_giver")]
+
+
+def test_the_robot_approaches_the_surgeon_from_beside_her_and_can_pass_an_instrument(staged, tmp_path):
+    s = sim(staged, "scrub_nurse", tmp_path)
+    w = s.world
+    sc = w.objects.items["scalpel"]
+    sc.holder = "g1"
+    s.on_task_action({"id": "a1", "action": "approach", "track": track(s, "S1")})
+    outs = advance(s, 40.0)  # round the operating table, out of the theatre and back in
+    goals = [r for o in outs for r in o.task_results if r.get("kind") == "goal" and r["id"] == "a1"]
+    assert goals and goals[0]["reason"] == "arrived"
+    q = w.people["S1"]
+    fwd = (w.robot.x - q.x) * math.cos(q.yaw) + (w.robot.y - q.y) * math.sin(q.yaw)
+    assert fwd > -0.2, "not behind her"
+    s.on_task_action({"id": "h1", "action": "hand_over", "item": "scalpel", "to": track(s, "S1")})
+    w.apply_intent(Intent(id="y", person="S1", t=s.t, kind="accept_item"))
+    outs = advance(s, 1.0)
+    assert [(r["ok"], r["reason"]) for r in results(outs, "h1")] == [(True, "ok")]
