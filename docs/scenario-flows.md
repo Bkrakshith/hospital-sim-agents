@@ -165,7 +165,7 @@ flowchart TD
   n2 --> n3
   n4(["Expect: The robot helps V1 (talks to them or walks them there) (up to 90 s)"])
   n3 --> n4
-  n5["Wait until: V1 has reached the ward entrance or the robot is still with them (up to 120 s)"]
+  n5["Wait until: The robot has finished with V1 (V1 reached the ward entrance, or the robot and V1 have parted) (up to 120 s)"]
   n4 --> n5
   n6[["H1 is hard of hearing [hard_of_hearing]"]]
   n5 --> n6
@@ -185,12 +185,12 @@ flowchart TD
 
 ## Specimen run (`specimen_run`)
 
-The robot carries a specimen box from the ward to the porter at the main lifts. Traffic builds as it goes - a porter wheels a patient to the lifts, and people arrive as it reaches the corridor and the lift lobby.
+The robot carries a specimen box from the ward to the porter at the main lifts. Traffic builds as it goes - a porter wheels a patient down the main corridor, and people arrive as it reaches the corridor and the lift lobby.
 
 ```mermaid
 flowchart TD
   n1(("Run starts"))
-  n2[["A porter wheels W2 to the lifts [escort_patient]"]]
+  n2[["A porter wheels W2 down the main corridor [escort_patient]"]]
   n1 --> n2
   n3["Wait until: The robot sets off down the corridor (up to 90 s)"]
   n2 --> n3

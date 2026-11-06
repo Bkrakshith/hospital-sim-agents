@@ -9,9 +9,8 @@ steps:
     branches:
     - - expect:
           label: The robot checks Ava in (a desk note, a walk to a seat or a word with staff)
-          when: {any: [{robot_did: {action: note, about: P2, since_step: true}},
-                       {robot_did: {action: guide, about: P2, since_step: true}},
-                       {robot_did: {action: tell, about: P2, since_step: true}}]}
+          when: {any: [{robot_did: {action: note, about: P2}}, {robot_did: {action: guide, about: P2}},
+                       {robot_did: {action: tell, about: P2}}]}
           timeout_s: 120
     - - wait_until:
           label: George is seated or the robot has spoken to him
