@@ -271,3 +271,79 @@ def test_no_robot_pose_without_a_robot(tmp_path):
     for _ in range(12):
         s.step(0.1)
     assert lines(tmp_path, "robot_pose") == [] and lines(tmp_path, "status")
+
+
+# ---- the robot names who it speaks to -----------------------------------------------------------------------------
+def _put(w, pid, x, y):
+    p = w.people[pid]
+    p.x, p.y, p.posture, p.seat, p.plan = x, y, "standing", None, []
+
+
+def _staged_people(tmp_path):
+    s = svc(tmp_path)
+    s.step(0.01)
+    w = s.world
+    _put(w, "P3", 1.5, 0.6)  # 1.1 m from the robot
+    _put(w, "P2", 1.05, -1.38)  # 3 m straight ahead
+    s.step(0.01)
+    return s, w
+
+
+def test_robot_speech_goes_to_the_named_track(tmp_path):
+    s, w = _staged_people(tmp_path)
+    s.on_say(Say(person="P3", t=s.t, text="Excuse me, robot?", addressee="g1"))
+    s.step(0.01)
+    s.on_robot_toward(w.tracks.track("P2"))
+    s.on_robot_say("Hello, can I help you?")
+    assert s.step(0.01).audio[0].addressee == "P2"
+    robot_rows = [r for r in lines(tmp_path, "audio") if r["source_kind"] == "robot"]
+    assert robot_rows[-1]["addressee"] == "P2"
+    # one name per line: the next line without a name goes by the usual rule (nearest within reach)
+    s.on_robot_say("Anything else?")
+    assert s.step(0.01).audio[0].addressee == "P3"
+
+
+def test_overheard_speech_does_not_capture_the_reply(tmp_path):
+    s, w = _staged_people(tmp_path)
+    s.on_say(Say(person="P2", t=s.t, text="Shall we sit down?", addressee="P3"))
+    out = s.step(0.01)
+    assert out.robot_heard and s._last_robot_listener is None
+    s.on_say(Say(person="P2", t=s.t, text="Robot, where is the toilet?", addressee="g1"))
+    s.step(0.01)
+    assert s._last_robot_listener is not None and s._last_robot_listener[1] == "P2"
+    s.on_say(Say(person="P2", t=s.t + 1, text="Did you hear me?", addressee=None))  # to nobody in particular
+    s.step(0.01)
+    assert s._last_robot_listener[1] == "P2"
+
+
+def test_a_far_or_unseen_track_falls_back_to_the_heuristic(tmp_path):
+    s, w = _staged_people(tmp_path)
+    _put(w, "P2", 1.05, -3.4)  # 5 m ahead: in view, but too far to be spoken to
+    _put(w, "P5", 1.05, 6.0)  # behind the robot: not in view
+    s.step(0.01)
+    for pid in ("P2", "P5"):
+        s.on_robot_toward(w.tracks.track(pid))
+        s.on_robot_say("Hello there.")
+        assert s.step(0.01).audio[0].addressee == "P3", pid  # nearest within ROBOT_ADDRESS_M
+    _put(w, "P2", 1.05, -1.38)
+    s.step(0.01)
+    s.on_robot_toward(w.tracks.track("P2"))
+    s.t += 3.5  # a stale name
+    s.on_robot_say("Hello there.")
+    assert s.step(0.01).audio[0].addressee == "P3"
+
+
+def test_brief_carries_desk_staffed(tmp_path):
+    from wardzero_agents.config.presets import load_scenario_presets, preset_to_scenario
+    from wardzero_agents.studio import auto_staff
+    config = Path(__file__).resolve().parents[1] / "config"
+    presets = load_scenario_presets(config)
+    meal = StubSimService(preset_to_scenario(presets["meal_round"], config, tmp_path / "m"), RunLog(tmp_path / "rm"),
+                          wait_for=())
+    assert meal.robot_brief["desk_staffed"] is False and meal.robot_brief["meals"]
+    ae = presets["ae_waiting"]
+    loaded = preset_to_scenario(ae, config, tmp_path / "a", characters=auto_staff.with_auto(list(ae.characters), ae))
+    s = StubSimService(loaded, RunLog(tmp_path / "ra"), wait_for=())
+    assert s.robot_brief["desk_staffed"] is True
+    s.world.people["RCP"].kind = "static"  # a receptionist who cannot move or read the desk computer
+    assert s.robot_brief["desk_staffed"] is False

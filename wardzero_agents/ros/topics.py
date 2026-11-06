@@ -65,6 +65,7 @@ def robot_topics(ns: str = "robot") -> dict[str, str]:
         "objects": f"{p}/perception/objects",
         "heard": f"{p}/audio/heard",
         "say": f"{p}/speech/say",
+        "say_toward": f"{p}/speech/toward",  # optional: the track the next speech/say is for (String), sent just before it
         "goal_pose": f"{p}/goal_pose",
         "task_action": f"{p}/task/action",
         "task_result": f"{p}/task/result",
@@ -96,7 +97,7 @@ def isaac_graph_keys(base: str, can_move: bool, sensor_kinds=()) -> tuple[str, .
     return tuple(keys)
 
 
-STUB_LIVE = ("clock", "odom", "cmd_vel", "goal_pose", "bbox_3d", "objects", "heard", "say",
+STUB_LIVE = ("clock", "odom", "cmd_vel", "goal_pose", "bbox_3d", "objects", "heard", "say", "say_toward",
              "task_action", "task_result", "task_brief")
 
 
