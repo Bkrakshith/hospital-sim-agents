@@ -120,7 +120,7 @@ class RouteFollower:
             return False
         if self.door_lines:
             free = getattr(self.router, "is_free", None)
-            route = through_leaves(route, self.door_lines, free)
+            route = through_leaves(route, self.door_lines, free, avoid=avoid)
         self.set_route(route[1:] or [tuple(goal[:2])], final_yaw)
         self._prev = (float(start[0]), float(start[1]))
         return True
@@ -287,7 +287,19 @@ def _seg_cross(p, q, a, b):
     return (t, u) if 0.0 <= t <= 1.0 and 0.0 <= u <= 1.0 else None
 
 
-def through_leaves(route, doors, free=None, before: float = DOOR_BEFORE_M, after: float = DOOR_AFTER_M):
+def _disc_gap(p, q, avoid) -> float:
+    """The smallest gap between segment p-q and the (x, y, r) discs (negative: it cuts one)."""
+    best = float("inf")
+    for x, y, r in avoid:
+        dx, dy = q[0] - p[0], q[1] - p[1]
+        L2 = dx * dx + dy * dy
+        u = 0.0 if L2 < 1e-12 else max(0.0, min(1.0, ((x - p[0]) * dx + (y - p[1]) * dy) / L2))
+        best = min(best, math.hypot(x - (p[0] + u * dx), y - (p[1] + u * dy)) - r)
+    return best
+
+
+def through_leaves(route, doors, free=None, before: float = DOOR_BEFORE_M, after: float = DOOR_AFTER_M,
+                   avoid=()):
     """A route (start first) with every crossing of a swinging door replaced by a straight pass through the centre of
     the leaf nearer the crossing: a point ``before`` metres ahead of the door line, then ``after`` beyond it (shorter
     when ``free(x, y)`` says the point is blocked). doors: ((ax, ay), (bx, by)) door lines."""
@@ -305,14 +317,22 @@ def through_leaves(route, doors, free=None, before: float = DOOR_BEFORE_M, after
             w = math.hypot(b[0] - a[0], b[1] - a[1])
             if w < 1e-6:
                 continue
+            nx, ny = -(b[1] - a[1]) / w, (b[0] - a[0]) / w
+            if (q[0] - p[0]) * nx + (q[1] - p[1]) * ny < 0:
+                nx, ny = -nx, -ny
             if w <= SINGLE_LEAF_MAX_M:
                 uc = 0.5
             else:
                 uc = 0.25 if u < 0.5 else 0.75
+                if avoid:  # someone standing on that leaf's line (the person just guided): the other leaf
+                    def gap(c):
+                        cx_, cy_ = a[0] + c * (b[0] - a[0]), a[1] + c * (b[1] - a[1])
+                        return _disc_gap((cx_ - before * nx, cy_ - before * ny), (cx_ + after * nx, cy_ + after * ny),
+                                         avoid)
+                    other = 1.0 - uc
+                    if gap(uc) < 0.0 <= gap(other) or (gap(uc) < 0.0 and gap(other) > gap(uc)):
+                        uc = other
             cx, cy = a[0] + uc * (b[0] - a[0]), a[1] + uc * (b[1] - a[1])
-            nx, ny = -(b[1] - a[1]) / w, (b[0] - a[0]) / w
-            if (q[0] - p[0]) * nx + (q[1] - p[1]) * ny < 0:
-                nx, ny = -nx, -ny
             pts = []
             for dist, sign in ((before, -1.0), (after, 1.0)):
                 d = dist

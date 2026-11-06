@@ -310,7 +310,10 @@ class IsaacHost:
     def robot_proxy(self) -> None:  # 7
         r = self.loaded.scenario.robot
         if r.enabled:
-            stage_mod.add_robot_proxy(self.stage, r.x, r.y, r.radius + 0.05)
+            from ..world.robot_body import CONTACT_MARGIN_M
+            # the people's avoidance keeps them outside the cylinder: as wide as the world's contact distance (a person
+            # within radius + 0.25 m of the robot is a contact; at radius + 0.05 the receptionist brushed the G1)
+            stage_mod.add_robot_proxy(self.stage, r.x, r.y, r.radius + CONTACT_MARGIN_M + 0.05)
 
     def play(self) -> None:  # 8
         import carb

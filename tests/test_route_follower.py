@@ -242,3 +242,12 @@ def test_people_do_not_slow_the_robot_while_it_pushes_through_a_door():
     f.set_route([(10.0, 2.5)])
     assert f.update(0.0, (5.2, 2.5, 0.0), people=[(4.5, 3.5)]).speed == rf.OPEN_SPEED  # in the door zone
     assert f.update(0.1, (2.0, 2.5, 0.0), people=[(2.5, 3.5)]).speed == rf.SLOW_SPEED  # away from it
+
+
+def test_the_door_pass_takes_the_other_leaf_when_someone_stands_on_the_line():
+    door = ((6.0, 2.0), (6.0, 4.0))
+    route = [(10.0, 2.6), (2.0, 2.6)]  # nearer the lower leaf (centre y 2.5)
+    assert rf.through_leaves(route, [door])[1][1] == pytest.approx(2.5)
+    daniel = [(7.0, 2.5, 0.7)]  # the person just guided, standing on that leaf's line
+    out = rf.through_leaves(route, [door], avoid=daniel)
+    assert out[1][1] == pytest.approx(3.5) and out[2][1] == pytest.approx(3.5)
