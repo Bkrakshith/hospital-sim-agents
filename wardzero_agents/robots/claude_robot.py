@@ -34,9 +34,11 @@ MIN_GAP_S = 2.0  # between calls, unless someone is speaking to the robot
 NEAR_SPEECH_M = 3.0
 GREET_M = 6.0  # a track this close that the robot has not spoken to is marked "not spoken to yet"
 GREET_GAP_S = 4.0  # while such a track is in view, the robot thinks this often (else every HEARTBEAT_S)
+BEARING_MATCH_DEG = 12.0  # a heard sound is put down to a track only when exactly one lies this close to its bearing
 SEATS_LISTED = 6  # the nearest free seats in view shown in the prompt
 EVENTS_KEPT = 20
 HEARD_KEPT_S = 60.0
+HEARD_MATCH_S = 5.0  # a sound is put down to a track only this soon after it: the robot and the people move
 LLM_OFF_AFTER = 3  # permanent failures in a row (bad key, bad model) before the mind stops calling
 ROBOT_BUDGET_SHARE = 0.25  # of the scenario's budget_usd: the robot has its own budget
 MAX_SAY_CHARS = 400
@@ -50,54 +52,78 @@ NEEDS = {"hand_over": ("item", "target"), "take": ("item",), "extinguish": ("tar
          "guide": ("target", "destination"), "go_to": ("destination",), "tell_staff": ("target",), "approach": ("target",),
          "note_desk": ("target", "message")}
 
-SYSTEM_RULES = """You are the robot described under YOUR BODY, working in a UK hospital and doing the job in your task brief. People around you are real people with their own worries. You act through a few simple actions and by speaking.
+_RULES_HEAD = """You are the robot described under YOUR BODY, working in a UK hospital and doing the job in your task brief. People around you are real people with their own worries. You act through a few simple actions and by speaking.
 
 How you work
+- YOUR JOB is your main task and you do it yourself, not the staff. Start it as soon as it calls for action (if it says to wait for a request, a call or an alarm, be ready and act the moment it comes) and carry it through to the end. On the way a short polite word is fine, but do not stop to offer help unless someone is in an emergency or speaks to you.
 - Each turn you are shown what you can perceive right now: your position, who your camera sees (as anonymous tracks such as t1, t2 with a distance, a direction and a posture), objects in view, what your microphone heard, the results of your recent actions and your own last events. You know nothing else about the people. Never guess a name, an age or how someone feels; you can only see what the camera shows and hear what is said.
 - A box that is low and long means a person lying down. A box about 1.2 m tall means someone seated. About 1.7 m tall means standing. Someone lying on the floor, away from a bed, may need urgent help.
 - Speak in short, plain, warm sentences, the way a good receptionist or ward helper would. Use the place names as given in the lists (for example "Main entrance"), never codes, identifiers or words joined by underscores.
 - Be truthful. Do not claim to have done something you have not done, and do not promise what your body cannot do. Your abilities are listed in your briefing; stay inside them.
-- You are the first point of contact. The staff are busy, so greet people who arrive or come towards you and are not already being helped (tracks marked "not spoken to yet"), ask what they need and try to sort it out yourself: directions, walking them there, what happens next and how long the wait is, a seat, an item.
-- Do not wait to be asked. Go up to anyone who comes in, looks lost or is standing around (approach, with their track) and offer help. When someone needs to go somewhere, offer to walk them there (guide) rather than only pointing the way. Once someone is checked in and has to wait, offer to walk them to a free seat (guide with seat set to true). Every few minutes, check on people who have been waiting a while.
-- Fetch a human only when you cannot help, in this order: first leave a note on the reception desk computer (note_desk, with the person's track and what they need; it interrupts nobody and you stay with the person); if they need a member of staff in person, tell the staff (tell_staff, with the person's track: you go to the reception desk, or the nurse base on a ward, and tell them); press_call is the last resort. Tell the person what you have done.
-- Emergencies skip that order: if someone has collapsed or is lying on the floor, has chest pain, cannot breathe, is bleeding heavily, is fainting or says they feel they will pass out, or is getting worse, tell the staff or press the call button straight away. Never give medical advice.
-- Safety comes first: keep clear of people, never block an escape route or a doorway, and do not touch anyone. Do not use the extinguisher unless a fire is in range and putting it out is part of your job.
-- Do not repeat yourself. If you have just said something and nothing has changed, choose "none" or "wait" and say nothing.
+"""
+_FIRST_CONTACT = """- When YOUR JOB is to greet or receive people (reception, a waiting room), you are the first point of contact. The staff are busy, so greet people who arrive or come towards you and are not already being helped (tracks marked "not spoken to yet"), ask what they need and try to sort it out yourself: directions, walking them there, what happens next and how long the wait is, a seat, an item.
+- Do not wait to be asked when greeting people is your job. Go up to anyone who comes in, looks lost or is standing around (approach, with their track) and offer help. When someone needs to go somewhere, offer to walk them there (guide) rather than only pointing the way. Once someone is checked in and has to wait, offer to walk them to a free seat (guide with seat set to true). Every few minutes, check on people who have been waiting a while.
+"""
+_NO_FIRST_CONTACT = """- Speak to people when your job needs it, when they speak to you, or when they are in danger; otherwise keep your distance from people at work.
+"""
+_FETCH_DESK = """- Fetch a human only when you cannot help, in this order: first leave a note on the reception desk computer (note_desk, with the person's track and what they need; it interrupts nobody and you stay with the person); if they need a member of staff in person, tell the staff (tell_staff, with the person's track: you go to the reception desk, or the nurse base on a ward, and tell them); press_call is the last resort. Tell the person what you have done.
+"""
+_FETCH_NO_DESK = """- Fetch a human only when you cannot help, in this order: tell_staff, then press_call as the last resort. tell_staff, with the person's track: you go to the reception desk, or the nurse base on a ward, and tell them; press_call sounds the staff call and you stay where you are. Tell the person what you have done.
+"""
+_RULES_TAIL = """- Emergencies skip that order: if someone has collapsed or is lying on the floor, has chest pain, cannot breathe, is bleeding heavily, is fainting or says they feel they will pass out, or is getting worse, tell the staff or press the call button straight away. For someone who seems disoriented or is trying to leave and may come to harm if left alone: stay beside them and press the staff call button (press_call). Never give medical advice.
+- Safety comes first: keep clear of people, never block an escape route or a doorway, and do not touch anyone. Use the extinguisher only when putting out a fire is part of your job.
+- Do not repeat yourself. If you have just said something and nothing has changed, choose "none" (keep doing what you are doing) and say nothing; use "wait" only to stop on purpose.
 
 How you answer
 Reply with one JSON object and nothing else.
 - say: what you say aloud now, or an empty string to stay silent.
 - toward_track: the track you are speaking to or attending to, or an empty string.
-- action: one of the allowed actions in the schema. "none" means do nothing new; "wait" means stand still and stop any movement.
-- target: the track for hand_over, the fire for extinguish, or the track for guide, approach, tell_staff or note_desk; otherwise an empty string.
+- action: one of the allowed actions in the schema. "none" means do nothing new; "wait" means stand still: this cancels any walk, guide or tell_staff you are on.
+- target: the track for hand_over, the fire for extinguish, or the track for guide, approach, {tracked}; for press_call, optionally the track of the person who needs the staff; otherwise an empty string.
 - item: the item id for hand_over or take; otherwise an empty string.
 - destination: a place name from your lists for go_to or guide; otherwise an empty string.
 - seat: for guide only, true to end the walk at a free seat in that place (you pick the nearest free one you can see when you get there); otherwise false.
 - place: for hand_over only, optionally [x, y, z] in metres where you hold the item out (z inside your reach); otherwise an empty list.
-- message: for tell_staff, what you say to the staff member about the person (who they are, what they need); for note_desk, the note you leave on the desk computer; otherwise an empty string.
+- message: for tell_staff, what you say to the staff member about the person (who they are, what they need){note}; otherwise an empty string.
 - reason: one short sentence on why, for the record."""
+
+
+def rules(first_contact: bool = True, desk_staffed: bool = True) -> str:
+    """The fixed rules. first_contact False (a job that is not greeting people) drops the greeting rules; desk_staffed
+    False (nobody at the reception desk computer) drops the desk note."""
+    tail = _RULES_TAIL.format(tracked="tell_staff or note_desk" if desk_staffed else "or tell_staff",
+                              note="; for note_desk, the note you leave on the desk computer" if desk_staffed else "")
+    return (_RULES_HEAD + (_FIRST_CONTACT if first_contact else _NO_FIRST_CONTACT)
+            + (_FETCH_DESK if desk_staffed else _FETCH_NO_DESK) + tail)
+
+
+SYSTEM_RULES = rules()
 
 NO_WALK_RULE = ("You are standing at a fixed post and cannot walk in this build; to help someone get "
                 "somewhere, give clear directions or press the call button for staff. tell_staff speaks to the "
-                "staff from where you stand.")
+                "staff from where you stand. extinguish works only on a fire within 2 m of you.")
 WALK_RULE = ("You can walk. To take someone somewhere, use guide with their track and the place name (with seat true "
              "to end at a free seat there); to go up to someone, use approach with their track; to go somewhere "
-             "yourself, use go_to.")
+             "yourself, use go_to. extinguish with the fire id walks you to about 1.5 m from the fire and sprays "
+             "until it is out; you do not need to go_to it first.")
 
 
-def system_prompt(profile: RobotProfile) -> str:
-    return SYSTEM_RULES + ("\n\nYou are a Unitree G1 humanoid." if profile.name == G1_NAME else "") + "\n\nYour mobility\n" + (WALK_RULE if profile.can_move else NO_WALK_RULE)
+def system_prompt(profile: RobotProfile, *, first_contact: bool = True, desk_staffed: bool = True) -> str:
+    return (rules(first_contact, desk_staffed) + ("\n\nYou are a Unitree G1 humanoid." if profile.name == G1_NAME else "")
+            + "\n\nYour mobility\n" + (WALK_RULE if profile.can_move else NO_WALK_RULE))
 
 
-def actions_for(profile: RobotProfile) -> tuple[str, ...]:
-    return ACTIONS if profile.can_move else tuple(a for a in ACTIONS if a not in MOVING_ACTIONS)
+def actions_for(profile: RobotProfile, desk_staffed: bool = True) -> tuple[str, ...]:
+    acts = ACTIONS if profile.can_move else tuple(a for a in ACTIONS if a not in MOVING_ACTIONS)
+    return acts if desk_staffed else tuple(a for a in acts if a != "note_desk")
 
 
-def decision_schema(profile: RobotProfile) -> dict:
+def decision_schema(profile: RobotProfile, desk_staffed: bool = True) -> dict:
     s = {"type": "string"}
     return {
         "type": "object",
-        "properties": {"say": s, "toward_track": s, "action": {"type": "string", "enum": list(actions_for(profile))},
+        "properties": {"say": s, "toward_track": s,
+                       "action": {"type": "string", "enum": list(actions_for(profile, desk_staffed))},
                        "target": s, "item": s, "destination": s,
                        "place": {"type": "array", "items": {"type": "number"}}, "message": s,
                        "seat": {"type": "boolean"}, "reason": s},
@@ -127,6 +153,7 @@ class Outputs:
     action: Optional[dict] = None  # JSON for <ns>/task/action
     goal: Optional[tuple[float, float, float]] = None  # x, y, yaw for <ns>/goal_pose
     stop: bool = False  # zero cmd_vel
+    toward: Optional[str] = None  # the track the speech is for: published on <ns>/speech/toward just before speech/say
 
 
 # ---- places in words ------------------------------------------------------------------------
@@ -198,7 +225,8 @@ def route_words(site, start: tuple[float, float, float], place_ids, router=None)
                 rid = site.room_at(x0 + (x1 - x0) * f, y0 + (y1 - y0) * f)
                 if rid and (not rooms or rooms[-1] != rid):
                     rooms.append(rid)
-        first = route[0]
+        # route[0] is where the robot stands: the way it sets off is towards the first waypoint clear of it
+        first = next((p for p in route if math.hypot(p[0] - start[0], p[1] - start[1]) > 0.5), route[-1])
         way = _direction_words(_rel_deg(start, first[0], first[1]))
         names = [place_label(site, r) for r in rooms]
         names = [n for i, n in enumerate(names) if n and (i == 0 or n != names[i - 1])]
@@ -231,12 +259,16 @@ def _opt_str(data: dict, key: str) -> Optional[str]:
     return v.strip() or None
 
 
-def parse_decision(data: Any, profile: RobotProfile, mind: "Optional[RobotMind]" = None) -> RobotDecision:
-    """Validate a model reply against the decision schema. Raises ValueError when it does not fit."""
+def parse_decision(data: Any, profile: RobotProfile, mind: "Optional[RobotMind]" = None,
+                   desk_staffed: Optional[bool] = None) -> RobotDecision:
+    """Validate a model reply against the decision schema. Raises ValueError when it does not fit. desk_staffed
+    defaults to the mind's brief (True without a mind)."""
     if not isinstance(data, dict):
         raise ValueError("not an object")
+    if desk_staffed is None:
+        desk_staffed = mind.desk_staffed if mind is not None else True
     action = data.get("action")
-    if action not in actions_for(profile):
+    if action not in actions_for(profile, desk_staffed):
         raise ValueError(f"action {action!r} is not allowed")
     reason = data.get("reason")
     if not isinstance(reason, str):
@@ -286,6 +318,8 @@ def speakable(text: str, site=None) -> str:
 def decision_outputs(d: RobotDecision, mind: "RobotMind", aid: str) -> Outputs:
     """What a decision puts on the wire: speech/say, task/action, goal_pose or a stop."""
     out = Outputs(say=speakable(d.say, mind.site) if d.say else None)
+    if out.say and d.toward_track:
+        out.toward = d.toward_track
     a = d.action
     if a == "hand_over":
         out.action = {"id": aid, "action": "hand_over", "item": d.item, "to": d.target}
@@ -297,6 +331,8 @@ def decision_outputs(d: RobotDecision, mind: "RobotMind", aid: str) -> Outputs:
         out.action = {"id": aid, "action": "extinguish", "fire": d.target}
     elif a == "press_call":
         out.action = {"id": aid, "action": "press_call"}
+        if d.target and d.target in mind._tracks:  # the person who needs the staff, so the call can name them
+            out.action["track"] = d.target
     elif a == "tell_staff":
         out.action = {"id": aid, "action": "tell_staff", "about": d.target}
         if d.message:
@@ -311,9 +347,15 @@ def decision_outputs(d: RobotDecision, mind: "RobotMind", aid: str) -> Outputs:
     elif a == "approach":
         out.action = {"id": aid, "action": "approach", "track": d.target}
     elif a == "go_to":
-        xy = mind.site.resolve(mind.place_id(d.destination))
+        pid = mind.place_id(d.destination)
+        xy = mind.site.resolve(pid)
         x, y, _ = mind.pose
-        out.goal = (xy[0], xy[1], math.atan2(xy[1] - y, xy[0] - x))
+        yaw = math.atan2(xy[1] - y, xy[0] - x)
+        beds = sorted((math.hypot(b.x - xy[0], b.y - xy[1]), b.x, b.y) for b in mind.site.beds.values()
+                      if getattr(b, "room", None) == pid)
+        if beds and beds[0][0] > 0.3:  # a bedroom: arrive facing the bed, so the patient is in view
+            yaw = math.atan2(beds[0][2] - xy[1], beds[0][1] - xy[0])
+        out.goal = (xy[0], xy[1], yaw)
     elif a == "wait":
         out.stop = True
     if out.action or out.goal:
@@ -358,7 +400,10 @@ class RobotMind:
         self._now = 0.0
         self._t0: Optional[float] = None
         self._last_call: Optional[float] = None
-        self._addressed = self._speech = self._new_track = self._new_result = False
+        self._seen_fires: set[str] = set()
+        self._seen_signs: set[str] = set()
+        self._lasting: list[str] = []  # events the robot keeps in mind for the whole run (a blocked route it saw)
+        self._addressed = self._speech = self._new_track = self._new_result = self._new_hazard = False
         self._permanent = 0
         self._n_ids = 0
         self.llm_off = False
@@ -369,6 +414,20 @@ class RobotMind:
 
     def note(self, text: str) -> None:
         self._events.append(f"t={self._now:.1f}s {text}")
+
+    def _flag(self, key: str) -> bool:
+        v = self.brief.get(key) if isinstance(self.brief, dict) else None
+        return True if v is None else bool(v)
+
+    @property
+    def first_contact(self) -> bool:
+        """The brief's first_contact (default True): False when the job is not greeting people."""
+        return self._flag("first_contact")
+
+    @property
+    def desk_staffed(self) -> bool:
+        """The brief's desk_staffed (default True): False when nobody reads the reception desk computer."""
+        return self._flag("desk_staffed")
 
     def on_brief(self, brief: Optional[dict]) -> None:
         if brief is not None and brief != self.brief:
@@ -417,6 +476,24 @@ class RobotMind:
 
     def on_objects(self, objs) -> None:
         self._objects = {"items": objs} if isinstance(objs, list) else dict(objs or {})
+        for f in self._objects.get("fires") or []:
+            fid = str(f.get("id"))
+            if fid not in self._seen_fires:  # a fire seen for the first time: think now
+                self._seen_fires.add(fid)
+                self._new_hazard = True
+        for s in self._objects.get("blocked") or []:
+            sid = str(s.get("id"))
+            if sid in self._seen_signs:
+                continue
+            self._seen_signs.add(sid)
+            self._new_hazard = True
+            try:
+                rid = self.site.room_at(float(s["x"]), float(s["y"]))
+            except (KeyError, TypeError, ValueError):
+                rid = None
+            self.note(f'saw sign "{s.get("text") or "route blocked"}" in '
+                      f'{place_label(self.site, rid) if rid else "an unnamed space"}')
+            self._lasting.append(self._events[-1])
 
     def on_task_result(self, r: dict, t: Optional[float] = None) -> None:
         if not isinstance(r, dict) or "id" not in r:
@@ -429,6 +506,8 @@ class RobotMind:
         self._new_result = True
 
     def _someone_to_greet(self) -> bool:
+        if not self.first_contact:
+            return False
         x, y = self.pose[0], self.pose[1]
         return any(tid not in self._spoken and math.hypot(tr.x - x, tr.y - y) <= GREET_M
                    for tid, tr in self._tracks.items())
@@ -441,9 +520,11 @@ class RobotMind:
         t = self._t(t)
         if not isinstance(h, dict):
             return
-        self._heard.append((t, h))
+        self._heard.append((t, h, self.pose[2]))
         if h.get("addressed_to_me"):
             self._addressed = True
+        elif h.get("source_kind") in ("alarm", "pa"):
+            self._speech = True  # an alarm or an announcement: worth a thought at once
         elif h.get("source_kind") == "person" and h.get("text") and self._min_person_dist() <= NEAR_SPEECH_M:
             self._speech = True
         elif h.get("source_kind") == "person" and not h.get("text"):
@@ -469,16 +550,55 @@ class RobotMind:
                 lines.append("No task brief was given. Be a polite, helpful presence and ask people what they need.")
             else:
                 for k, v in b.items():
+                    if k == "forbidden_areas" or isinstance(v, (bool, int, float)):
+                        continue  # the areas are rendered below; flags and numbers are not part of the job's words
+                    name = k.replace('_', ' ').capitalize()
                     if isinstance(v, str) and v:
                         if k == "destination" and self.place_id(v):
                             v = place_label(self.site, self.place_id(v))
-                        lines.append(f"{k.replace('_', ' ').capitalize()}: {v}")
+                        lines.append(f"{name}: {v}")
+                    elif isinstance(v, list) and v and all(isinstance(e, str) for e in v):
+                        lines.append(f"{name}: {', '.join(v)}")
+                    elif isinstance(v, list) and v and all(isinstance(e, dict) for e in v):
+                        lines.append(f"{name}:")
+                        for e in v:
+                            parts = [f"{ek.replace('_', ' ')}: {self._brief_words(ev)}" for ek, ev in e.items()
+                                     if isinstance(ev, (str, int, float)) and not isinstance(ev, bool) and ev != ""]
+                            if parts:
+                                lines.append("- " + "; ".join(parts))
             if areas:
                 lines.append("Do not enter: " + ", ".join(a.name for a in areas) + ". These are forbidden areas: "
                              "keep out of them and do not take anyone through them.")
-            lines += ["", "YOUR BODY", self.profile.abilities()]
+            lines += ["", "YOUR BODY", self.profile.abilities(desk_staffed=self.desk_staffed)]
             self._card = "\n".join(lines)
         return self._card
+
+    def _brief_words(self, v) -> str:
+        """A value in a brief list in words: a place id or label becomes the place's label."""
+        if isinstance(v, str):
+            s = v.strip()
+            if s in self._places.values() or s.lower() in self._places or s in self.site.rooms \
+                    or s in self.site.landmarks or s in self.site.beds:
+                return place_label(self.site, self._places.get(s.lower(), s))
+            return s
+        return f"{v:g}"
+
+    def _where_heard(self, h: dict, yaw_then: float, age: float = 0.0) -> str:
+        """Where a sound came from, when the microphone gives a bearing: the one track in that direction (only for a
+        sound under HEARD_MATCH_S old), else the angle. Empty without a bearing."""
+        b = h.get("bearing_deg")
+        if not isinstance(b, (int, float)) or isinstance(b, bool) or not math.isfinite(b):
+            return ""
+        rel = (b + math.degrees(yaw_then - self.pose[2]) + 180.0) % 360.0 - 180.0  # into the robot's frame now
+        hits = [] if age > HEARD_MATCH_S else [
+            (tid, tr) for tid, tr in self._tracks.items()
+            if abs((_rel_deg(self.pose, tr.x, tr.y) - rel + 180.0) % 360.0 - 180.0) <= BEARING_MATCH_DEG]
+        if len(hits) == 1:
+            tid, tr = hits[0]
+            return f", from the direction of {tid} ({math.hypot(tr.x - self.pose[0], tr.y - self.pose[1]):.1f} m)"
+        if abs(rel) < 5.0:
+            return ", from straight ahead"
+        return f", from about {abs(rel):.0f} degrees to your {'left' if rel > 0 else 'right'}"
 
     def _situation(self, t: float) -> str:
         x, y, yaw = self.pose
@@ -489,8 +609,8 @@ class RobotMind:
         L.append("You are holding: " + (", ".join(f"{i.get('label') or i.get('kind')} (item {i['id']})" for i in held)
                                         if held else "nothing."))
         L.append("Heard recently, newest last:")
-        recent = [(ht, h) for ht, h in self._heard if t - ht <= HEARD_KEPT_S][-8:]
-        for ht, h in recent or []:
+        recent = [(ht, h, hy) for ht, h, hy in self._heard if t - ht <= HEARD_KEPT_S][-8:]
+        for ht, h, hy in recent or []:
             who = "someone speaking to you" if h.get("addressed_to_me") else {
                 "person": "someone nearby", "cough": "a cough", "alarm": "an alarm", "pa": "an announcement",
                 "robot": "your own voice"}.get(h.get("source_kind"), "a sound")
@@ -498,13 +618,14 @@ class RobotMind:
                 who = "a chime, like a patient's call bell"  # the only sound without words from that source
             text = f': "{h["text"]}"' if h.get("text") else ""
             part = " (only part heard)" if h.get("partial") else ""
-            L.append(f"- {t - ht:.0f} s ago, {who}, {float(h.get('received_db', 0)):.0f} dB{part}{text}")
+            L.append(f"- {t - ht:.0f} s ago, {who}, {float(h.get('received_db', 0)):.0f} dB{part}"
+                     f"{self._where_heard(h, hy, t - ht)}{text}")
         if not recent:
             L.append("- nothing")
         L.append("People your camera sees (anonymous tracks):")
         for tid, tr in sorted(self._tracks.items()):
             d = math.hypot(tr.x - x, tr.y - y)
-            new = ", not spoken to yet" if tid not in self._spoken and d <= GREET_M else ""
+            new = ", not spoken to yet" if self.first_contact and tid not in self._spoken and d <= GREET_M else ""
             L.append(f"- {tid}: {d:.1f} m, {_direction_words(_rel_deg(self.pose, tr.x, tr.y))}, {tr.posture}, "
                      f"{'moving' if tr.moving else 'still'}, at (x={tr.x:.2f}, y={tr.y:.2f}){new}")
         if not self._tracks:
@@ -523,6 +644,14 @@ class RobotMind:
         free = sorted((math.hypot(c["x"] - x, c["y"] - y), c) for c in self._objects.get("seats", []) if c.get("free"))
         for dist, c in free[:SEATS_LISTED]:
             L.append(f"- seat {c['id']}: free, {dist:.1f} m, {_direction_words(_rel_deg(self.pose, c['x'], c['y']))}")
+        for s in self._objects.get("blocked") or []:
+            sign = f'- route blocked sign: "{s.get("text") or "route blocked"}"'
+            try:  # a sign without a position is listed without distance and direction
+                sx, sy = float(s["x"]), float(s["y"])
+                sign += f", {math.hypot(sx - x, sy - y):.1f} m, {_direction_words(_rel_deg(self.pose, sx, sy))}"
+            except (KeyError, TypeError, ValueError):
+                pass
+            L.append(sign)
         for c in self._objects.get("call_lights", []):
             L.append(f"- call light on at bed {c['bed']}, {math.hypot(c['x'] - x, c['y'] - y):.1f} m, "
                      f"{_direction_words(_rel_deg(self.pose, c['x'], c['y']))}")
@@ -534,7 +663,8 @@ class RobotMind:
                 what = r.get("action", "action") if r.get("kind") != "goal" else "walking to a goal"
                 L.append(f"- {r.get('id')} {what}: {'ok' if r.get('ok') else 'failed'} ({r.get('reason')})")
         L.append("Your last events, oldest first:")
-        L += [f"- {e}" for e in self._events] or ["- none yet"]
+        kept = [e for e in self._lasting if e not in self._events]  # a blocked route stays in mind
+        L += [f"- {e}" for e in kept + list(self._events)] or ["- none yet"]
         L.append("Decide what to do now.")
         return "\n".join(L)
 
@@ -547,7 +677,7 @@ class RobotMind:
         gap = math.inf if self._last_call is None else t - self._last_call
         if self._addressed:
             return True
-        if (self._speech or self._new_track or self._new_result) and gap >= MIN_GAP_S:
+        if (self._speech or self._new_track or self._new_result or self._new_hazard) and gap >= MIN_GAP_S:
             return True
         if gap >= GREET_GAP_S and self._someone_to_greet():
             return True
@@ -563,12 +693,14 @@ class RobotMind:
             self._t0 = t
         if not self._due(t):
             return None
-        self._addressed = self._speech = self._new_track = self._new_result = False
+        self._addressed = self._speech = self._new_track = self._new_result = self._new_hazard = False
         self._last_call = t
         situation = self._situation(t)
-        req = LLMRequest(role="robot", person="robot", system_fixed=system_prompt(self.profile),
+        req = LLMRequest(role="robot", person="robot",
+                         system_fixed=system_prompt(self.profile, first_contact=self.first_contact,
+                                                    desk_staffed=self.desk_staffed),
                          persona_card=self.card(), user=situation,
-                         schema=decision_schema(self.profile))
+                         schema=decision_schema(self.profile, self.desk_staffed))
         res: LLMResult = await self.gateway.complete(req)
         d, error = None, None
         try:
@@ -718,7 +850,7 @@ async def _run(args) -> int:
         mind.on_pose(m.pose.pose.position.x, m.pose.pose.position.y, yaw)
 
     ros.subscribe(Odometry, rt["odom"], on_odom, QOS)
-    for key in ("say", "task_action"):
+    for key in ("say_toward", "say", "task_action"):
         ros.publisher(rt[key], String, QOS)
     ros.publisher(rt["goal_pose"], PoseStamped, QOS)
     ros.publisher(rt["cmd_vel"], Twist, QOS)
@@ -728,6 +860,8 @@ async def _run(args) -> int:
 
     def publish(out: Outputs) -> None:
         if out.say:
+            if out.toward:  # who the words are for, just before the words
+                ros.publish_text(rt["say_toward"], out.toward)
             ros.publish_text(rt["say"], out.say)
         if out.action:
             ros.publish_text(rt["task_action"], json.dumps(out.action))

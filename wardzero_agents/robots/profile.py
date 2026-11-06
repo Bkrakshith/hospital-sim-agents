@@ -35,8 +35,9 @@ class RobotProfile:
     base_z: float = 0.0  # where the URDF's root link sits above the floor when the robot is placed (the G1's pelvis)
     voice: Optional[str] = None  # the spoken voice's key in wardzero_agents.voice.catalogue (None: the default robot voice)
 
-    def abilities(self) -> str:
-        """The robot's body in words, for the prompt."""
+    def abilities(self, desk_staffed: bool = True) -> str:
+        """The robot's body in words, for the prompt. desk_staffed False (nobody reads the reception desk computer)
+        leaves out the desk note."""
         lo, hi = self.reach
         if self.name == G1_NAME:
             body = "Your body: a Unitree G1 humanoid with a head camera and a microphone and speaker."
@@ -49,19 +50,26 @@ class RobotProfile:
             f"Sensors: {', '.join(x.label() for x in self.sensors)}.",
             f"Your hands reach between {lo:g} m and {hi:g} m above the floor, within arm's length of you.",
             "You can hand an item you are holding to a person, take an item lying within arm's length, "
-            "spray a fire extinguisher at a small fire in range, press the staff call button, speak, and wait.",
+            "spray a fire extinguisher at a small fire, press the staff call button, speak, and wait.",
             "You can tell the staff that someone needs help (tell_staff): you go to the reception desk (or the "
             "nurse base on a ward) and speak to the member of staff there.",
-            "You can leave a note about someone on the reception desk computer (note_desk): the receptionist reads "
-            "it on her screen when she is at the desk, nobody is interrupted and you stay where you are.",
         ]
+        if desk_staffed:
+            lines.append("You can leave a note about someone on the reception desk computer (note_desk): the "
+                         "receptionist reads it on her screen when she is at the desk, nobody is interrupted and you "
+                         "stay where you are.")
         if self.can_move:
             lines.append(f"You can walk (up to {self.max_speed:g} m/s, body radius {self.radius:g} m): "
                          "to a named place, up to a person (approach), or while leading a person to a place or to a "
                          "free seat there.")
+            lines.append("While you walk, your body slows to 0.3 m/s near people and stops for, or steps round, "
+                         "anyone in your way by itself; you do not need to use wait for that, and wait cancels your "
+                         "walk, guide or tell_staff. If someone stays in your way for about 8 s the walk ends as "
+                         "blocked_by_person; then choose again. extinguish walks you up to a fire you can see.")
         else:
             lines.append("You are standing at a fixed post and cannot walk in this build; to help someone "
-                         "get somewhere, give clear directions or press the call button for staff.")
+                         "get somewhere, give clear directions or press the call button for staff. extinguish "
+                         "reaches only a fire within 2 m.")
         return "\n".join(lines)
 
 
