@@ -414,3 +414,17 @@ def test_the_bodies_read_back_writes_the_walker_pose_into_the_legged_body():
     b = IsaacBodies(robot=lambda: (3.0, 4.5, 0.25))
     b.read_back(world)
     assert (body.x, body.y, body.yaw) == (3.0, 4.5, 0.25)
+
+
+def test_door_leaves_block_only_the_walking_g1s_router():
+    from wardzero_agents.world.legged_body import block_segments
+    grid = corridor()
+    mine, people = Router(grid, clearance=rf.G1_CLEARANCE_M), Router(grid)
+    straight = mine.route((8.0, 5.0), (8.0, 3.0))
+    assert len(straight) == 2  # nothing in the way
+    n = block_segments(mine, [((6.5, 4.0), (9.5, 4.0))], rf.G1_CLEARANCE_M)  # a leaf standing across the way
+    assert n >= 15
+    around = mine.route((8.0, 5.0), (8.0, 3.0))
+    assert around is not None and len(around) > 2  # goes round the leaf
+    assert all(not (6.4 < x < 9.6 and abs(y - 4.0) < 0.1) for x, y in around)
+    assert len(people.route((8.0, 5.0), (8.0, 3.0))) == 2  # other routers are untouched

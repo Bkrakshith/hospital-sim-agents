@@ -351,9 +351,18 @@ class IsaacHost:
         from ..world.legged_body import LeggedBody, door_points
         from ..world.route_follower import G1_CLEARANCE_M
 
+        from ..world.legged_body import block_segments
+        from .walker import door_leaf_segments
+
         w = self.svc.world
         old = w.robot
         router = Router(w.site.grid, clearance=G1_CLEARANCE_M)
+        try:  # door leaves are not on the site map: the G1 routes round them as they stand
+            leaves = door_leaf_segments(self.stage)
+            cells = block_segments(router, leaves, G1_CLEARANCE_M)
+            log.info("the G1's routes keep clear of %d door leaves (%d map cells)", len(leaves), cells)
+        except Exception as exc:
+            log.warning("could not read the door leaves for the G1's routes: %s", exc)
         w.robot = LeggedBody(old.x, old.y, old.yaw, old.radius, self.profile.max_speed, router,
                              doors=door_points(w.site))
         log.info("the G1 walks (GEAR-SONIC): routes with %.2f m clearance, at most %.1f m/s", G1_CLEARANCE_M,

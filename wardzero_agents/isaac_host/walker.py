@@ -34,6 +34,39 @@ log = logging.getLogger("wardzero.isaac.walker")
 LOG_EVERY_S = 0.5  # sim seconds between robot_walk records
 
 
+DOOR_ROOT = "/World/Fixtures/Doors"
+
+
+def door_leaf_segments(stage, root: str = DOOR_ROOT) -> list:
+    """Each door leaf (a rigid body under the doors) as the floor segment along its long side, from its world-space
+    oriented box, as it stands now. Kit side; ``legged_body.block_segments`` puts them in the G1's router."""
+    from pxr import Gf, Usd, UsdGeom, UsdPhysics
+
+    top = stage.GetPrimAtPath(root)
+    if not top or not top.IsValid():
+        return []
+    cache = UsdGeom.BBoxCache(Usd.TimeCode.Default(), [UsdGeom.Tokens.default_, UsdGeom.Tokens.render])
+    out = []
+    for p in Usd.PrimRange(top):
+        if not p.HasAPI(UsdPhysics.RigidBodyAPI):
+            continue
+        box = cache.ComputeWorldBound(p)
+        r = box.GetRange()
+        if r.IsEmpty():
+            continue
+        m = box.GetMatrix()
+        lo, hi = r.GetMin(), r.GetMax()
+        corners = [m.Transform(Gf.Vec3d(x, y, lo[2])) for x in (lo[0], hi[0]) for y in (lo[1], hi[1])]
+        # the long side in the floor plane: the pair of opposite edge midpoints farthest apart
+        a, b, c, d = ((v[0], v[1]) for v in corners)  # (x0,y0) (x0,y1) (x1,y0) (x1,y1)
+        mid = lambda p, q: ((p[0] + q[0]) / 2, (p[1] + q[1]) / 2)  # noqa: E731
+        s1 = (mid(a, b), mid(c, d))
+        s2 = (mid(a, c), mid(b, d))
+        seg = max((s1, s2), key=lambda s: math.hypot(s[1][0] - s[0][0], s[1][1] - s[0][1]))
+        out.append(seg)
+    return out
+
+
 class SonicWalker:
     def __init__(self, stage, robot_path: str, spawn: tuple[float, float, float], body, *,
                  runlog=None, weights_dir=None, threads: int = 4, on_fall: Optional[Callable[[str], None]] = None):

@@ -35,6 +35,29 @@ def door_points(site) -> list[tuple[float, float]]:
     return out
 
 
+def block_segments(router, segments, clearance: float, step_m: float = 0.05) -> int:
+    """Make every map cell a segment passes through impassable in this router (only this one: the walking G1's),
+    then rebuild its clearance band with ``clearance``. For door leaves: the site map and the NavMesh leave them out,
+    and an open leaf standing into a corridor stopped the gate-test-style walk back from the ward doors. Returns the
+    cells newly blocked."""
+    import numpy as np
+
+    g = router.grid
+    raw = np.array(router._raw, dtype=bool)
+    n0 = int(raw.sum())
+    for (x0, y0), (x1, y1) in segments:
+        k = max(1, int(math.ceil(math.hypot(x1 - x0, y1 - y0) / step_m)))
+        for i in range(k + 1):
+            iy, ix = g.to_cell(x0 + (x1 - x0) * i / k, y0 + (y1 - y0) * i / k)
+            if g.in_grid(iy, ix):
+                raw[iy, ix] = True
+    router._raw = raw.tolist()
+    router._b = router._raw
+    router._near = router._inflate(raw, clearance).tolist()
+    router._cache.clear()
+    return int(raw.sum()) - n0
+
+
 class LeggedBody(RobotBody):
     """``RobotBody``'s interface over a ``RouteFollower``; the pose is written from outside (Isaac)."""
 
