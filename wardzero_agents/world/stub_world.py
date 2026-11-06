@@ -59,12 +59,14 @@ EPS = 1e-9
 ARRIVE_M = 0.05
 REROUTE_M = 0.5  # an approach re-plans its route once the person it follows has moved this far
 LOS_STEP_M = 0.1
+BEARING_NOISE_DEG = 10.0  # the direction of a voice or cough the robot hears is off by up to this
 STATIC_ROLE = "patient_static"
 STATIC_PERSONA = "static_patient"
 
 PERSON_REACH_Z = (0.5, 1.6)
 GIVE_RANGE_M = 1.5
 TAKE_RANGE_M = 1.2
+EXTINGUISHER_PICK_M = 1.0  # a person picks up a free extinguisher this close before using it
 BELL_DB = 65.0  # carries the length of the ward corridor (heard in full to about 28 m)
 ALARM_DB = 100.0
 APPROACH_KINDS = ("approach", "attend")
@@ -1278,6 +1280,17 @@ class StubWorld:
             if f is None:
                 self._fail(p, intent, "no fire in reach")
                 return []
+            # an extinguisher in hand, or a free one within reach (picked up first, e.g. off the wall)
+            ext = next((i for i in self._held(pid) if i.kind == "extinguisher"), None)
+            if ext is None:
+                free = [i for i in self.objects.items.values() if i.kind == "extinguisher" and i.holder is None
+                        and math.hypot(i.x - p.x, i.y - p.y) <= EXTINGUISHER_PICK_M]
+                if not free:
+                    self._fail(p, intent, "no extinguisher in hand")
+                    return []
+                ext = min(free, key=lambda i: math.hypot(i.x - p.x, i.y - p.y))
+                ext.holder, ext.x, ext.y = pid, p.x, p.y
+                self._log_objects(t)
             self._begin(p, intent)
             self._fighting[pid] = f.id
             return []
