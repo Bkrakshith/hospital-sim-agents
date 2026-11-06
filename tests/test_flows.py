@@ -286,3 +286,127 @@ def test_a_run_folder_copy_keeps_the_flow_so_the_run_loads_it(tmp_path):
     again = load_scenario(copied)
     assert again.flow is not None and again.flow.steps == loaded.flow.steps
     assert (tmp_path / "run" / "config" / "ae_waiting.yaml").exists() or again.scenario.flow
+
+
+# ---- steps credit only what the robot did after the step began -----------------------------------------------------
+def _node_by_label(tree: dict, label: str) -> dict:
+    if tree["label"] == label:
+        return tree
+    for c in tree["children"]:
+        try:
+            return _node_by_label(c, label)
+        except KeyError:
+            pass
+    raise KeyError(label)
+
+
+def test_since_step_ignores_speech_before_the_step():
+    flow = Flow(id="x", title="x", steps=[
+        {"wait": {"seconds": 20}},
+        {"expect": {"label": "new words to P1", "when": {"robot_spoke_to": {"person": "P1", "since_step": True}},
+                    "timeout_s": 60}}])
+    e = FlowEngine(flow)
+    t = 0.0
+    while t < 25:
+        said = {"P1": [10.0]} if t >= 10 else {}
+        e.tick(view(t, robot_said_to=set(said), robot_said_at=said))
+        t += 0.5
+    assert _node_by_label(e.tree(), "new words to P1")["state"] == "running"  # the words at t=10 came before it
+    e.tick(view(25.0, robot_said_to={"P1"}, robot_said_at={"P1": [10.0, 25.0]}))
+    node = _node_by_label(e.tree(), "new words to P1")
+    assert node["state"] == "met" and node["t"] == 25.0
+    # without since_step any words count, as before
+    v = view(30.0, robot_said_to={"P1"}, robot_said_at={"P1": [10.0]})
+    assert holds({"robot_spoke_to": "P1"}, v) and holds({"robot_spoke_to": {"person": "P1"}}, v)
+    assert holds({"robot_spoke_to": {"person": "P1", "since_step": True}}, v, t0=5.0)
+    assert not holds({"robot_spoke_to": {"person": "P1", "since_step": True}}, v, t0=20.0)
+    assert not holds({"robot_spoke_to": {"person": "anyone", "since_step": True}}, v, t0=20.0)
+    assert holds({"robot_spoke_to": "anyone"}, v)
+
+
+def test_robot_did_keeps_reading_entries_without_a_time():
+    v = view(10.0, robot_did=[("guide", "P1"), (4.0, "tell", "P1")])
+    assert holds({"robot_did": {"action": "guide", "about": "P1"}}, v)
+    assert not holds({"robot_did": {"action": "guide", "about": "P1", "since_step": True}}, v, t0=0.0)
+    assert holds({"robot_did": {"action": "tell", "about": "P1", "since_step": True}}, v, t0=4.0)
+    assert not holds({"robot_did": {"action": "tell", "about": "P1", "since_step": True}}, v, t0=4.5)
+
+
+def test_since_step_is_checked_by_the_schema():
+    ok = {"robot_did": {"action": "guide", "about": "V1", "since_step": True}}
+    Flow(id="x", title="x", steps=[{"expect": {"label": "l", "when": ok, "timeout_s": 5}}])
+    Flow(id="x", title="x", steps=[{"expect": {"label": "l", "when": {"robot_spoke_to": {"person": "V1", "since_step": True}},
+                                               "timeout_s": 5}}])
+    for bad in ({"robot_did": {"action": "guide", "since_step": "yes"}},
+                {"robot_spoke_to": {"person": "V1", "since_step": 1}},
+                {"robot_spoke_to": {"since_step": True}},
+                {"spoke_to_robot": {"person": "V1", "since_step": True}},
+                {"robot_near": {"person": "V1", "within_m": 2, "since_step": True}}):
+        with pytest.raises(ValueError):
+            Flow(id="x", title="x", steps=[{"expect": {"label": "l", "when": bad, "timeout_s": 5}}])
+    f = Flow(id="x", title="x", steps=[{"expect": {"label": "l", "when": {"robot_spoke_to": {"person": "Q9"}},
+                                                   "timeout_s": 5}}])
+    with pytest.raises(FlowError, match="no person 'Q9'"):
+        fit_scenario(f, people={"P1"}, cards=DECK, rooms=SITE.rooms)
+    assert prune_flow(f, ["P1"]).steps[0] != f.steps[0]  # a wait on a missing person is dropped
+
+
+def _director(tmp_path, preset="ae_waiting"):
+    from wardzero_agents.contracts import Roster, RosterEntry
+    from wardzero_agents.ros.director_node import DirectorService
+    from wardzero_agents.runlog import RunLog
+
+    class Out:
+        def publish(self, kind, obj):
+            pass
+
+    loaded = preset_to_scenario(PRESETS[preset], CONFIG, tmp_path / "staged")
+    d = DirectorService(loaded, RunLog(tmp_path / "run"), Out(), run_id="r1")
+    d.on_roster(Roster(t=0, people=[RosterEntry(id=i.person_id, persona=i.persona_id, display_name=i.display_name)
+                                    for i in loaded.instances]))
+    for c in PRESETS[preset].characters:
+        d.on_status(Status(person=c.id, t=0.0, x=c.x, y=c.y, yaw=0, posture="standing", progress=0, state="idle"))
+    return d
+
+
+def test_unanswered_press_call_is_not_an_alert(tmp_path):
+    call = {"robot_did": {"action": "press_call"}}
+    d = _director(tmp_path / "a")
+    d.ingest("robot_tasks", {"kind": "result", "id": "a1", "action": "press_call", "ok": True, "reason": "unanswered",
+                             "t": 5.0})
+    assert not holds(call, d.view(6.0))
+    for i, reason in enumerate(("answered", "ok", None)):
+        d = _director(tmp_path / f"b{i}")
+        rec = {"kind": "result", "id": "a1", "action": "press_call", "ok": True, "t": 5.0}
+        if reason is not None:
+            rec["reason"] = reason
+        d.ingest("robot_tasks", rec)
+        assert holds(call, d.view(6.0)), reason
+        assert holds({"robot_did": {"action": "press_call", "since_step": True}}, d.view(6.0), t0=5.0)
+        assert not holds({"robot_did": {"action": "press_call", "since_step": True}}, d.view(6.0), t0=5.5)
+
+
+def test_guided_arrival_is_recorded(tmp_path):
+    d = _director(tmp_path)
+    d.ingest("robot_tasks", {"t": 3.0, "kind": "guide", "event": "start", "id": "a1", "person": "P2", "place": "x"})
+    d.ingest("robot_tasks", {"t": 9.0, "kind": "guide", "event": "end", "id": "a1", "person": "P2",
+                             "reason": "arrived"})
+    d.ingest("robot_tasks", {"t": 12.0, "kind": "guide", "event": "end", "id": "a2", "person": "P1",
+                             "reason": "left_behind"})
+    assert [(a, p) for _, a, p in d.robot_did] == [("guide", "P2"), ("guided", "P2")]
+    assert d.robot_did[1][0] == 9.0
+    v = d.view(10.0)
+    assert holds({"robot_did": {"action": "guided", "about": "P2"}}, v)
+    assert not holds({"robot_did": {"action": "guided", "about": "P1"}}, v)
+
+
+def test_the_director_keeps_when_the_robot_spoke_to_each_person(tmp_path):
+    d = _director(tmp_path)
+    d.ingest("audio", {"source_kind": "robot", "addressee": "P2", "text": "Hello", "t": 2.0})
+    d.ingest("audio", {"source_kind": "robot", "addressee": "P2", "text": "This way", "t": 8.0})
+    assert d.robot_said_to == {"P2"}  # the set view old callers read
+    assert d.robot_said_at == {"P2": [2.0, 8.0]}
+    v = d.view(9.0)
+    assert v.robot_said_to == {"P2"} and v.robot_said_at == {"P2": [2.0, 8.0]}
+    assert holds({"robot_spoke_to": {"person": "P2", "since_step": True}}, v, t0=8.0)
+    assert not holds({"robot_spoke_to": {"person": "P2", "since_step": True}}, v, t0=8.5)
