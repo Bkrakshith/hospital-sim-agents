@@ -88,6 +88,7 @@ class RouteFollower:
         self.settle_s, self.correct_gain, self.retarget = settle_s, correct_gain, retarget
         self.lookahead = lookahead
         self.slow_near_doors = slow_near_doors
+        self.door_lines: list = []  # swinging doors ((ax, ay), (bx, by)): routes pass straight through a leaf
         self.path: list[tuple[float, float]] = []
         self._prev: Optional[tuple[float, float]] = None  # start of the current route segment
         self.final_yaw: Optional[float] = None
@@ -116,6 +117,9 @@ class RouteFollower:
         if route is None:
             self.cancel()
             return False
+        if self.door_lines:
+            free = getattr(self.router, "is_free", None)
+            route = through_leaves(route, self.door_lines, free)
         self.set_route(route[1:] or [tuple(goal[:2])], final_yaw)
         self._prev = (float(start[0]), float(start[1]))
         return True
@@ -251,6 +255,63 @@ class RouteFollower:
         if s2 >= 1.0:
             return bx, by
         return ax + s2 * dx, ay + s2 * dy
+
+
+DOOR_BEFORE_M = 2.0  # door spike: a straight segment through the centre of one leaf, from about 2 m before the door
+DOOR_AFTER_M = 1.5
+SINGLE_LEAF_MAX_M = 1.3  # a door narrower than this has one leaf
+
+
+def _seg_cross(p, q, a, b):
+    """Where segment p-q crosses segment a-b: (t along p-q, u along a-b), or None."""
+    rx, ry = q[0] - p[0], q[1] - p[1]
+    sx, sy = b[0] - a[0], b[1] - a[1]
+    den = rx * sy - ry * sx
+    if abs(den) < 1e-12:
+        return None
+    t = ((a[0] - p[0]) * sy - (a[1] - p[1]) * sx) / den
+    u = ((a[0] - p[0]) * ry - (a[1] - p[1]) * rx) / den
+    return (t, u) if 0.0 <= t <= 1.0 and 0.0 <= u <= 1.0 else None
+
+
+def through_leaves(route, doors, free=None, before: float = DOOR_BEFORE_M, after: float = DOOR_AFTER_M):
+    """A route (start first) with every crossing of a swinging door replaced by a straight pass through the centre of
+    the leaf nearer the crossing: a point ``before`` metres ahead of the door line, then ``after`` beyond it (shorter
+    when ``free(x, y)`` says the point is blocked). doors: ((ax, ay), (bx, by)) door lines."""
+    if not route or not doors:
+        return list(route or [])
+    out = [tuple(route[0])]
+    for q in route[1:]:
+        p = out[-1]
+        hits = []
+        for a, b in doors:
+            c = _seg_cross(p, q, a, b)
+            if c is not None:
+                hits.append((c[0], c[1], a, b))
+        for t, u, a, b in sorted(hits):
+            w = math.hypot(b[0] - a[0], b[1] - a[1])
+            if w < 1e-6:
+                continue
+            if w <= SINGLE_LEAF_MAX_M:
+                uc = 0.5
+            else:
+                uc = 0.25 if u < 0.5 else 0.75
+            cx, cy = a[0] + uc * (b[0] - a[0]), a[1] + uc * (b[1] - a[1])
+            nx, ny = -(b[1] - a[1]) / w, (b[0] - a[0]) / w
+            if (q[0] - p[0]) * nx + (q[1] - p[1]) * ny < 0:
+                nx, ny = -nx, -ny
+            pts = []
+            for dist, sign in ((before, -1.0), (after, 1.0)):
+                d = dist
+                while d > 0.4:
+                    x, y = cx + sign * d * nx, cy + sign * d * ny
+                    if free is None or free(x, y):
+                        break
+                    d -= 0.25
+                pts.append((cx + sign * max(d, 0.4) * nx, cy + sign * max(d, 0.4) * ny))
+            out += pts
+        out.append(tuple(q))
+    return out
 
 
 class UnicycleDrive:

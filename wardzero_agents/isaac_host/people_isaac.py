@@ -127,8 +127,9 @@ class IraAgent:
     """``people.BehaviorApi`` on one IBehaviorAgent."""
 
     def __init__(self, agent, prim_path: str, carb_module=None, bedside=None):
-        import carb
-        self._carb = carb_module or carb
+        if carb_module is None:
+            import carb as carb_module
+        self._carb = carb_module
         self.a = agent
         self.path = prim_path
         self.bedside = bedside  # (x, y, face_x, face_y) for a patient in a bed: hide and show move them under the floor
@@ -181,6 +182,25 @@ class IraAgent:
             return ""
 
     def set_speed(self, v):
+        """The walking speed the controller asks for (m/s); near a door leaf it is capped (set_door_slow)."""
+        self._want = float(v)
+        self._apply_speed()
+
+    def set_door_slow(self, on: bool) -> None:
+        """Within 1 m of a door leaf a person walks at 0.8 m/s at most (door spike), then back to what was asked."""
+        self._door_slow = bool(on)
+        self._apply_speed()
+
+    def _apply_speed(self) -> None:
+        from .doors import SLOW_SPEED
+
+        want = getattr(self, "_want", None)
+        if want is None:
+            try:
+                want = self._want = float(self.a.get_speed())
+            except Exception:
+                want = 1.5
+        v = min(want, SLOW_SPEED) if getattr(self, "_door_slow", False) else want
         try:
             self.a.set_speed(float(v))
         except Exception as exc:

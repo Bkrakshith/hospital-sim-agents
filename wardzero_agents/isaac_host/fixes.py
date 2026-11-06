@@ -8,13 +8,12 @@
    the stage has no door leaf there). Fix: every Exclude volume that overlaps a bedroom, nurse-base or A&E treatment room that the run
    keeps is deactivated in the wrapper layer *before* the stage opens (deactivating it after the open has no effect on a
    bake; the NavMesh reads the volumes as they appear).
-2. A door whose leaves are posed with a rotate op. ``/World/Fixtures/Doors/Compartment`` (the 4 m link between the lobby
-   and the ward) is the only door built differently from the rest: its leaf rigid bodies carry ``xformOp:rotateZ`` (-90 and
-   270 degrees) while the revolute joints that hold them assume leaf frames without it. PhysX then gives both leaves a
-   non-finite pose on the first step ("Invalid PhysX transform detected for .../Compartment/Leaf0" and "Illegal
-   BroadPhaseUpdateData - non-finite bounds", hundreds of times in a full-site run). Fix: such leaves are made static
-   (``physics:rigidBodyEnabled = False``) in the wrapper layer. They stay where they are drawn, swung open against the
-   wall, so the link stays passable (the site map gives the link no fire rating and no door).
+2. Doors. A door on the run's routes (``doors.route_doors``) swings: ``doors_isaac`` makes it a hinged pair with a
+   closer before play. Every other door's leaf bodies are made static (``physics:rigidBodyEnabled = False``) in the
+   wrapper layer: they stay where they are drawn, held open, and only need to be passable. The baked collision USD's
+   copies of the leaves (their sign meshes) and the three Junction side panels that sit on ``Compartment/Leaf1``'s
+   hinge axis are deactivated: the panels' overlap with that leaf's hinge end, not its rotate op, is what gave the
+   Compartment pair non-finite poses (door spike, ``research_notes/isaac_host/door_spike_report.md``).
 
 The selection logic is pure Python (unit-tested); the stage reads need pxr, so they import it inside the function.
 """
@@ -22,7 +21,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import TYPE_CHECKING, Mapping
+from typing import TYPE_CHECKING, Iterable, Mapping, Optional
 
 from .stage import Box, CullPlan, intersects, room_rect
 
@@ -35,7 +34,6 @@ NAV_PARENT = "/World/Hospital/Navmesh"
 FREE_USES = ("bedroom", "nurse_base", "ae_treatment")  # rooms that people must be able to walk into (ward and A&E bays)
 MIN_OVERLAP_M = 0.3  # an exclude that overlaps a room by less than this (a wall's thickness) is left alone
 DOOR_ROOT = "/World/Fixtures/Doors"  # door leaves only: lifts and call buttons are not touched
-KNOWN_ROTATED = ("/World/Fixtures/Doors/Compartment/Leaf0", "/World/Fixtures/Doors/Compartment/Leaf1")
 
 
 def _overlap(a: Box, r) -> float:
@@ -52,10 +50,23 @@ def nav_volumes_off(volumes: Mapping[str, tuple[str, Box]], site: "Site", plan: 
                   if kind == "Exclude" and any(_overlap(box, r) >= MIN_OVERLAP_M for r in rooms))
 
 
-def rotated_leaves(bodies: Mapping[str, bool]) -> list[str]:
-    """Door-leaf rigid bodies (path -> has a rotate xform op) that PhysX cannot hold to their joints: the ones with a
-    rotate op. Only prims under ``DOOR_ROOT`` count."""
-    return sorted(p for p, rotated in bodies.items() if rotated and p.startswith(DOOR_ROOT + "/"))
+def static_leaves(bodies: Mapping[str, bool], swinging: Iterable[str]) -> list[str]:
+    """The door-leaf rigid bodies (paths under ``DOOR_ROOT*``; the bool is unused) of every door that does not swing.
+    A door's name is the prim right under its Doors scope."""
+    swing = set(swinging)
+    out = []
+    for p in bodies:
+        parts = p.split("/")
+        if len(parts) >= 6 and p.startswith(DOOR_ROOT) and parts[3].startswith("Doors") and parts[5].startswith("Leaf"):
+            if parts[4] not in swing:
+                out.append(p)
+    return sorted(out)
+
+
+def baked_collision_off(names: Iterable[str], colliders_root: str = "/World/BakedColliders") -> list[str]:
+    """The baked collision prims (paths as mounted in the stage) to deactivate: leaf copies and the Junction panels."""
+    from .doors import baked_off
+    return [f"{colliders_root}/{n}" for n in baked_off(names)]
 
 
 # ---- reading the source stage (pxr) -----------------------------------------------------------------
@@ -80,33 +91,46 @@ def read_nav_volumes(st) -> dict[str, tuple[str, Box]]:
 
 
 def read_door_bodies(st) -> dict[str, bool]:
-    """Every rigid body under /World/Fixtures/Doors of an opened pxr stage: does its xform stack have a rotate op?"""
+    """Every rigid body under /World/Fixtures/Doors and Doors1 of an opened pxr stage: does its xform stack have a
+    rotate op? (kept for the record; the static rule no longer looks at it)"""
     from pxr import Usd, UsdGeom, UsdPhysics
 
-    root = st.GetPrimAtPath(DOOR_ROOT)
     out: dict[str, bool] = {}
-    if not root:
-        return out
-    for p in Usd.PrimRange(root):
-        if p.HasAPI(UsdPhysics.RigidBodyAPI):
-            ops = UsdGeom.Xformable(p).GetOrderedXformOps()
-            out[str(p.GetPath())] = any("rotate" in op.GetOpName() or "orient" in op.GetOpName() for op in ops)
+    for top in (DOOR_ROOT, DOOR_ROOT + "1"):
+        root = st.GetPrimAtPath(top)
+        if not root:
+            continue
+        for p in Usd.PrimRange(root):
+            if p.HasAPI(UsdPhysics.RigidBodyAPI):
+                ops = UsdGeom.Xformable(p).GetOrderedXformOps()
+                out[str(p.GetPath())] = any("rotate" in op.GetOpName() or "orient" in op.GetOpName() for op in ops)
     return out
 
 
-def stage_fixes(site: "Site", plan: CullPlan, stage_path: Path) -> tuple[list[str], dict[str, dict[str, object]]]:
-    """(prims to deactivate, {prim: {attribute: value}} to author) for the wrapper layer."""
+def read_baked_names(collision_path: Optional[Path]) -> list[str]:
+    """The names of the prims right under the collision USD's default prim ([] without one)."""
+    if collision_path is None or not Path(collision_path).exists():
+        return []
+    from pxr import Usd
+
+    st = Usd.Stage.Open(str(collision_path))
+    dp = st.GetDefaultPrim()
+    return [c.GetName() for c in dp.GetChildren()] if dp else []
+
+
+def stage_fixes(site: "Site", plan: CullPlan, stage_path: Path, collision_path: Optional[Path] = None,
+                swinging: Iterable[str] = ()) -> tuple[list[str], dict[str, dict[str, object]]]:
+    """(prims to deactivate, {prim: {attribute: value}} to author) for the wrapper layer. ``swinging``: the doors
+    ``doors_isaac`` will hinge (their leaves stay dynamic)."""
     from pxr import Usd
 
     # One more open of the source stage (about a second): ``stage.compute_cull`` opens it too, but it returns only the
     # list of prims to cull and the two passes want different things, so they are not merged.
     st = Usd.Stage.Open(str(stage_path))
     off = nav_volumes_off(read_nav_volumes(st), site, plan)
-    authored = {p: {"physics:rigidBodyEnabled": False} for p in rotated_leaves(read_door_bodies(st))}
-    unexpected = [p for p in authored if p not in KNOWN_ROTATED]
-    if unexpected:
-        log.warning("the door-leaf fix changed more than the known Compartment pair: %s", ", ".join(unexpected))
-    log.info("stage fixes: %d NavMesh exclude volume(s) off (%s), %d door leaf body(ies) made static (%s)",
-             len(off), ", ".join(Path(p).name for p in off) or "none", len(authored),
-             ", ".join(Path(p).parent.name + "/" + Path(p).name for p in authored) or "none")
-    return off, authored
+    baked = baked_collision_off(read_baked_names(collision_path))
+    authored = {p: {"physics:rigidBodyEnabled": False} for p in static_leaves(read_door_bodies(st), swinging)}
+    log.info("stage fixes: %d NavMesh exclude volume(s) off (%s); %d baked leaf/panel collider(s) off; %d door leaf "
+             "body(ies) static; swinging doors: %s", len(off), ", ".join(Path(p).name for p in off) or "none",
+             len(baked), len(authored), ", ".join(swinging) or "none")
+    return off + baked, authored

@@ -176,6 +176,8 @@ class IsaacHost:
         self.robot_usd: Optional[Path] = None
         self.profile = None  # the robot's profile as this host runs it (host_profile)
         self.cams = None  # recording.HeadedCameras: the headed window's named cameras
+        self.swinging: list[str] = []  # site doors on the run's routes: hinged with a closer (doors_isaac)
+        self.doors = None  # doors_isaac.IsaacDoors
         self.recorder: Optional[recording.Recorder] = None
         self.bag: Optional[BagRecorder] = None
         self.startup: dict = {}
@@ -224,8 +226,12 @@ class IsaacHost:
     def open_stage(self) -> None:  # 2
         from . import fixes
 
+        from .doors import route_doors
+
         off = stage_mod.compute_cull(self.plan, self.args.stage, self.args.collision)
-        fix_off, authored = fixes.stage_fixes(self.loaded.site, self.plan, self.args.stage)
+        self.swinging = route_doors(self.loaded.site, None if self.plan.full else self.plan.rects)
+        fix_off, authored = fixes.stage_fixes(self.loaded.site, self.plan, self.args.stage, self.args.collision,
+                                              self.swinging)
         wrapper = stage_mod.write_wrapper(self.run_dir / "stage.usda", off + fix_off, self.args.stage, authored)
         self.stage = stage_mod.open_stage(self.app, wrapper)
         self.startup["culled_prims"] = len(off)
@@ -244,6 +250,10 @@ class IsaacHost:
             self.startup["physics_hz"] = hz
 
         stage_mod.add_collision(self.stage, self.args.collision)
+        from .doors_isaac import IsaacDoors
+
+        self.doors = IsaacDoors(self.stage)
+        self.doors.author(self.swinging)  # before the NavMesh bake and play: closed leaves, closer, out of the NavMesh
         self._updates(2)
         self._mark("physics")
 
@@ -267,6 +277,9 @@ class IsaacHost:
         self.people.spawn(self.svc.world, self.app)
         self.bodies.spawner = self.people.spawn_runtime
         self._updates(5)
+        if getattr(self, "doors", None) is not None:
+            from .doors import SPARE_CAPSULES
+            self.doors.add_capsules(len(self.people.skelroots) + SPARE_CAPSULES)
         self._mark("people")
 
     def spawn_objects(self) -> None:  # 5b: props before the NavMesh bake (kinematic bodies stay out of it)
@@ -280,6 +293,8 @@ class IsaacHost:
 
     def bind_people(self) -> None:  # 8b: after play the Behavior System has the agents; they get their controllers
         self.people.bind(self.app, self.bodies, self.svc.world, fps=self.args.fps)
+        if getattr(self, "doors", None) is not None:
+            self.doors.bind_agents(self.bodies.controllers)
         self._mark("people_bound")
 
     def bake_navmesh(self) -> None:  # 6
@@ -307,6 +322,8 @@ class IsaacHost:
         tl.play()
         self._updates(3)  # the Behavior System registers its obstacles now
         self.timeline = tl
+        if getattr(self, "doors", None) is not None:
+            self.doors.start(1.0 / (getattr(self.args, "physics_hz", None) or 60))
         self._mark("play")
 
     def prepare_robot(self) -> None:
@@ -361,7 +378,7 @@ class IsaacHost:
         old = w.robot
         router = Router(w.site.grid, clearance=G1_CLEARANCE_M)
         try:  # door leaves are not on the site map: the G1 routes round them as they stand
-            leaves = door_leaf_segments(self.stage)
+            leaves = door_leaf_segments(self.stage, skip=self.swinging)  # swinging doors are walked through
             cells = block_segments(router, leaves, G1_CLEARANCE_M)
             log.info("the G1's routes keep clear of %d door leaves (%d map cells)", len(leaves), cells)
         except Exception as exc:
@@ -373,6 +390,8 @@ class IsaacHost:
             log.info("the G1's routes keep out of %d forbidden areas", len(areas))
         w.robot = LeggedBody(old.x, old.y, old.yaw, old.radius, self.profile.max_speed, router,
                              doors=door_points(w.site))
+        swing = set(self.swinging)  # the G1 pushes these open: straight through the centre of a leaf (door spike)
+        w.robot.follower.door_lines = [(tuple(d["a"]), tuple(d["b"])) for d in w.site.doors if d.get("id") in swing]
         log.info("the G1 walks (GEAR-SONIC): routes with %.2f m clearance, at most %.1f m/s", G1_CLEARANCE_M,
                  self.profile.max_speed)
 
@@ -477,6 +496,7 @@ class IsaacHost:
         if walker is not None:
             walker.end_frame()
             self._check_steps(walker)
+        self._doors_frame()
         self._test_viewport_shot()
 
     def _check_steps(self, walker) -> None:
@@ -559,7 +579,32 @@ class IsaacHost:
         finally:
             vram.close()
             self._write_walker()
+            if getattr(self, "doors", None) is not None:
+                try:
+                    self.runlog.write("host", {"kind": "doors", "t": round(float(self.svc.t), 3),
+                                               **self.doors.summary()})
+                    log.info("doors: %s", self.doors.summary())
+                except Exception:
+                    log.exception("could not write the door summary")
             self.finish_recording()
+
+    def _doors_frame(self) -> None:
+        doors = getattr(self, "doors", None)
+        if doors is None or getattr(self, "svc", None) is None or self.bodies is None:
+            return
+        w = self.svc.world
+        poses = {}
+        for pid, ctrl in self.bodies.controllers.items():
+            p = w.people.get(pid)
+            if p is None or p.posture in ("gone", "lying") or getattr(ctrl, "in_bed", False):
+                poses[pid] = None
+                continue
+            try:
+                x, y, _ = ctrl.api.pose()
+                poses[pid] = (x, y)
+            except Exception:
+                poses[pid] = None
+        doors.end_frame(poses, self.bodies.controllers, float(self.svc.t))
 
     def _write_walker(self) -> None:
         walker = getattr(self.robot, "walker", None)

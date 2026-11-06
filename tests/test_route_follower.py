@@ -217,3 +217,20 @@ def test_the_follower_imports_no_simulator():
     out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True,
                          cwd=Path(__file__).resolve().parents[1])
     assert out.stdout.strip() == "[]"
+
+
+def test_a_route_through_a_swinging_door_passes_straight_through_one_leaf():
+    door = ((6.0, 2.0), (6.0, 4.0))  # a 2 m double door on x = 6
+    route = [(2.0, 3.0), (10.0, 3.0)]  # the router's line goes through the meeting stiles at y = 3
+    out = rf.through_leaves(route, [door])
+    assert out[0] == (2.0, 3.0) and out[-1] == (10.0, 3.0)
+    pre, post = out[1], out[2]
+    assert pre[0] == pytest.approx(4.0) and post[0] == pytest.approx(7.5)  # 2 m before, 1.5 m after
+    assert pre[1] == pytest.approx(post[1]) and pre[1] in (pytest.approx(2.5), pytest.approx(3.5))  # a leaf's centre
+    back = rf.through_leaves([(10.0, 2.6), (2.0, 2.6)], [door])
+    assert back[1] == (pytest.approx(8.0), pytest.approx(2.5)) and back[2][0] == pytest.approx(4.5)
+    single = rf.through_leaves([(2.0, 3.0), (10.0, 3.2)], [((6.0, 2.5), (6.0, 3.5))])
+    assert single[1][1] == pytest.approx(3.0)  # one leaf: its centre
+    assert rf.through_leaves(route, []) == route
+    blocked = rf.through_leaves(route, [door], free=lambda x, y: x > 4.6)
+    assert blocked[1][0] >= 4.6  # shortened when the approach point is blocked

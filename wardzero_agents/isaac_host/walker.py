@@ -37,18 +37,22 @@ LOG_EVERY_S = 0.5  # sim seconds between robot_walk records
 DOOR_ROOT = "/World/Fixtures/Doors"
 
 
-def door_leaf_segments(stage, root: str = DOOR_ROOT) -> list:
+def door_leaf_segments(stage, root: str = DOOR_ROOT, skip=()) -> list:
     """Each door leaf (a rigid body under the doors) as the floor segment along its long side, from its world-space
-    oriented box, as it stands now. Kit side; ``legged_body.block_segments`` puts them in the G1's router."""
+    oriented box, as it stands now. Kit side; ``legged_body.block_segments`` puts them in the G1's router. Doors named
+    in ``skip`` swing (``doors_isaac``): the G1 walks through them, pushing the leaf."""
     from pxr import Gf, Usd, UsdGeom, UsdPhysics
 
-    top = stage.GetPrimAtPath(root)
-    if not top or not top.IsValid():
-        return []
     cache = UsdGeom.BBoxCache(Usd.TimeCode.Default(), [UsdGeom.Tokens.default_, UsdGeom.Tokens.render])
     out = []
-    for p in Usd.PrimRange(top):
-        if not p.HasAPI(UsdPhysics.RigidBodyAPI):
+    skip = set(skip)
+    prims = []
+    for r in (root, root + "1"):
+        top = stage.GetPrimAtPath(r)
+        if top and top.IsValid():
+            prims += [p for p in Usd.PrimRange(top) if p.GetParent().GetName() not in skip]
+    for p in prims:
+        if not p.HasAPI(UsdPhysics.RigidBodyAPI) or not p.GetName().startswith("Leaf"):
             continue
         box = cache.ComputeWorldBound(p)
         r = box.GetRange()

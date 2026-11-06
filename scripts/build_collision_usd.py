@@ -14,7 +14,11 @@ space, so people and robots meet exactly the walls, doors, lifts, desks and furn
 Left out, on purpose:
 - /World/Wing (the operating suite, 18.8 M triangles);
 - floor slabs (flat meshes whose top is within 3 cm of z = 0): the physics ground plane is the floor;
-- the waiting-chair rows SM_Chair_02a* (people sit on them) and the automatic sliding entrance doors (GlassDoor*).
+- the waiting-chair rows SM_Chair_02a* (people sit on them) and the automatic sliding entrance doors (GlassDoor*);
+- with --skip-door-leaves: the hinged door leaves' meshes (/World/Fixtures/Doors*/<door>/Leaf*) and the Junction side
+  panels that overlap Compartment/Leaf1's hinge. The Isaac host swings the leaves on a run's routes with physics, and a
+  static copy would block them. (The host also switches these prims off in its wrapper layer, so an older
+  collision USD works too.)
 No textures or render materials are copied; one physics material (painted wall / vinyl floor) is bound to everything.
 """
 
@@ -30,6 +34,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 AGENTS = os.path.dirname(HERE)
 REPO = os.environ.get("HG1_ROOT") or os.path.dirname(AGENTS)
 SKIP = re.compile(r"^/World/Wing|SM_Chair_02a|GlassDoor")
+SKIP_DOORS = re.compile(r"^/World/Fixtures/Doors\d*/[^/]+/Leaf|Junction_CompartmentSidePanel_b[0-2]$")
 FLOOR_TOP = 0.03
 
 
@@ -37,6 +42,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--stage", default=os.path.join(REPO, "hospital-sim-env", "isaac", "usd", "hospital_g1.usd"))
     ap.add_argument("--out", default=os.path.join(AGENTS, "assets", "hospital_collision.usd"))
+    ap.add_argument("--skip-door-leaves", action="store_true",
+                    help="leave out the hinged door leaves (and the panels on Compartment/Leaf1's hinge)")
     a = ap.parse_args()
     t0 = time.time()
     src = Usd.Stage.Open(a.stage)
@@ -57,7 +64,7 @@ def main():
         if not p.IsA(UsdGeom.Mesh):
             continue
         path = str(p.GetPath())
-        if SKIP.search(path):
+        if SKIP.search(path) or (a.skip_door_leaves and SKIP_DOORS.search(path)):
             skipped_named += 1
             continue
         if UsdGeom.Imageable(p).ComputeVisibility() == UsdGeom.Tokens.invisible:

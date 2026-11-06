@@ -53,28 +53,35 @@ def test_an_exclude_that_only_touches_a_wall_stays(v1):
     assert fixes.nav_volumes_off(sliver, v1.site, CullPlan()) == []
 
 
-def test_door_leaves_posed_with_a_rotate_op_are_made_static():
-    bodies = {"/World/Fixtures/Doors/Compartment/Leaf0": True,  # rotateZ on a body the joint expects unrotated: NaN pose
-              "/World/Fixtures/Doors/Compartment/Leaf1": True,
-              "/World/Fixtures/Doors/E_Compartment/Leaf0": False,
-              "/World/Fixtures/Doors/E_Compartment/Base": False}
-    assert fixes.rotated_leaves(bodies) == ["/World/Fixtures/Doors/Compartment/Leaf0", "/World/Fixtures/Doors/Compartment/Leaf1"]
+def test_leaves_of_doors_that_do_not_swing_are_made_static():
+    bodies = {"/World/Fixtures/Doors/Compartment/Leaf0": True, "/World/Fixtures/Doors/Compartment/Leaf1": True,
+              "/World/Fixtures/Doors/E_Compartment/Leaf0": False, "/World/Fixtures/Doors/E_Compartment/Base": False,
+              "/World/Fixtures/Doors1/E_Stair/Leaf0": False, "/World/Fixtures/Lifts/Lift1/Car": True,
+              "/World/Fixtures/DoorsX/Leaf0": True}
+    assert fixes.static_leaves(bodies, ["E_Compartment", "E_Stair"]) == [
+        "/World/Fixtures/Doors/Compartment/Leaf0", "/World/Fixtures/Doors/Compartment/Leaf1"]
+    assert "/World/Fixtures/Doors1/E_Stair/Leaf0" in fixes.static_leaves(bodies, [])
 
 
-def test_only_door_leaves_are_touched():
-    bodies = {"/World/Fixtures/Doors/Compartment/Leaf0": True, "/World/Fixtures/Lifts/Lift1/Car": True,
-              "/World/Fixtures/Calls/MainCall/fx_button": True, "/World/Fixtures/DoorsX/Leaf0": True}
-    assert fixes.rotated_leaves(bodies) == ["/World/Fixtures/Doors/Compartment/Leaf0"]
+def test_baked_leaf_copies_and_the_junction_panels_leave_the_collision():
+    names = ["c02528_World_Fixtures_Doors_Compartment_Leaf0_SignP", "c02600_World_Fixtures_Doors1_E_Stair_Leaf0_SignN",
+             "c01698_World_BuildingMods_Partitions_Junction_CompartmentSidePanel_b0",
+             "c01701_World_BuildingMods_Partitions_Junction_CompartmentSidePanel_b3", "c00001_World_Hospital_Wall"]
+    assert fixes.baked_collision_off(names) == [
+        "/World/BakedColliders/c01698_World_BuildingMods_Partitions_Junction_CompartmentSidePanel_b0",
+        "/World/BakedColliders/c02528_World_Fixtures_Doors_Compartment_Leaf0_SignP",
+        "/World/BakedColliders/c02600_World_Fixtures_Doors1_E_Stair_Leaf0_SignN"]
 
 
-def test_more_than_the_known_pair_is_a_warning(caplog, monkeypatch, v1):
+def test_stage_fixes_returns_the_baked_colliders_and_static_leaves(monkeypatch, v1):
     monkeypatch.setattr(fixes, "read_nav_volumes", lambda st: {})
     monkeypatch.setattr(fixes, "read_door_bodies", lambda st: {"/World/Fixtures/Doors/Other/Leaf0": True,
-                                                              "/World/Fixtures/Doors/Compartment/Leaf0": True})
+                                                              "/World/Fixtures/Doors/E_Compartment/Leaf0": False})
+    monkeypatch.setattr(fixes, "read_baked_names", lambda p: ["c1_World_Fixtures_Doors_Other_Leaf0_SignP"])
     import sys, types
     pxr = types.ModuleType("pxr")
     pxr.Usd = types.SimpleNamespace(Stage=types.SimpleNamespace(Open=lambda p: None))
     monkeypatch.setitem(sys.modules, "pxr", pxr)
-    with caplog.at_level("WARNING"):
-        fixes.stage_fixes(v1.site, CullPlan(), Path("x.usd"))
-    assert any("Other/Leaf0" in r.getMessage() and r.levelname == "WARNING" for r in caplog.records)
+    off, authored = fixes.stage_fixes(v1.site, CullPlan(), Path("x.usd"), Path("c.usd"), ["E_Compartment"])
+    assert off == ["/World/BakedColliders/c1_World_Fixtures_Doors_Other_Leaf0_SignP"]
+    assert authored == {"/World/Fixtures/Doors/Other/Leaf0": {"physics:rigidBodyEnabled": False}}
