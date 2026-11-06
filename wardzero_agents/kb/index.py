@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from ..mind.prompts import persona_card
+from ..mind.prompts import persona_card, robot_role_of
 from .chunker import Chunk, chunk_markdown
 from .embed import Embedder
 
@@ -121,7 +121,8 @@ class KnowledgeBase:
 
 def _persona_text(instance: "PersonInstance", loaded: "LoadedScenario") -> str:
     """The same persona card the mind is given."""
-    return persona_card(instance, loaded.area, loaded.site, loaded.scenario.known_places)
+    return persona_card(instance, loaded.area, loaded.site, loaded.scenario.known_places,
+                        robot_role=robot_role_of(loaded.scenario))
 
 
 def _area_text(loaded: "LoadedScenario") -> str:

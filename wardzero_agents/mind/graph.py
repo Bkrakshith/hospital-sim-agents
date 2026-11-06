@@ -15,7 +15,7 @@ from ..llm.gateway import LLMRequest
 from ..memory.longterm import render_memory, robot_tag
 from .prompts import (
     INTENT_KINDS, KB_HEADER, MAX_MEMORIES, MOODS, SUMMARY_FIXED, SUMMARY_SCHEMA,
-    SYSTEM_FIXED, decision_schema, persona_card, render_situation, role_kinds, system_fixed)
+    SYSTEM_FIXED, decision_schema, persona_card, render_situation, robot_role_of, role_kinds, system_fixed)
 
 if TYPE_CHECKING:
     from ..config.models import Sign, WaitingArea
@@ -164,7 +164,8 @@ def _robot_tag_for(text: str, robot_id: str) -> Optional[str]:
 def build_graph(deps: "MindDeps", checkpointer: Any = None):
     """Compile the mind graph for one person. thread_id in the run config must be the person id."""
     inst, loaded = deps.inst, deps.loaded
-    card = persona_card(inst, loaded.area, loaded.site, loaded.scenario.known_places,
+    robot_role = robot_role_of(loaded.scenario)
+    card = persona_card(inst, loaded.area, loaded.site, loaded.scenario.known_places, robot_role=robot_role,
                         trust_stage=deps.trust_stage, ladder=loaded.scenario.ladder or None,
                         robot_memories=deps.robot_memories,
                         word_of_mouth=deps.word_of_mouth if loaded.scenario.campaign else None)
@@ -221,7 +222,7 @@ def build_graph(deps: "MindDeps", checkpointer: Any = None):
         out.append(state["situation"])
         return "\n".join(out)
 
-    sysfixed, schema = system_fixed(inst.role), decision_schema(inst.role)
+    sysfixed, schema = system_fixed(inst.role, robot_role), decision_schema(inst.role)
 
     async def decide(state: MindState) -> dict:
         user = user_text(state)
