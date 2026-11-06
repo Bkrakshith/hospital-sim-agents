@@ -40,7 +40,9 @@ MINUTES = 5.0
 TIMEOUT_S = 5400
 AREA = {"id": "a1", "name": "Wet floor", "x0": 8.0, "y0": 4.6, "x1": 9.5, "y1": 5.5}
 SCRIPT = [
-    {"t": 2.0, "who": "V1", "do": "approach", "target": "g1"},
+    # to the front of the desk, straight in front of the G1: "approach g1" can leave her at the edge of its camera's
+    # view, and the fake robot tells staff about the nearest person it sees
+    {"t": 2.0, "who": "V1", "do": "walk_to", "target": "reception_front"},
     {"t": 16.0, "who": "V1", "text": "Excuse me, I'm Priya. I need a nurse, please.", "to": "g1"},  # once she is at the desk
     # Daniel asks from where he stands: a person the script moves ignores their own mind from then on, and his mind
     # is what accepts the robot's offer and follows it
