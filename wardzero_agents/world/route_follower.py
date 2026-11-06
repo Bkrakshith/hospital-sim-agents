@@ -47,6 +47,7 @@ SETTLE_YAW = math.radians(2)
 CORRECT_GAIN = 1.2  # over-asks a little, since the planner delivers ~90 % of a facing step
 RETARGET = math.radians(4)
 DOOR_ZONE_M = 1.5  # within this of a swinging door's line the G1 keeps walking speed even with people near
+PRECISE_M = 0.2  # a door pass point counts as reached this close (the robot lines up on the leaf before it walks on)
 LOOKAHEAD_M = 0.8  # pure-pursuit point ahead on the route segment (cross-track correction)
 # route clearance band for the walking G1 (half-width with arms ~0.35 m). The band is soft and the map's cells are
 # 0.2 m, so a 0.45 m band still let the route pass 0.31 m from the end of the reception desk; 0.6 keeps it >= 0.44 m
@@ -90,6 +91,7 @@ class RouteFollower:
         self.lookahead = lookahead
         self.slow_near_doors = slow_near_doors
         self.door_lines: list = []  # swinging doors ((ax, ay), (bx, by)): routes pass straight through a leaf
+        self.precise: set = set()  # door pass points: reached within PRECISE_M, so the pass starts on its line
         self.path: list[tuple[float, float]] = []
         self._prev: Optional[tuple[float, float]] = None  # start of the current route segment
         self.final_yaw: Optional[float] = None
@@ -118,10 +120,14 @@ class RouteFollower:
         if route is None:
             self.cancel()
             return False
+        precise = set()
         if self.door_lines:
             free = getattr(self.router, "is_free", None)
+            before = {tuple(q) for q in route}
             route = through_leaves(route, self.door_lines, free, avoid=avoid)
+            precise = {tuple(q) for q in route} - before
         self.set_route(route[1:] or [tuple(goal[:2])], final_yaw)
+        self.precise = precise
         self._prev = (float(start[0]), float(start[1]))
         return True
 
@@ -210,7 +216,8 @@ class RouteFollower:
         if self._prev is None:
             self._prev = (x, y)
         while self.path and math.hypot(self.path[0][0] - x, self.path[0][1] - y) < (
-                self.arrive_m if len(self.path) == 1 else self.waypoint_m):
+                self.arrive_m if len(self.path) == 1 else
+                (PRECISE_M if tuple(self.path[0]) in self.precise else self.waypoint_m)):
             self._prev = self.path.pop(0)
         if not self.path:
             if self.final_yaw is None:

@@ -251,3 +251,17 @@ def test_the_door_pass_takes_the_other_leaf_when_someone_stands_on_the_line():
     daniel = [(7.0, 2.5, 0.7)]  # the person just guided, standing on that leaf's line
     out = rf.through_leaves(route, [door], avoid=daniel)
     assert out[1][1] == pytest.approx(3.5) and out[2][1] == pytest.approx(3.5)
+
+
+def test_the_robot_lines_up_on_the_leaf_before_it_walks_through():
+    grid = OccGrid(np.zeros((60, 160), np.uint8), 0.1, (0.0, 0.0))
+    f = RouteFollower(Router(grid))
+    f.door_lines = [((6.0, 2.0), (6.0, 4.0))]
+    assert f.set_goal((10.0, 3.3), (2.0, 3.3))
+    pre = f.path[0]
+    assert pre in f.precise and pre[0] == pytest.approx(8.0)
+    f.update(0.0, (10.0, 3.3, math.pi))
+    f.update(0.1, (pre[0] + 0.3, pre[1] - 0.1, math.pi))  # 0.32 m off: not reached yet (a plain waypoint would be)
+    assert f.path[0] == pre
+    f.update(0.2, (pre[0] + 0.1, pre[1], math.pi))
+    assert f.path[0] != pre
