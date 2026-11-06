@@ -169,6 +169,45 @@ def start_view(robot_pose: Optional[tuple]) -> Optional[tuple[tuple, tuple, floa
     return eye, target, FRAMINGS[START_VIEW_FRAMING][4]
 
 
+# ---- the headed window's follow camera (pure) ----------------------------------------------------
+# behind and above the robot, looking past it: (back, height, look-ahead, target z, focal mm). High enough to see over
+# the reception desk the G1 stands behind.
+CHASE = (2.6, 2.3, 1.2, 0.9, 16.0)
+CHASE_POS_ALPHA = 0.12  # per frame: how far the camera's anchor moves towards the robot (smoothing)
+CHASE_YAW_ALPHA = 0.06  # ... and its heading towards the robot's
+HEADED_CAMS = ("view_follow", "view_desk", "view_overhead")  # under CAMERAS_PATH; Kit's camera menu lists them
+
+
+def _wrap(a: float) -> float:
+    return math.atan2(math.sin(a), math.cos(a))
+
+
+class ChaseCam:
+    """A smoothed third-person camera behind and above a pose. ``update(pose)`` once a frame returns (eye, target)."""
+
+    def __init__(self, framing: tuple = CHASE, pos_alpha: float = CHASE_POS_ALPHA, yaw_alpha: float = CHASE_YAW_ALPHA):
+        self.framing, self.pos_alpha, self.yaw_alpha = framing, pos_alpha, yaw_alpha
+        self.x = self.y = self.yaw = None
+
+    def update(self, pose: tuple) -> tuple[tuple, tuple]:
+        x, y, yaw = (float(v) for v in pose)
+        if self.x is None:
+            self.x, self.y, self.yaw = x, y, yaw
+        else:
+            self.x += self.pos_alpha * (x - self.x)
+            self.y += self.pos_alpha * (y - self.y)
+            self.yaw = _wrap(self.yaw + self.yaw_alpha * _wrap(yaw - self.yaw))
+        return chase_view((self.x, self.y, self.yaw), self.framing)
+
+
+def chase_view(pose: tuple, framing: tuple = CHASE) -> tuple[tuple, tuple]:
+    """(eye, target): ``back`` metres behind the pose at ``height``, looking at a point ``ahead`` in front of it."""
+    back, height, ahead, target_z, _ = framing
+    x, y, yaw = pose
+    c, s = math.cos(yaw), math.sin(yaw)
+    return (x - back * c, y - back * s, height), (x + ahead * c, y + ahead * s, target_z)
+
+
 # ---- the preview file -------------------------------------------------------------------------
 class JpegSink:
     """Writes ``latest.jpg`` by writing a temporary file and renaming it, so the Studio never reads half a frame."""
@@ -212,6 +251,54 @@ def look_at(eye, target):
     from pxr import Gf
 
     return Gf.Matrix4d().SetLookAt(Gf.Vec3d(*eye), Gf.Vec3d(*target), Gf.Vec3d(0, 0, 1)).GetInverse()
+
+
+class HeadedCameras:
+    """The headed window's cameras: ``view_follow`` (the default: behind and above the robot, smoothed, moved every
+    frame), ``view_desk`` (the fixed desk framing at the robot's post) and ``view_overhead`` (the kept rooms from
+    above). All three are USD cameras, so Kit's camera menu offers them. Recording has its own cameras."""
+
+    def __init__(self, stage, rects: Sequence[tuple], robot_pose, res: tuple[int, int] = DEFAULT_RES):
+        self.stage, self.rects, self.robot_pose, self.res = stage, list(rects), robot_pose, res
+        self.chase = ChaseCam()
+        self.paths: dict[str, str] = {}
+        self._follow_op = None
+        self.updates = 0
+
+    def start(self) -> None:
+        from pxr import UsdGeom
+
+        pose = self.robot_pose()
+        if pose is None:
+            raise RuntimeError("the robot has no pose yet")
+        follow, desk, top = (f"{CAMERAS_PATH}/{n}" for n in HEADED_CAMS)
+        eye, target = self.chase.update(pose)
+        self.paths["follow"] = define_camera(self.stage, follow, eye, target, CHASE[4], self.res)
+        self._follow_op = UsdGeom.Xformable(self.stage.GetPrimAtPath(follow)).GetOrderedXformOps()[0]
+        d_eye, d_target, d_focal = start_view(pose)
+        self.paths["desk"] = define_camera(self.stage, desk, d_eye, d_target, d_focal, self.res)
+        if self.rects:
+            v = overhead_view(self.rects, self.res[0] / self.res[1])
+            self.paths["overhead"] = define_camera(self.stage, top, v.eye, v.target, v.focal, self.res, near=v.near,
+                                                   far=v.far, aperture=v.aperture)
+        self.use("follow")
+        log.info("headed window: follow camera %s (also %s)", follow,
+                 ", ".join(p for k, p in self.paths.items() if k != "follow"))
+
+    def use(self, name: str) -> None:
+        from omni.kit.viewport.utility import get_active_viewport
+
+        get_active_viewport().camera_path = self.paths[name]
+
+    def update(self) -> None:
+        """Once a frame: the follow camera to the robot's latest pose (smoothed)."""
+        if self._follow_op is None:
+            return
+        pose = self.robot_pose()
+        if pose is None:
+            return
+        self._follow_op.Set(look_at(*self.chase.update(pose)))
+        self.updates += 1
 
 
 class Recorder:
