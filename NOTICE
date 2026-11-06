@@ -10,3 +10,13 @@ voice models, which are downloaded by scripts/fetch_voices.py and are not part o
 
 Voice models are from https://huggingface.co/rhasspy/piper-voices. A published film that uses them should repeat these
 credits (every voiced run writes audio/CREDITS.txt with the ones it used).
+
+Whole-body controller: NVIDIA GEAR-SONIC. The walking G1 is driven by GEAR-SONIC (NVlabs GR00T-WholeBodyControl,
+https://github.com/NVlabs/GR00T-WholeBodyControl). wardzero_agents/isaac_host/sonic/ is a modified Python port of
+its G1 deploy code (gear_sonic_deploy/src/g1/g1_deploy_onnx_ref), which is licensed under the Apache License 2.0,
+Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. The model weights (sonic_v1_1 encoder and decoder, the V2
+kinematic planner) are downloaded by scripts/fetch_sonic.py into a cache outside this repository and are not part of
+it. Licensed by NVIDIA Corporation under the NVIDIA Open Model License.
+
+Citation: Z. Luo, Y. Yuan, T. Wang, et al. "SONIC: Supersizing Motion Tracking for Natural Humanoid Whole-Body
+Control." arXiv:2511.07820, 2025.
