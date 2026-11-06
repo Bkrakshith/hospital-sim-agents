@@ -100,6 +100,14 @@ def test_tell_staff_finds_the_night_nurse_in_b6(staged, tmp_path):
     assert [(r["ok"], r["reason"]) for r in action_results(outs, "tl")] == [(True, "told")]
     assert [n.person for n in nudges(outs, rt.TELL_CARD)] == ["N1"]
     assert not [r for r in rows(tmp_path / "run", "world") if r.get("kind") == "contact"]
+    # then it walks back to its post on its own ("<id>-return")
+    post, back = s.tasks.post, []
+    for _ in range(600):
+        o = s.step(0.1)
+        back += [r for r in o.task_results if r.get("kind") == "goal" and r.get("id") == "tl-return"]
+        if back:
+            break
+    assert back and back[0]["ok"] and math.hypot(w.robot.x - post[0], w.robot.y - post[1]) <= 0.5
 
 
 def test_tell_staff_walks_back_to_post(staged, tmp_path):
@@ -158,6 +166,26 @@ def test_press_call_with_no_staff_is_unanswered_but_ok(staged, tmp_path):
     outs = [s.step(0.1) for _ in range(3)]
     assert [(r["ok"], r["reason"]) for r in action_results(outs, "pc")] == [(True, "unanswered")]
     assert nudges(outs) == []
+
+
+def test_press_call_does_not_reach_staff_out_of_earshot(staged, tmp_path):
+    s = svc(staged("scrub_nurse"), tmp_path)
+    w = s.world
+    bx, by = s.tasks.call_point()
+    n1 = w.people["N1"]
+    assert math.hypot(n1.x - bx, n1.y - by) > 20.0
+    s.on_task_action({"id": "pc", "action": "press_call"})
+    outs = [s.step(0.1) for _ in range(3)]
+    assert "N1" not in [n.person for n in nudges(outs, rt.CALL_CARD)]
+    assert [r["ok"] for r in action_results(outs, "pc")] == [True]
+
+
+def test_robot_own_chime_has_no_bearing(staged):
+    w = StubWorld(staged("ae_waiting"), 1)
+    w.robot_pose = Pose(-8.6, -1.4, 0.0)
+    chime = w._event(1.0, "person", "bell_robot", -6.6, -1.4, 2.0, 80.0)
+    h = w.robot_heard(chime)
+    assert h is not None and h.bearing_deg is None
 
 
 # ---- hand-over offers --------------------------------------------------------------------------------------------
@@ -241,11 +269,20 @@ def test_route_blocked_blocks_every_router_and_is_announced(staged, tmp_path):
     assert w.robot_router.version > 0
     after = w.robot.router.route(a, b)
     assert after is None or _route_clear_of(after, a, cx, cy, ROUTE_BLOCK_RADIUS_M - 0.15)
-    if w.robot.has_goal:
+    if after is not None:  # the walk under way is kept and re-planned, not dropped
+        assert w.robot.has_goal
         assert _route_clear_of(list(w.robot._path), (w.robot.x, w.robot.y), cx, cy, ROUTE_BLOCK_RADIUS_M - 0.15)
     pa = [h for h in out.robot_heard if h.source_kind == "pa"]
     room = w.site.rooms[w.site.room_at(cx, cy)].label.split(",")[0]
     assert pa and "blocked" in pa[0].text and room in pa[0].text
+
+
+def test_blocks_at_one_time_and_place_are_announced_once(staged):
+    w = StubWorld(staged("evacuation_guide"), 1)
+    pas = []
+    for i, x in enumerate((-4.2, -1.2, 1.8)):
+        pas += w.apply_world_event(WorldEvent(id=f"rb{i}", t=5.0, kind="route_blocked", x=x, y=-2.6))
+    assert len([e for e in pas if e.source_kind == "pa"]) == 1
 
 
 def test_leave_to_a_blocked_exit_fails(staged):
@@ -276,6 +313,26 @@ def test_a_person_needs_an_extinguisher(staged):
         w.step(i * 0.1)
     assert fire.size < 0.5
 
+
+
+def test_staff_can_fetch_the_wall_extinguisher_then_spray(staged):
+    """ward_fire: ext_1 hangs about 4 m from the fire, so a nurse takes it off the wall first, then walks up."""
+    w = StubWorld(staged("ward_fire"), 1)
+    w.apply_world_event(WorldEvent(id="f", t=0.0, kind="fire_start", x=19.0, y=14.5))
+    fire = next(iter(w.objects.fires.values()))
+    fire.size, fire.grow_per_s = 0.5, 0.0
+    n1, ext = w.people["N1"], w.objects.items["ext_1"]
+    assert math.hypot(ext.x - 19.0, ext.y - 14.5) > 3.0
+    n1.x, n1.y = ext.x + 0.3, ext.y + 0.3  # at the wall unit, no fire in reach
+    w.apply_intent(Intent(id="u1", person="N1", t=0.0, kind="use_extinguisher"))
+    assert n1.state == "done" and ext.holder == "N1"
+    n1.x, n1.y = 19.0, 13.0  # walked up to the fire with it
+    w.step(0.1)
+    w.apply_intent(Intent(id="u2", person="N1", t=0.1, kind="use_extinguisher"))
+    assert n1.state == "running"
+    for i in range(2, 12):
+        w.step(i * 0.1)
+    assert fire.size < 0.5
 
 # ---- the robot's ears and eyes -------------------------------------------------------------------------------------
 def test_heard_cough_has_a_bearing(staged):

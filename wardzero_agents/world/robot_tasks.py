@@ -40,7 +40,8 @@ robot walks to the counter. On a ward it tells the nearest ward staff member: fr
 5 m in sight, else it walks to free floor 1.0-1.5 m from her that can see her (else to the nurse base nearest her),
 and speaks as soon as she is within 1.5 m in sight, or when people hold it up but she is within 5 m. This is a staff
 locator: the robot's brain is never told where she is, the task layer finds her. After a tell it walked for, the robot
-walks back to its post (goal id "<id>-return").
+walks back to its post (goal id "<id>-return"); on a ward that takes it away from the patient, so a brain that
+should stay with them sends approach again once the tell result arrives.
 
 A hand-over to someone who can take things (their role has accept_item) is announced to them (a nudge naming
 accept_item, and refuse_item or, for a surgeon, reject_item). A patient lying flat is asked to accept it: accepting the
@@ -819,6 +820,7 @@ class RobotTasks:
                 # close to the staff member it walks to: stop and tell her now (no walking into her)
                 r.cancel_goal()
                 r.speed_scale, self._holding, self._held_s, self._held_total = 1.0, False, 0.0, 0.0
+                self._backing = False  # a step back under way ends here too
                 self._goal(tl["id"], True, "arrived", t)
                 self._speak_tell(t)
                 return

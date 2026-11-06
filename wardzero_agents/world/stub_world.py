@@ -153,6 +153,7 @@ class StubWorld:
         self.loaded = loaded
         self.rng = np.random.default_rng(seed)
         self._ear_rng = np.random.default_rng([seed, 1])  # the noise on the direction of what the robot hears
+        self._pa_blocked: set = set()  # (t, place) of route-block announcements already made
         self.signs: list[Sign] = list(loaded.signs)
         self.last_t = 0.0
         self._wet = 0
@@ -314,7 +315,7 @@ class StubWorld:
         if h is None:
             return None
         upd: dict = {"source_id": "unknown"}
-        if ev.source_kind in ("person", "cough"):
+        if ev.source_kind in ("person", "cough") and ev.source_id != "bell_robot":  # not its own call chime
             # its own random stream: the world's draws (and so the rest of a seeded run) are unchanged
             noise = float(self._ear_rng.uniform(-BEARING_NOISE_DEG, BEARING_NOISE_DEG))
             upd["bearing_deg"] = round(wrap_deg(bearing_deg(r, ev.x, ev.y) + noise), 1)
@@ -1089,6 +1090,9 @@ class StubWorld:
             # announced on the PA, so everyone (the robot too) hears which way is blocked
             rid = self.site.room_at(x, y)
             where = self.site.rooms[rid].label.split(",")[0] if rid else "this area"
+            if (ev.t, where) in self._pa_blocked:  # several blocks at once in one place: one announcement
+                return []
+            self._pa_blocked.add((ev.t, where))
             return [self._event(ev.t, "pa", "pa", x, y, 2.5, 80.0, f"Fire: the route through {where} is blocked")]
         if ev.kind == "fire_start":
             self.objects.start_fire(x, y)
@@ -1309,20 +1313,25 @@ class StubWorld:
             return []
         if kind == "use_extinguisher":
             f = self.objects.nearest_fire(p.x, p.y)
-            if f is None:
-                self._fail(p, intent, "no fire in reach")
-                return []
             # an extinguisher in hand, or a free one within reach (picked up first, e.g. off the wall)
             ext = next((i for i in self._held(pid) if i.kind == "extinguisher"), None)
             if ext is None:
                 free = [i for i in self.objects.items.values() if i.kind == "extinguisher" and i.holder is None
                         and math.hypot(i.x - p.x, i.y - p.y) <= EXTINGUISHER_PICK_M]
-                if not free:
-                    self._fail(p, intent, "no extinguisher in hand")
-                    return []
-                ext = min(free, key=lambda i: math.hypot(i.x - p.x, i.y - p.y))
-                ext.holder, ext.x, ext.y = pid, p.x, p.y
-                self._log_objects(t)
+                if free:
+                    ext = min(free, key=lambda i: math.hypot(i.x - p.x, i.y - p.y))
+                    ext.holder, ext.x, ext.y = pid, p.x, p.y
+                    self._log_objects(t)
+                    if f is None:  # took it off the wall; she sprays once she has walked up to the fire
+                        self._begin(p, intent)
+                        self._finish(p)
+                        return []
+            if f is None:
+                self._fail(p, intent, "no fire in reach")
+                return []
+            if ext is None:
+                self._fail(p, intent, "no extinguisher in hand")
+                return []
             self._begin(p, intent)
             self._fighting[pid] = f.id
             return []
