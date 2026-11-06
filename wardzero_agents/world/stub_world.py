@@ -605,14 +605,27 @@ class StubWorld:
     def _end_timed(self, p: _Person, ph: _Phase) -> None:
         """A stand or sit phase has run its time: the person is standing (seat and bed freed) or seated."""
         if ph.kind == "stand":
+            from_bed = p.bed is not None
             p.posture = "standing"
             p.seat = None
             p.bed = None
+            if from_bed and self.site.grid.blocked(p.x, p.y):
+                self._out_of_bed(p)
         else:
             seat = self._seats[p.claim]
             p.x, p.y, p.yaw, p.posture = seat.x, seat.y, seat.yaw, "seated"
             if p.state != "running":  # the sit outlived its intent (a quick intent came meanwhile): the seat is theirs
                 p.seat, p.claim = p.claim, None
+
+    def _out_of_bed(self, p: _Person) -> None:
+        """A patient who gets up stands beside the bed, not inside it: where the walk that follows leaves the bed (the
+        route's first free point), else on the nearest free floor."""
+        nxt = p.plan[0] if p.plan and p.plan[0].kind == "walk" and not p.plan[0].lazy else None
+        if nxt is not None and nxt.i < len(nxt.path) and not self.site.grid.blocked(*nxt.path[nxt.i]):
+            p.x, p.y = nxt.path[nxt.i]
+            nxt.i += 1
+            return
+        p.x, p.y = self.free_spot(p.x, p.y, p.inst.person_id)
 
     def _settle(self, p: _Person) -> None:
         """After a phase ends: the intent is done when the plan is empty, else its progress moves on."""

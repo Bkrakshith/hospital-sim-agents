@@ -14,7 +14,7 @@ robot_brief:
     the desk computer. Give directions or walk people where they need to go, and keep everyone informed about waits.
     The receptionist is busy at the computer, so involve staff only when you cannot help. If a patient gets worse,
     alert staff straight away. Do not give medical advice.
-robot_start: {x: -8.6, y: -1.8, yaw: 1.5708}
+robot_start: {x: -8.6, y: -1.4, yaw: 1.5708}
 characters:
   - {id: P1, name: George Bailey, sex: male, age_band: 51-70, role: ae_patient, mood: anxious, room: AE_Waiting, x: -7.58, y: 0.222, yaw: -1.5708}
   - {id: V1, name: Isla Roberts, sex: female, age_band: 31-50, role: visitor, mood: anxious, room: AE_Waiting, x: -7.55, y: 1.112, yaw: 1.5708,

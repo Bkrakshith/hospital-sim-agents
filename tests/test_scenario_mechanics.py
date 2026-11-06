@@ -305,3 +305,17 @@ def test_an_arrival_with_no_persona_fit_to_arrive_is_ignored(staged):
     n = len(w.people)
     w.apply_world_event(WorldEvent(id="a", t=1.0, kind="arrival"))
     assert len(w.people) == n
+
+
+# ---------- getting out of bed ----------
+
+@pytest.mark.parametrize("kind,target", [("walk_to", "Ward_Entrance"), ("stand_up", None)])
+def test_a_patient_getting_out_of_bed_never_stands_inside_it(staged, kind, target):
+    w = world(staged, "wandering_patient")
+    w.apply_intent(Intent(id="g", person="W1", t=0.0, kind=kind, target=target))
+    w1 = w.people["W1"]
+    for k in range(1, 200):
+        w.step(k * 0.1)
+        if w1.posture in ("standing", "walking"):
+            assert not w.site.grid.blocked(w1.x, w1.y), (k, w1.x, w1.y)
+    assert w1.posture in ("standing", "walking") and w1.bed is None
