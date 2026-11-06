@@ -18,6 +18,7 @@ from . import spec
 from .spec import Flow, FlowError, dump_flow, fit_scenario
 
 TRIES = 3
+CARD = "You adapt a scenario flow to the user's prompt for this run."  # a text block may not be empty
 SCHEMA = {"type": "object", "additionalProperties": False, "required": ["flow_yaml", "notes"],
           "properties": {"flow_yaml": {"type": "string"}, "notes": {"type": "string"}}}
 
@@ -91,7 +92,7 @@ async def adapt_flow(gateway, *, scenario_id: str, base: Flow, preset_prompt: st
     last: Optional[str] = None
     for _ in range(TRIES):
         msg = user if last is None else f"{user}\n\nYour last answer was not usable: {last}\nFix it and answer again."
-        res = await gateway.complete(LLMRequest(role="report", person="flow", system_fixed=SYSTEM, persona_card="",
+        res = await gateway.complete(LLMRequest(role="report", person="flow", system_fixed=SYSTEM, persona_card=CARD,
                                                 user=msg, schema=SCHEMA))
         if not res.ok or not isinstance(res.data, dict):
             last = f"the call failed ({res.error})"

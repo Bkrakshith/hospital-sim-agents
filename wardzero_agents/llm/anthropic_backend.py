@@ -26,6 +26,27 @@ FALLBACK = {"betas": ["server-side-fallback-2026-07-01"], "fallbacks": "default"
 FALLBACK_MODELS = {"claude-opus-5-5", "claude-sonnet-5-5"}
 
 
+# JSON Schema keywords structured outputs do not accept (a request with them is a 400 bad_request). The response is
+# checked by our own code (ranges are clamped where they matter), so they are dropped from what is sent.
+UNSUPPORTED_SCHEMA_KEYS = ("minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum", "multipleOf", "minLength",
+                           "maxLength", "maxItems")
+
+
+def api_schema(schema):
+    """The schema as structured outputs accept it: unsupported keywords removed (recursively), minItems kept only
+    as 0 or 1."""
+    if isinstance(schema, dict):
+        out = {}
+        for k, v in schema.items():
+            if k in UNSUPPORTED_SCHEMA_KEYS or (k == "minItems" and v not in (0, 1)):
+                continue
+            out[k] = v if k in ("enum", "const", "required") else api_schema(v)
+        return out
+    if isinstance(schema, list):
+        return [api_schema(x) for x in schema]
+    return schema
+
+
 class AnthropicGateway(BaseGateway):
     def __init__(self, client, roles, budget, on_usage, timeout_s: float = 30.0):
         super().__init__(roles, budget, on_usage)
@@ -48,7 +69,7 @@ class AnthropicGateway(BaseGateway):
                      "cache_control": {"type": "ephemeral", "ttl": "1h"}}],
             messages=[{"role": "user", "content": blocks}],
             output_config={"effort": self.roles.effort_decide if decide else "low",
-                           "format": {"type": "json_schema", "schema": req.schema}},
+                           "format": {"type": "json_schema", "schema": api_schema(req.schema)}},
             **(FALLBACK if model in FALLBACK_MODELS else {}),
         )
         fail = lambda kind: LLMResult(False, None, kind, model)

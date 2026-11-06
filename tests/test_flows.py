@@ -253,3 +253,26 @@ def test_the_scripted_model_keeps_the_preset_flow(monkeypatch):
     from wardzero_agents.llm.fake import FakeGateway
     flow, _ = _adapt(FakeGateway())
     assert flow.steps == load_flow(flows_dir(CONFIG) / "ae_waiting.yaml").steps
+
+
+def test_schemas_sent_to_claude_have_no_keywords_structured_outputs_reject():
+    from wardzero_agents.campaign.debrief import HEARSAY_SCHEMA, QUESTIONNAIRE_SCHEMA
+    from wardzero_agents.llm.anthropic_backend import UNSUPPORTED_SCHEMA_KEYS, api_schema
+    s = api_schema({"type": "object", "properties": {"a": {"type": "integer", "minimum": 1, "maximum": 5},
+                                                     "b": {"type": "array", "minItems": 2, "maxItems": 3,
+                                                           "items": {"type": "string", "maxLength": 4}},
+                                                     "c": {"type": "string", "enum": ["minimum"]}},
+                    "required": ["a", "b", "c"]})
+    assert s["properties"]["a"] == {"type": "integer"} and s["properties"]["b"] == {"type": "array",
+                                                                                      "items": {"type": "string"}}
+    assert s["properties"]["c"]["enum"] == ["minimum"] and s["required"] == ["a", "b", "c"]
+    text = json.dumps([QUESTIONNAIRE_SCHEMA, HEARSAY_SCHEMA, G.SCHEMA])
+    assert not any(f'"{k}"' in text for k in UNSUPPORTED_SCHEMA_KEYS)
+
+
+def test_the_flow_request_never_sends_an_empty_text_block():
+    gw = ScriptedGateway([{"flow_yaml": yaml.safe_dump({"id": "ae_waiting", "title": "t", "steps": [
+        {"wait": {"seconds": 1}}]}), "notes": ""}])
+    _adapt(gw)
+    r = gw.reqs[0]
+    assert r.system_fixed.strip() and r.persona_card.strip() and r.user.strip()

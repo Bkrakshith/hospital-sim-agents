@@ -27,7 +27,7 @@ HEARSAY_MIN_VALENCE = 0.2  # a mention that mild is not an opinion
 
 QUESTIONNAIRE_SCHEMA = {
     "type": "object", "additionalProperties": False,
-    "properties": {k: {"type": "integer", "minimum": 1, "maximum": 5}
+    "properties": {k: {"type": "integer"}  # 1 to 5, clamped on reading (structured outputs reject minimum/maximum)
                    for k in ("likeability", "safety", "competence", "trust")}
     | {"comment": {"type": "string"}},
     "required": ["likeability", "safety", "competence", "trust", "comment"]}
