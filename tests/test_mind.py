@@ -237,8 +237,32 @@ def test_gate_reasons():
     failed = status(state="failed", intent_id="def", intent_kind="walk_to")
     assert "intent_failed" in g.check(20, obs(), failed, [], obs())
     g.mark(20)
-    assert g.check(199, obs(), SEATED, [], obs()) == []
-    assert g.check(200, obs(), SEATED, [], obs()) == ["patience_timer"]
+    assert g.check(79, obs(), SEATED, [], obs()) == []
+    assert g.check(80, obs(), SEATED, [], obs()) == ["patience_timer"]
+
+
+def test_gate_start_fires_once_on_the_first_tick():
+    g = TriggerGate()
+    assert g.check(0.5, obs(), SEATED, [], None) == ["start"]
+    assert g.check(0.6, obs(), SEATED, [], None) == ["start"]  # stays until a decision has used it
+    g.mark(0.6)
+    assert g.check(5.0, obs(), SEATED, [], obs()) == []
+    assert g.check(30.0, obs(), SEATED, [], obs()) == []
+    assert g.check(60.6, obs(), SEATED, [], obs()) == ["patience_timer"]
+
+
+def test_gate_start_keeps_urgent_and_the_min_interval():
+    g = TriggerGate()
+    assert g.check(0.0, obs_addressed("Hello"), SEATED, [], None) == ["addressed_speech", "robot_near", "start"]
+    g.mark(0.0)
+    assert g.check(1.0, obs(visible=[seen("person", "P3")]), SEATED, [], obs()) == []
+    assert "nudge" in g.check(1.0, obs(), SEATED, [nudge("P5", 1, "x")], obs())
+
+
+def test_situation_says_why_at_the_start_in_plain_words():
+    s = render_situation(P5, obs(), SEATED, ["start"], [], 0.0)
+    line = next(x for x in s.splitlines() if x.startswith("Why you are deciding now:"))
+    assert line != "Why you are deciding now: start" and "take stock" in line
 
 
 # ---------- validation ----------

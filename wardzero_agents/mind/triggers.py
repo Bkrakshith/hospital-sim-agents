@@ -7,12 +7,12 @@ from ..contracts import Nudge, Observation, Status
 
 URGENT = {"addressed_speech", "nudge"}
 REASONS = ("addressed_speech", "speech_nearby", "robot_near", "new_sign", "new_person",
-           "intent_done", "intent_failed", "cough_nearby", "patience_timer", "nudge")
+           "intent_done", "intent_failed", "cough_nearby", "patience_timer", "nudge", "start")
 
 
 class TriggerGate:
     def __init__(self, min_interval_s: float = 4.0, robot_near_m: float = 2.0,
-                 patience_check_s: float = 180.0):
+                 patience_check_s: float = 60.0):
         self.min_interval_s = min_interval_s
         self.robot_near_m = robot_near_m
         self.patience_check_s = patience_check_s
@@ -20,6 +20,9 @@ class TriggerGate:
         self._first_check: Optional[float] = None
         self._reported_ends: set[tuple[str, str]] = set()
         self._candidate_end: Optional[tuple[str, str]] = None
+        # A person who has seen nothing new would otherwise stand idle until the patience timer: everyone takes
+        # stock once at the start. It stays a reason until a decision has been started on it.
+        self._started = False
 
     def _robot_near(self, obs: Optional[Observation]) -> bool:
         return obs is not None and any(
@@ -60,6 +63,8 @@ class TriggerGate:
         ref = self._last_decision if self._last_decision is not None else self._first_check
         if t - ref >= self.patience_check_s:
             found.add("patience_timer")
+        if not self._started:
+            found.add("start")
 
         if (self._last_decision is not None and t - self._last_decision < self.min_interval_s
                 and not (found & URGENT)):
@@ -70,6 +75,7 @@ class TriggerGate:
     def mark(self, t: float) -> None:
         """Record that a decision was started at t, on the reasons the last check returned."""
         self._last_decision = t
+        self._started = True
         if self._candidate_end is not None:
             self._reported_ends.add(self._candidate_end)
             self._candidate_end = None
