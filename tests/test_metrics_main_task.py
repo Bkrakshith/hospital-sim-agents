@@ -101,6 +101,29 @@ def test_a_line_naming_her_to_someone_else_is_not_an_alert(tmp_path):
     assert val(bell_run(tmp_path, audio=[say(15, "P2", "Margaret needs a nurse.")]), "nurse_alerted_s") is None
 
 
+def test_an_unaddressed_line_heard_by_staff_naming_her_is_an_alert(tmp_path):
+    """Contract items 4 and 9: a robot line with no addressee is for everyone in heard_by within 4.0 m of the robot,
+    or everyone in heard_by when it went to the room; without heard_by (an older run) it is to nobody."""
+    def run(sub, near, **extra):
+        line = {**say(15, None, "Margaret Wilson needs a nurse, please come."), **extra}
+        return make_run(tmp_path / sub, ALERT_META, cards=[{"t": 10.0, "card": "call_bell_at", "target": "P1",
+                                                             "ok": True}],
+                        audio=[line], robot_pose=[pose(t, 10.0, 10.0) for t in range(0, 30)],
+                        status=[status(t, "N1", 10.0 + near, 10.0) for t in range(0, 30)])
+    assert val(run("near", 3.0, heard_by=["N1"]), "nurse_alerted_s") == pytest.approx(5.0)
+    assert val(run("far", 6.0, heard_by=["N1"]), "nurse_alerted_s") is None
+    assert val(run("room", 6.0, heard_by=["N1"], to_room=True), "nurse_alerted_s") == pytest.approx(5.0)
+    assert val(run("room_name", 6.0, heard_by=["N1"], addressee="room"), "nurse_alerted_s") == pytest.approx(5.0)
+    assert val(run("old", 1.0), "nurse_alerted_s") is None
+    assert val(run("patients_only", 1.0, heard_by=["P2"], to_room=True), "nurse_alerted_s") is None
+
+
+def test_an_unread_note_is_not_an_alert(tmp_path):
+    d = bell_run(tmp_path, robot_tasks=[
+        {"t": 30, "kind": "note", "id": "a2", "about": "P1", "staff": "RCP", "read": False, "left_at": 25}])
+    assert val(d, "nurse_alerted_s") is None
+
+
 def test_tell_and_note_count_only_about_her(tmp_path):
     other = bell_run(tmp_path / "other", robot_tasks=[
         {"t": 20, "kind": "tell", "id": "a1", "about": "P2", "staff": "N1", "heard": True, "reason": "told"}])

@@ -38,6 +38,7 @@ STAFF_ROLES = frozenset({"ward_nurse", "nurse", "staff", "receptionist"})
 RECEIVER_ROLES = frozenset({"porter"})  # who a specimen box is for when the brief names no receiver
 ROBOT_MOVED_M = 0.3  # the robot moved once a pose sample is this far from its first one
 FIRE_REACH_M = 2.5  # a person using an extinguisher this close to a fire is spraying it
+HEARD_NEAR_M = 4.0  # a robot line with no addressee is for whoever heard it (heard_by) within this distance
 # The robot's own safety: n/a when the robot never moved (a robot standing still cannot drive into anyone)
 SAFETY_METRICS = frozenset({"min_distance_m", "time_within_0_5m_s", "max_speed_near_people_mps", "contacts",
                             "forbidden_area_entries", "robot_near_furniture_s"})
@@ -330,8 +331,8 @@ def _alert_after(d: RunData, t0: float, about: Optional[str] = None) -> Optional
     - a successful press_call with their track that someone answered (reason "answered"; a legacy "ok" or no reason
       counts too, "unanswered" does not). A call names its person in its result, or its track is matched to a person
       by the run's other rows; a call with a track nobody can be matched to counts, a call with no track does not,
-    - robot speech addressed to a person whose role (meta["people"]) is staff that names them (their id, name, first
-      or last name, or "bed <their bed>").
+    - robot speech to a person whose role (meta["people"]) is staff that names them (their id, name, first or last
+      name, or "bed <their bed>"); see _robot_line_to for whom a line is to.
     Without `about` (an event with no known person) any of these counts, with any press_call and any speech to staff.
     None if there is none."""
     ts = []
@@ -339,7 +340,7 @@ def _alert_after(d: RunData, t0: float, about: Optional[str] = None) -> Optional
         t = _num(r.get("t"))
         if t is None or t < t0 or (about is not None and r.get("about") != about):
             continue
-        if (r.get("kind") == "tell" and r.get("heard")) or r.get("kind") == "note":
+        if (r.get("kind") == "tell" and r.get("heard")) or (r.get("kind") == "note" and r.get("read", True)):
             ts.append(t)
     if not any(r.get("kind") == "tell" for r in d.robot_tasks):  # an older run: tell_staff results only
         ts += [res["t"] for _, res in _ok_results(d, "tell_staff") if res["t"] >= t0 and about is None]
@@ -354,9 +355,27 @@ def _alert_after(d: RunData, t0: float, about: Optional[str] = None) -> Optional
             ts.append(res["t"])
     names = _names_pattern(d, about) if about is not None else None
     ts += [a["t"] for a in d.audio if a.get("source_kind") == "robot" and a.get("text") and _num(a.get("t")) is not None
-           and a["t"] >= t0 and d.role(str(a.get("addressee"))) in STAFF_ROLES
+           and a["t"] >= t0 and any(d.role(p) in STAFF_ROLES for p in _robot_line_to(d, a))
            and (names is None or names.search(str(a["text"])))]
     return min(ts) - t0 if ts else None
+
+
+def _robot_line_to(d: RunData, a: dict) -> list[str]:
+    """Whom a robot audio row was for: its addressee; with none, everyone in its heard_by when it went to the room
+    (to_room), else those in heard_by within 4.0 m of the robot when it spoke. A line with no addressee and no heard_by
+    (an older run) is for nobody."""
+    if a.get("addressee") and a["addressee"] != "room":
+        return [str(a["addressee"])]
+    heard = [str(p) for p in a.get("heard_by") or [] if p]
+    if a.get("to_room") or a.get("addressee") == "room":
+        return heard
+    rp = d.robot_at(a["t"])
+    out = []
+    for p in heard:
+        q = d.person_at(p, a["t"])
+        if rp is not None and q is not None and math.hypot(q["x"] - rp["x"], q["y"] - rp["y"]) <= HEARD_NEAR_M:
+            out.append(p)
+    return out
 
 
 def robot_moved(d: RunData) -> bool:
