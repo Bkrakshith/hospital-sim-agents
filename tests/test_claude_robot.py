@@ -291,7 +291,8 @@ async def test_prompt_lists_routes_in_words_and_pose_and_recent_events():
     await m.on_heard(heard(), 0.1)
     await m.tick(0.1)
     r = gw.reqs[0]
-    assert "Getting there from your post" in r.persona_card
+    # routes are worked out from where the robot stands now, in the situation (QA: cached at the start they went stale)
+    assert "Getting there from here" in r.user and "Getting there" not in r.persona_card
     await m.on_heard(heard("Thanks"), 1.0)
     d = await m.tick(1.0)
     assert "You decided" in gw.reqs[1].user and "nothing to do" in gw.reqs[1].user

@@ -234,7 +234,7 @@ def test_specimen_destination_is_not_where_the_porter_stands():
     dest = site.resolve(p.robot_brief["destination"])
     po1 = next(c for c in p.characters if c.id == "PO1")
     d = math.hypot(po1.x - dest[0], po1.y - dest[1])
-    assert 0.7 <= d <= 1.2, d
+    assert 0.3 <= d <= 1.0, d  # off the spot, so the robot can stand on it, and still at it
     for c in p.characters:  # the porter is the one person standing by the porter point
         if c.id != "PO1":
             assert math.hypot(c.x - dest[0], c.y - dest[1]) > 1.3, c.id

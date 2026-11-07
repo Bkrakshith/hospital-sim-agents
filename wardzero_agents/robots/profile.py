@@ -49,8 +49,11 @@ class RobotProfile:
             body,
             f"Sensors: {', '.join(x.label() for x in self.sensors)}.",
             f"Your hands reach between {lo:g} m and {hi:g} m above the floor, within arm's length of you.",
-            "You can hand an item you are holding to a person, take an item lying within arm's length, "
-            "spray a fire extinguisher at a small fire, press the staff call button, speak, and wait.",
+            "You can hand an item to a person, take an item lying within arm's length, spray a fire extinguisher at "
+            "a small fire, press the staff call button, speak, and wait.",
+            "hand_over works with an item you hold, or one lying within arm's length: you take it and hold it out in "
+            "one action. It ends refused when the person declines it, and no_answer when they do not take it in time "
+            "or are asleep.",
             "You can tell the staff that someone needs help (tell_staff): at reception you go to the desk; on a ward you "
             "are led to the nearest nurse. You speak to them, then walk back to your post.",
         ]
@@ -60,8 +63,9 @@ class RobotProfile:
                          "stay where you are.")
         if self.can_move:
             lines.append(f"You can walk (up to {self.max_speed:g} m/s, body radius {self.radius:g} m): "
-                         "to a named place, up to a person (approach), or while leading a person to a place or to a "
-                         "free seat there.")
+                         "to a named place, up to a person (approach), beside a person who is walking (follow), or "
+                         "while leading a person to a place or to a free seat there (guide; you walk back to your "
+                         "post afterwards unless you choose to stay).")
             lines.append("While you walk, your body slows to 0.3 m/s near people and stops for, or steps round, "
                          "anyone in your way by itself; you do not need to use wait for that, and wait cancels your "
                          "walk, guide or tell_staff. If someone stays in your way for about 8 s the walk ends as "

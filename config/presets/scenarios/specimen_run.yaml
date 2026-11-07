@@ -24,8 +24,9 @@ robot_start: {x: 15.0, y: 7.5, yaw: 0.0}
 characters:
   - {id: N1, name: Karen Scott, sex: female, age_band: 31-50, role: ward_nurse, mood: stressed, room: Ward_Entrance, x: 16.5, y: 8.8, yaw: 3.1416,
      role_prompt: "You are the nurse at the ward entrance desk, on the phone and doing a patient's discharge paperwork. You have given the specimen box to the robot to take to the porter, so you do not carry it yourself or follow the robot. [inferred]"}
-  # The porter stands by the porter point, not on it: the robot walking up to him arrives at the point.
-  - {id: PO1, name: Michael Turner, sex: male, age_band: 31-50, role: porter, mood: custom, room: Main_LiftLobby, x: 8.86, y: -0.24, yaw: 1.5708,
+  # The porter stands just short of the porter point, facing the way the robot comes, not on it: the robot walking up
+  # to him reaches the point (robot_reached_destination_s), and nobody else stands as close to it.
+  - {id: PO1, name: Michael Turner, sex: male, age_band: 31-50, role: porter, mood: custom, room: Main_LiftLobby, x: 8.86, y: 0.3, yaw: 1.5708,
      role_prompt: "You are the porter waiting at the porter point in the main lift lobby for a specimen box the robot is bringing from the ward. Wait there for it; do not go to the ward to fetch it yourself. When the robot holds it out, check the label and accept it within a few seconds. [inferred from Goddard 2012]"}
   - {id: V1, name: Lily Bailey, sex: female, age_band: 51-70, role: visitor, mood: happy, room: Ward_Corridor, x: 19.0, y: 12.0, yaw: 1.5708}
   - {id: W1, name: Harry Cooper, sex: male, age_band: 71+, role: wheelchair_patient, mood: anxious, room: Main_Corridor, x: 8.0, y: 6.0, yaw: 3.1416,

@@ -35,14 +35,27 @@ class RobotView:
     sim: str = "stub"  # "stub" (Quick 2D) or "isaac": the built-in G1 walks only where its body can (profile_for_sim)
 
 
+def robot_brief_for(loaded) -> Optional[dict]:
+    """The brief as the sim publishes it at the start (task/brief): the scenario's robot_brief, its forbidden areas and
+    desk_staffed (is anyone in the cast at the reception desk computer to read a note). The robot falls back on it
+    when no latched brief arrives, so it must say the same."""
+    from ..site.areas import task_brief
+    from ..world.robot_tasks import RECEPTION_ROLES
+    sc = loaded.scenario
+    brief = sc.robot_brief.model_dump(mode="json") if hasattr(sc.robot_brief, "model_dump") else sc.robot_brief
+    out = task_brief(brief, getattr(sc, "forbidden_areas", None))
+    if out is not None:
+        out["desk_staffed"] = any(i.role in RECEPTION_ROLES for i in loaded.instances)
+    return out
+
+
 def write_robot_config(run_dir: "str | Path", loaded, *, domain: Optional[int], budget_usd: float,
                        sim: str = "stub") -> Path:
-    from ..site.areas import task_brief
     sc = loaded.scenario
     data = {"root": str(loaded.root), "site": sc.site, "area": sc.area, "sim": sim,
             "robot": sc.robot.model_dump(mode="json"), "known_places": list(sc.known_places),
             "provider": sc.provider, "models": sc.models.model_dump(mode="json") if sc.models else None,
-            "budget_usd": float(budget_usd), "robot_brief": task_brief(sc.robot_brief, getattr(sc, "forbidden_areas", None)),
+            "budget_usd": float(budget_usd), "robot_brief": robot_brief_for(loaded),
             "domain": domain}
     dest = Path(run_dir) / ROBOT_CONFIG
     with tempfile.NamedTemporaryFile("w", dir=dest.parent, prefix=".robot_config.", suffix=".tmp", delete=False,

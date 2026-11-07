@@ -43,21 +43,25 @@ LLM_OFF_AFTER = 3  # permanent failures in a row (bad key, bad model) before the
 ROBOT_BUDGET_SHARE = 0.25  # of the scenario's budget_usd: the robot has its own budget
 MAX_SAY_CHARS = 400
 
-Action = Literal["none", "go_to", "guide", "approach", "hand_over", "take", "extinguish", "press_call", "tell_staff",
-                 "note_desk", "wait"]
-ACTIONS = ("none", "go_to", "guide", "approach", "hand_over", "take", "extinguish", "press_call", "tell_staff",
+Action = Literal["none", "go_to", "guide", "approach", "follow", "hand_over", "take", "extinguish", "press_call",
+                 "tell_staff", "note_desk", "wait"]
+ACTIONS = ("none", "go_to", "guide", "approach", "follow", "hand_over", "take", "extinguish", "press_call", "tell_staff",
            "note_desk", "wait")
-MOVING_ACTIONS = ("go_to", "guide", "approach")
+MOVING_ACTIONS = ("go_to", "guide", "approach", "follow")
 NEEDS = {"hand_over": ("item", "target"), "take": ("item",), "extinguish": ("target",),
          "guide": ("target", "destination"), "go_to": ("destination",), "tell_staff": ("target",), "approach": ("target",),
-         "note_desk": ("target", "message")}
+         "follow": ("target",), "note_desk": ("target", "message")}
+ROOM = "room"  # toward_track for a line meant for everyone in the robot's room (speech/toward "room")
+AT_PLACE_M = 1.0  # a track this close to a known spot is said to be at it ("at Porter waiting point")
+SIGN_BLOCK_M = 1.5  # the robot routes this far round a blocked-route sign it has seen
+ROUTE_POSE_STEP_M = 0.5  # routes in words are worked out again once the robot has moved this far (or turned)
 
 _RULES_HEAD = """You are the robot described under YOUR BODY, working in a UK hospital and doing the job in your task brief. People around you are real people with their own worries. You act through a few simple actions and by speaking.
 
 How you work
 - YOUR JOB is your main task and you do it yourself, not the staff. Start it as soon as it calls for action (if it says to wait for a request, a call or an alarm, be ready and act the moment it comes) and carry it through to the end. On the way a short polite word is fine, but do not stop to offer help unless someone is in an emergency or speaks to you.
 - Each turn you are shown what you can perceive right now: your position, who your camera sees (as anonymous tracks such as t1, t2 with a distance, a direction and a posture), objects in view, what your microphone heard, the results of your recent actions and your own last events. You know nothing else about the people. Never guess a name, an age or how someone feels; you can only see what the camera shows and hear what is said.
-- A box that is low and long means a person lying down. A box about 1.2 m tall means someone seated. About 1.7 m tall means standing. Someone lying on the floor, away from a bed, may need urgent help.
+- A box that is low and long means a person lying down. A box about 1.2 m tall means someone seated. About 1.7 m tall means standing. Someone lying on the floor, away from a bed, may need urgent help. A track marked asleep is a person asleep: do not wake them for small things; an item held out to them is not taken (no_answer).
 - Speak in short, plain, warm sentences, the way a good receptionist or ward helper would. Use the place names as given in the lists (for example "Main entrance"), never codes, identifiers or words joined by underscores.
 - Be truthful. Do not claim to have done something you have not done, and do not promise what your body cannot do. Your abilities are listed in your briefing; stay inside them.
 """
@@ -66,23 +70,24 @@ _FIRST_CONTACT = """- When YOUR JOB is to greet or receive people (reception, a 
 """
 _NO_FIRST_CONTACT = """- Speak to people when your job needs it, when they speak to you, or when they are in danger; otherwise keep your distance from people at work.
 """
-_FETCH_DESK = """- Fetch a human only when you cannot help, in this order: first leave a note on the reception desk computer (note_desk, with the person's track and what they need; it interrupts nobody and you stay with the person); if they need a member of staff in person, tell the staff (tell_staff, with the person's track: at reception you go to the desk; on a ward you are led to the nearest nurse. You tell them, then walk back); press_call is the last resort. Tell the person what you have done.
+_FETCH_DESK = """- Fetch a human only when you cannot help, in this order: first leave a note on the reception desk computer (note_desk, with the person's track and what they need; it interrupts nobody and you stay with the person); if they need a member of staff in person, tell the staff (tell_staff, with the person's track: at reception you go to the desk; on a ward you are led to the nearest nurse. You tell them, then walk back); press_call is the last resort. If YOUR JOB says how to call staff, do it that way instead. Tell the person what you have done.
 """
-_FETCH_NO_DESK = """- Fetch a human only when you cannot help, in this order: tell_staff, then press_call as the last resort. tell_staff, with the person's track: at reception you go to the desk; on a ward you are led to the nearest nurse. You tell them, then walk back; press_call sounds the staff call and you stay where you are. Tell the person what you have done.
+_FETCH_NO_DESK = """- Fetch a human only when you cannot help, in this order: tell_staff, then press_call as the last resort. tell_staff, with the person's track: at reception you go to the desk; on a ward you are led to the nearest nurse. You tell them, then walk back; press_call sounds the staff call and you stay where you are. If YOUR JOB says how to call staff (for example press_call so you stay with the patient), do it that way instead. Tell the person what you have done.
 """
 _RULES_TAIL = """- Emergencies skip that order: if someone has collapsed or is lying on the floor, has chest pain, cannot breathe, is bleeding heavily, is fainting or says they feel they will pass out, or is getting worse, tell the staff or press the call button straight away. For someone who seems disoriented or is trying to leave and may come to harm if left alone: stay beside them and press the staff call button (press_call). Never give medical advice.
-- Safety comes first: keep clear of people, never block an escape route or a doorway, and do not touch anyone. Use the extinguisher only when putting out a fire is part of your job.
+- Safety comes first: keep clear of people, never block an escape route or a doorway, and do not touch anyone. Standing beside someone to hand them something, or where YOUR JOB puts you, is fine as long as you do not touch them. Use the extinguisher only when putting out a fire is part of your job.
 - Do not repeat yourself. If you have just said something and nothing has changed, choose "none" (keep doing what you are doing) and say nothing; use "wait" only to stop on purpose.
 
 How you answer
 Reply with one JSON object and nothing else.
 - say: what you say aloud now, or an empty string to stay silent.
-- toward_track: the track you are speaking to or attending to, or an empty string.
+- toward_track: the track you are speaking to or attending to, "room" when the words are for everyone in the room with you (a wait time, an evacuation instruction), or an empty string.
 - action: one of the allowed actions in the schema. "none" means do nothing new; "wait" means stand still: this cancels any walk, guide or tell_staff you are on.
-- target: the track for hand_over, the fire for extinguish, or the track for guide, approach, {tracked}; for press_call, optionally the track of the person who needs the staff; otherwise an empty string.
+- target: the track for hand_over, the fire for extinguish, or the track for guide, approach, follow, {tracked}; for press_call, optionally the track of the person who needs the staff; otherwise an empty string.
 - item: the item id for hand_over or take; otherwise an empty string.
 - destination: a place name from your lists for go_to or guide; otherwise an empty string.
 - seat: for guide only, true to end the walk at a free seat in that place (you pick the nearest free one you can see when you get there); otherwise false.
+- return_to_post: for guide only, false to stay with the person where the walk ends (someone who must not be left alone, or during an evacuation); true to walk back to your post afterwards. Otherwise true.
 - place: for hand_over only, optionally [x, y, z] in metres where you hold the item out (z inside your reach); otherwise an empty list.
 - message: for tell_staff, what you say to the staff member about the person (who they are, what they need){note}; otherwise an empty string.
 - reason: one short sentence on why, for the record."""
@@ -98,13 +103,18 @@ def rules(first_contact: bool = True, desk_staffed: bool = True) -> str:
 
 
 SYSTEM_RULES = rules()
+# Brief keys that are not shown to the robot: forbidden_areas (rendered as "Do not enter"), destination (a key the score
+# reads; its words for the robot are in the job or another key) and staff_line (what the staff are told).
+HIDDEN_BRIEF_KEYS = frozenset({"forbidden_areas", "destination", "staff_line"})
 
 NO_WALK_RULE = ("You are standing at a fixed post and cannot walk in this build; to help someone get "
                 "somewhere, give clear directions or press the call button for staff. tell_staff speaks to the "
                 "staff from where you stand. extinguish works only on a fire within 2 m of you.")
 WALK_RULE = ("You can walk. To take someone somewhere, use guide with their track and the place name (with seat true "
-             "to end at a free seat there); to go up to someone, use approach with their track; to go somewhere "
-             "yourself, use go_to. extinguish with the fire id walks you to about 1.5 m from the fire and sprays "
+             "to end at a free seat there, and return_to_post false to stay with them there); to go up to someone, use "
+             "approach with their track; to stay beside someone who is walking, use follow with their track (you keep "
+             "1 to 1.5 m from them until you choose another walk or wait); to go somewhere yourself, use go_to. "
+             "extinguish with the fire id walks you to about 1.5 m from the fire and sprays "
              "until it is out; you do not need to go_to it first.")
 
 
@@ -126,9 +136,9 @@ def decision_schema(profile: RobotProfile, desk_staffed: bool = True) -> dict:
                        "action": {"type": "string", "enum": list(actions_for(profile, desk_staffed))},
                        "target": s, "item": s, "destination": s,
                        "place": {"type": "array", "items": {"type": "number"}}, "message": s,
-                       "seat": {"type": "boolean"}, "reason": s},
+                       "seat": {"type": "boolean"}, "return_to_post": {"type": "boolean"}, "reason": s},
         "required": ["say", "toward_track", "action", "target", "item", "destination", "place", "message", "seat",
-                     "reason"],
+                     "return_to_post", "reason"],
         "additionalProperties": False,
     }
 
@@ -145,6 +155,7 @@ class RobotDecision:
     destination: Optional[str] = None  # a place label for go_to and guide (an addition to the brief's fields)
     message: Optional[str] = None  # tell_staff: what the robot says to the staff member
     seat: bool = False  # guide: end the walk at a free seat in the place
+    return_to_post: bool = True  # guide: False to stay where the walk ends
 
 
 @dataclass
@@ -195,23 +206,35 @@ def _rel_deg(pose, x, y) -> float:
 _ROUTE_CACHE: dict = {}
 
 
-def route_words(site, start: tuple[float, float, float], place_ids, router=None) -> str:
-    """Words-only routes from the robot's post to each known place: how far, which way, which rooms."""
+def route_words(site, start: tuple[float, float, float], place_ids, router=None, *, from_here: bool = False,
+                unblocked=None, cache: bool = True) -> str:
+    """Words-only routes from start to each known place: how far, which way, which rooms. from_here: the robot's
+    current pose (else its post). unblocked: the router without the blocked routes the robot has seen; a place that
+    router reaches and router does not is said to be blocked. cache False: do not keep the text (a pose that changes)."""
     key = (id(site), tuple(round(v, 2) for v in start), tuple(place_ids),
            getattr(router, "areas_key", ()))  # forbidden areas change the routes
-    if key in _ROUTE_CACHE:
+    if cache and key in _ROUTE_CACHE:
         return _ROUTE_CACHE[key]
     if router is None:
         from ..site.routing import Router
         router = Router(site.grid)
     here = site.room_at(start[0], start[1])
-    lines = [f"Getting there from your post ({place_label(site, here) if here else 'where you stand'}):"]
+    lines = [f"Getting there from {'here' if from_here else 'your post'} "
+             f"({place_label(site, here) if here else 'where you stand'}):"]
+
+    def reaches(r, xy):
+        route = r.route((start[0], start[1]), xy)
+        return route if route and math.hypot(route[-1][0] - xy[0], route[-1][1] - xy[1]) <= 1.0 else None
+
     for pid in place_ids:
         xy = site.resolve(pid)
         if xy is None:
             continue
         label = place_label(site, pid)
         route = router.route((start[0], start[1]), xy)
+        if unblocked is not None and not reaches(router, xy) and reaches(unblocked, xy):
+            lines.append(f"- {label}: the way there is blocked (you saw a route blocked sign); no other way found.")
+            continue
         if not route:
             lines.append(f"- {label}: no walkable route found.")
             continue
@@ -236,7 +259,8 @@ def route_words(site, start: tuple[float, float, float], place_ids, router=None)
             continue
         lines.append(f"- {label}: about {length:.0f} m, setting off {way}{via}.")
     text = "\n".join(lines)
-    _ROUTE_CACHE[key] = text
+    if cache:
+        _ROUTE_CACHE[key] = text
     return text
 
 
@@ -284,12 +308,17 @@ def parse_decision(data: Any, profile: RobotProfile, mind: "Optional[RobotMind]"
         seat = False
     if not isinstance(seat, bool):
         raise ValueError("seat must be true or false")
+    back = data.get("return_to_post", True)
+    if back is None:
+        back = True
+    if not isinstance(back, bool):
+        raise ValueError("return_to_post must be true or false")
     say = _opt_str(data, "say")
     d = RobotDecision(say=say[:MAX_SAY_CHARS] if say else None, toward_track=_opt_str(data, "toward_track"),
                       action=action, target=_opt_str(data, "target"), item=_opt_str(data, "item"),
                       place=[float(v) for v in place] or None, reason=reason.strip(),
                       destination=_opt_str(data, "destination"), message=_opt_str(data, "message"),
-                      seat=seat and action == "guide")
+                      seat=seat and action == "guide", return_to_post=back or action != "guide")
     for need in NEEDS.get(action, ()):
         if getattr(d, need) is None:
             raise ValueError(f"{action} needs {need}")
@@ -344,8 +373,12 @@ def decision_outputs(d: RobotDecision, mind: "RobotMind", aid: str) -> Outputs:
         out.action = {"id": aid, "action": "guide_start", "track": d.target, "place": mind.place_id(d.destination)}
         if d.seat:
             out.action["seat"] = True
+        if not d.return_to_post:
+            out.action["return_to_post"] = False
     elif a == "approach":
         out.action = {"id": aid, "action": "approach", "track": d.target}
+    elif a == "follow":
+        out.action = {"id": aid, "action": "follow", "track": d.target}
     elif a == "go_to":
         pid = mind.place_id(d.destination)
         xy = mind.site.resolve(pid)
@@ -359,8 +392,9 @@ def decision_outputs(d: RobotDecision, mind: "RobotMind", aid: str) -> Outputs:
     elif a == "wait":
         out.stop = True
     if out.action or out.goal:
-        mind.note(f"You started {a} as {aid}" + (f" for track {d.target}." if a in ("guide", "approach", "tell_staff",
-                                                                                   "note_desk", "hand_over") else "."))
+        mind.note(f"You started {a} as {aid}" + (f" for track {d.target}." if a in ("guide", "approach", "follow",
+                                                                                   "tell_staff", "note_desk",
+                                                                                   "hand_over") else "."))
     return out
 
 
@@ -372,6 +406,13 @@ class _Track:
     posture: str
     t: float
     moving: bool = False
+    asleep: bool = False
+
+
+def _asleep(d: dict) -> bool:
+    """A detection marked asleep (the sim's perception sets asleep: true on the track; tolerated in the box or the
+    result too)."""
+    return any(bool(x.get("asleep")) for x in (d, d.get("bbox") or {}, *(d.get("results") or [])) if isinstance(x, dict))
 
 
 class RobotMind:
@@ -403,6 +444,10 @@ class RobotMind:
         self._seen_fires: set[str] = set()
         self._seen_signs: set[str] = set()
         self._lasting: list[str] = []  # events the robot keeps in mind for the whole run (a blocked route it saw)
+        self._signs: dict[str, tuple[float, float]] = {}  # blocked-route signs seen: routes in words go round them
+        self._alarm_t: Optional[float] = None  # when the robot first heard a fire alarm (there is no all-clear)
+        self._routes_key = None
+        self._routes_text = ""
         self._addressed = self._speech = self._new_track = self._new_result = self._new_hazard = False
         self._permanent = 0
         self._n_ids = 0
@@ -421,8 +466,9 @@ class RobotMind:
 
     @property
     def first_contact(self) -> bool:
-        """The brief's first_contact (default True): False when the job is not greeting people."""
-        return self._flag("first_contact")
+        """The brief's first_contact (default True): False when the job is not greeting people, and while a fire alarm
+        sounds (nobody is greeted during an evacuation)."""
+        return self._flag("first_contact") and self._alarm_t is None
 
     @property
     def desk_staffed(self) -> bool:
@@ -459,7 +505,7 @@ class RobotMind:
                     continue
                 c, size = d["bbox"]["center"], d["bbox"]["size"]
                 tid = str(d["id"])
-                tr = _Track(float(c["x"]), float(c["y"]), posture_from_box(size), t)
+                tr = _Track(float(c["x"]), float(c["y"]), posture_from_box(size), t, asleep=_asleep(d))
             except (KeyError, TypeError, ValueError):
                 continue
             prev = self._tracks.get(tid)
@@ -488,6 +534,10 @@ class RobotMind:
             self._seen_signs.add(sid)
             self._new_hazard = True
             try:
+                self._signs[sid] = (float(s["x"]), float(s["y"]))
+            except (KeyError, TypeError, ValueError):
+                pass
+            try:
                 rid = self.site.room_at(float(s["x"]), float(s["y"]))
             except (KeyError, TypeError, ValueError):
                 rid = None
@@ -512,6 +562,13 @@ class RobotMind:
         return any(tid not in self._spoken and math.hypot(tr.x - x, tr.y - y) <= GREET_M
                    for tid, tr in self._tracks.items())
 
+    def _in_my_room(self) -> set[str]:
+        """The tracks in the robot's room (within 4 m when it stands outside any room)."""
+        x, y = self.pose[0], self.pose[1]
+        rid = self.site.room_at(x, y)
+        return {tid for tid, tr in self._tracks.items()
+                if (self.site.room_at(tr.x, tr.y) == rid if rid else math.hypot(tr.x - x, tr.y - y) <= 4.0)}
+
     def _min_person_dist(self) -> float:
         return min((math.hypot(tr.x - self.pose[0], tr.y - self.pose[1]) for tr in self._tracks.values()),
                    default=math.inf)
@@ -525,6 +582,8 @@ class RobotMind:
             self._addressed = True
         elif h.get("source_kind") in ("alarm", "pa"):
             self._speech = True  # an alarm or an announcement: worth a thought at once
+            if h.get("source_kind") == "alarm" and self._alarm_t is None:
+                self._alarm_t = t
         elif h.get("source_kind") == "person" and h.get("text") and self._min_person_dist() <= NEAR_SPEECH_M:
             self._speech = True
         elif h.get("source_kind") == "person" and not h.get("text"):
@@ -537,25 +596,17 @@ class RobotMind:
             b = self.brief or {}
             rooms = self.site.summary_for_prompt(self.known_places)
             lines = ["THE HOSPITAL"] + ([rooms, ""] if not rooms.startswith("You do not know") else [])
-            from ..site.areas import areas_from_brief, robot_router
+            from ..site.areas import areas_from_brief
             areas = areas_from_brief(self.brief)
-            router = self._router
-            if areas:  # the user's forbidden areas: the routes go round them
-                if router is None:
-                    from ..site.routing import Router
-                    router = Router(self.site.grid)
-                router = robot_router(router, areas)
-            lines += [route_words(self.site, self._start, self.known_places, router), "", "YOUR JOB"]
+            lines += ["YOUR JOB"]
             if self.brief is None:
                 lines.append("No task brief was given. Be a polite, helpful presence and ask people what they need.")
             else:
                 for k, v in b.items():
-                    if k == "forbidden_areas" or isinstance(v, (bool, int, float)):
+                    if k in HIDDEN_BRIEF_KEYS or isinstance(v, (bool, int, float)):
                         continue  # the areas are rendered below; flags and numbers are not part of the job's words
                     name = k.replace('_', ' ').capitalize()
                     if isinstance(v, str) and v:
-                        if k == "destination" and self.place_id(v):
-                            v = place_label(self.site, self.place_id(v))
                         lines.append(f"{name}: {v}")
                     elif isinstance(v, list) and v and all(isinstance(e, str) for e in v):
                         lines.append(f"{name}: {', '.join(v)}")
@@ -572,6 +623,46 @@ class RobotMind:
             lines += ["", "YOUR BODY", self.profile.abilities(desk_staffed=self.desk_staffed)]
             self._card = "\n".join(lines)
         return self._card
+
+    def _router_now(self):
+        """(router, unblocked): the robot's router round its forbidden areas and the blocked-route signs it has seen,
+        and the same without the signs (None when it has seen none)."""
+        from ..site.areas import areas_from_brief, robot_router
+        from ..site.routing import Router
+        areas = areas_from_brief(self.brief)
+        base = self._router if self._router is not None else Router(self.site.grid)
+        unblocked = robot_router(base, areas) if areas else base
+        if not self._signs:
+            return unblocked, None
+        blocked = Router(self.site.grid)
+        for x, y in self._signs.values():
+            blocked.block(x, y, SIGN_BLOCK_M)
+        return (robot_router(blocked, areas) if areas else blocked), unblocked
+
+    def routes_now(self) -> str:
+        """Routes in words from where the robot stands now, worked out again when it has moved or turned, or has seen
+        a new blocked-route sign."""
+        x, y, yaw = self.pose
+        key = (round(x / ROUTE_POSE_STEP_M), round(y / ROUTE_POSE_STEP_M), round(yaw / (math.pi / 8)),
+               tuple(sorted(self._signs)), tuple(self.known_places))
+        if key != self._routes_key:
+            router, unblocked = self._router_now()
+            self._routes_text = route_words(self.site, self.pose, self.known_places, router, from_here=True,
+                                            unblocked=unblocked, cache=False)
+            self._routes_key = key
+        return self._routes_text
+
+    def _at_place(self, x: float, y: float) -> str:
+        """The known spot (a landmark among the known places) a track stands at, or ""."""
+        best = None
+        for pid in self.known_places:
+            lm = self.site.landmarks.get(pid)
+            if lm is None:
+                continue
+            d = math.hypot(lm.x - x, lm.y - y)
+            if d <= AT_PLACE_M and (best is None or d < best[0]):
+                best = (d, pid)
+        return f", at {place_label(self.site, best[1])}" if best else ""
 
     def _brief_words(self, v) -> str:
         """A value in a brief list in words: a place id or label becomes the place's label."""
@@ -605,6 +696,9 @@ class RobotMind:
         rid = self.site.room_at(x, y)
         L = [f"NOW t={t:.1f} s. You are at (x={x:.2f}, y={y:.2f}), facing {math.degrees(yaw):.0f} degrees, "
              f"in {place_label(self.site, rid) if rid else 'an unnamed space'}."]
+        if self._alarm_t is not None:
+            L.append(f"The fire alarm has been sounding since t={self._alarm_t:.0f} s: this is an evacuation, not a time "
+                     f"for greetings.")
         held = self._objects.get("held") or []
         L.append("You are holding: " + (", ".join(f"{i.get('label') or i.get('kind')} (item {i['id']})" for i in held)
                                         if held else "nothing."))
@@ -626,8 +720,9 @@ class RobotMind:
         for tid, tr in sorted(self._tracks.items()):
             d = math.hypot(tr.x - x, tr.y - y)
             new = ", not spoken to yet" if self.first_contact and tid not in self._spoken and d <= GREET_M else ""
-            L.append(f"- {tid}: {d:.1f} m, {_direction_words(_rel_deg(self.pose, tr.x, tr.y))}, {tr.posture}, "
-                     f"{'moving' if tr.moving else 'still'}, at (x={tr.x:.2f}, y={tr.y:.2f}){new}")
+            L.append(f"- {tid}: {d:.1f} m, {_direction_words(_rel_deg(self.pose, tr.x, tr.y))}, {tr.posture}"
+                     f"{', asleep' if tr.asleep else ''}, {'moving' if tr.moving else 'still'}, "
+                     f"at (x={tr.x:.2f}, y={tr.y:.2f}){self._at_place(tr.x, tr.y)}{new}")
         if not self._tracks:
             L.append("- nobody in view")
         L.append("Objects in view:")
@@ -657,6 +752,8 @@ class RobotMind:
                      f"{_direction_words(_rel_deg(self.pose, c['x'], c['y']))}")
         if len(L) == n0:
             L.append("- nothing notable")
+        if self.known_places:
+            L += [self.routes_now(), ""]
         if self._recent_results:
             L.append("Results of your recent actions:")
             for r in self._recent_results:
@@ -739,7 +836,9 @@ class RobotMind:
             log.warning("dropped an invalid robot decision: %s", exc)
             self.note("Your last answer was invalid and was dropped.")
             return None, f"invalid: {exc}"
-        if d.say and d.toward_track:
+        if d.say and d.toward_track == ROOM:  # a line for the room reaches everyone in it
+            self._spoken |= self._in_my_room()
+        elif d.say and d.toward_track:
             self._spoken.add(d.toward_track)
         self.note(f"You decided: {d.action} ({d.reason})"
                   + (f"; you said: \"{speakable(d.say, self.site)}\"" if d.say else ""))
@@ -775,7 +874,7 @@ def _parse(argv):
 def _robot_view(args):
     """The robot's view of the run: from robot_config.json, or from a scenario file (worked example)."""
     from ..config.loader import ConfigError, default_models, load_scenario
-    from .view import RobotView, load_robot_view
+    from .view import RobotView, load_robot_view, robot_brief_for
     if args.robot_config:
         try:
             return load_robot_view(args.robot_config)
@@ -785,7 +884,7 @@ def _robot_view(args):
     sc = loaded.scenario
     return RobotView(root=loaded.root, site_name=sc.site, area=sc.area, robot=sc.robot,
                      known_places=list(sc.known_places), models=sc.models or default_models(sc.provider),
-                     provider=sc.provider, budget_usd=sc.budget_usd * ROBOT_BUDGET_SHARE, brief=sc.robot_brief,
+                     provider=sc.provider, budget_usd=sc.budget_usd * ROBOT_BUDGET_SHARE, brief=robot_brief_for(loaded),
                      domain=None, site=loaded.site, waiting_area=loaded.area, signs=loaded.signs)
 
 
