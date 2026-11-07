@@ -1,7 +1,11 @@
 """Robot task actions for the stub world (the test double for the Isaac host's task layer).
 
 An action is a JSON dict {"id", "action", ...} from <ns>/task/action:
-  hand_over {item, to: track, place?: [x,y,z]}   an open offer; the result comes when it resolves
+  hand_over {item, to: track, place?: [x,y,z]}   an open offer; the result comes when it resolves. An item it does not
+                                                  hold but has within TAKE_REACH_M is taken first, in the same action.
+                                                  Reasons: ok, refused (declined), no_answer (no reply in the offer
+                                                  window, or the person is asleep), out_of_reach_receiver (geometry),
+                                                  out_of_reach_giver, not_holding, unknown_track, superseded
   take {item}                                     an unheld item within 0.8 m
   extinguish {fire}                               sprays until the fire is out (or the robot leaves); out of range, it
                                                   first walks to free floor SPRAY_FROM_M from the fire
@@ -10,9 +14,13 @@ An action is a JSON dict {"id", "action", ...} from <ns>/task/action:
                                                   member who hears it is told where the robot is, which call lights
                                                   are on and, with track, who needs them. ok, with reason "answered"
                                                   (someone heard it) or "unanswered" (nobody did)
-  guide_start {track, place, seat?} / guide_stop {}
+  guide_start {track, place, seat?, return_to_post?} / guide_stop {}
                                                   walks to the place at the person's pace; the person is offered a walk;
-                                                  with seat, it ends beside a free seat there and shows it to them
+                                                  with seat, it ends beside a free seat there and shows it to them;
+                                                  return_to_post (default true) false leaves it where the guide ended
+  follow {track}                                  walks up to the person and stays 1.0-1.5 m from them as they move,
+                                                  until guide_stop, a goal, cmd_vel, another walking task, or they are
+                                                  gone; result ok/following at the start (no_person: unknown track)
   approach {track}                                walks up to the person (APPROACH_M from them) and faces them; to a
                                                   patient in bed, or with an item in hand, it ends where it can hand
                                                   the item over (beside the bed; in front of or beside them)
@@ -25,9 +33,11 @@ Each action ends in one result {"id", "action", "ok", "reason", "t"}; nothing he
 on the robot's side of the wire: people are addressed by track.
 
 Guiding: the robot holds while the person it guides is more than 2.5 m behind (and walks on once they are within
-2 m); that person never slows it, other people within 1.5 m slow it to 0.3 m/s. At the place it waits up to 20 s
-for them to arrive, says goodbye and walks back to its post (goal id "<id>-return"). It gives up if they never come
-within 2.5 m for 30 s.
+2 m); that person, following behind it, does not slow it, but it keeps clear of them like anyone else, and its walk
+ends at least GUIDE_CLEAR_M from them. Other people within 1.5 m slow it to 0.3 m/s. At the place it waits up to 20 s
+for them to arrive, says goodbye and walks back to its post (goal id "<id>-return"), unless return_to_post is false or
+a fire alarm has sounded. It gives up if they never come within 2.5 m for 30 s. Once a guide is over, the person does
+not take up following the robot again unless it guides them again.
 
 A guide to a seat: when the robot reaches the place it picks the free seat nearest to it, among those its camera could
 see by turning its head (within its range, in line of sight; never a staff chair). It walks to a spot beside that seat,
@@ -51,7 +61,8 @@ The desk note: the result ("noted") comes at once, since the computer takes the 
 nudge (what is on her screen) when she is within 1.5 m of her chair, at once or when she gets back, and only once.
 
 The sim-side run log (robot_tasks.jsonl, never sent to the robot) gets a "guide" row at the start and end of each
-guide, with the person's id, and a "tell" row for each tell_staff and a "note" row for each desk note when it is read (and when it is left unread at
+guide, with the person's id, a "follow" row at the start and end of each follow, a "hand_over" offer row (person,
+item) when the robot holds an item out, the hand_over result row with the receiver (person) and item, and a "tell" row for each tell_staff and a "note" row for each desk note when it is read (and when it is left unread at
 the end of the run, nothing: unread notes are not logged).
 """
 from __future__ import annotations
