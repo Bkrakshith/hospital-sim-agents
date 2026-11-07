@@ -174,3 +174,33 @@ def test_flows_credit_a_walk_only_when_it_arrived():
         doc = yaml.safe_load((flows_dir(CONFIG) / f"{fid}.yaml").read_text())
         guided = {who for e in _expects(doc["steps"]) for act, who in _walk_actions(e["when"]) if act == "guided"}
         assert people <= guided, f"{fid}: no arrived-walk credit for {sorted(people - guided)}"
+
+
+# ---- night_call_bell: a nurse at the bedside beside the robot has come ----------------------------------------------
+def test_night_call_bell_nurse_beside_a_robot_at_the_bed_stops_the_second_ring(tmp_path):
+    from wardzero_agents.flows.engine import FlowEngine, FlowView
+    from wardzero_agents.flows.spec import load_flow
+    from wardzero_agents.site import load_site
+    site = load_site(CONFIG)
+    p = PRESETS["night_call_bell"]
+    start = {c.id: (c.x, c.y) for c in p.characters}
+    px, py = start["P1"]
+
+    def run(nurse_gap):
+        e = FlowEngine(load_flow(flows_dir(CONFIG) / "night_call_bell.yaml"), DECK)
+        fired, t = [], 0.0
+        while t <= p.duration_min * 60 and not e.finished:
+            where = dict(start)
+            if t >= 45.0:  # the nurse the robot called stops beside it at the bed (re-QA: 1.68 to 1.71 m off P1)
+                where["N1"] = (px + nurse_gap, py)
+            sts = {k: Status(person=k, t=t, x=x, y=y, yaw=0.0, posture="standing", progress=0.0, state="idle")
+                   for k, (x, y) in where.items()}
+            fired += [f.card for f in e.tick(FlowView(t=t, statuses=sts, robot_xy=(px - 1.0, py), present=set(sts),
+                                                      cast=set(sts), room_at=site.room_at,
+                                                      robot_did=[(40.0, "press_call", None, None)] if t >= 40 else [],
+                                                      robot_said_to={"P1"} if t >= 30 else set(),
+                                                      robot_said_at={"P1": [30.0]} if t >= 30 else {}))]
+            t += 0.5
+        return fired
+    assert run(1.75).count("ring_bell") == 1
+    assert run(3.0).count("ring_bell") == 2  # she never came to the bed: P1 rings again

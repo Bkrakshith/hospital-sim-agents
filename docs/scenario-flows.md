@@ -147,7 +147,7 @@ flowchart TD
   n7 --> n8
   n9(["Expect: The robot fetches the nurse (up to 120 s)"])
   n7 --> n9
-  n10{"Unless: The nurse reaches P1"}
+  n10{"Unless: The nurse reaches P1's bedside"}
   n7 --> n10
   n11["Wait 150 s"]
   n10 --> n11
