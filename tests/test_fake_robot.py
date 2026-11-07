@@ -185,21 +185,20 @@ def test_the_robot_role_in_the_scripted_gateway_uses_the_scripted_robot():
     assert default_policy(req)["action"] == "extinguish"
 
 
-def test_the_evacuation_guide_tells_everyone_in_view_before_walking_anyone_out():
+def test_the_evacuation_guide_walks_each_person_out_nearest_first():
+    """A flow credits the robot only for a walk that arrived: after the word to the room it walks the nearest person
+    out itself (rather than sending them alone), and stays at the exit afterwards."""
     r = ScriptedRobot()
     c = card("When the alarm sounds, get everyone out by a safe open way.", "Role: fire evacuation guide",
              "Safe exit: the safe way out is the Ambulance handover bay in A&E.")
     alarm = ["- 1 s ago, an alarm, 85 dB"]
     both = [track("t1", 1.5, 1.5, 0.0), track("t2", 3.0, 3.0, 0.0)]
-    assert decide(r, c, situation(t=2.0, heard=alarm, tracks=both))["toward_track"] == "room"
-    first = decide(r, c, situation(t=3.0, heard=alarm, tracks=both))
-    assert first["toward_track"] == "t1" and "Ambulance handover bay" in first["say"]
-    assert "watching" in decide(r, c, situation(t=5.0, heard=alarm, tracks=both))["reason"]
-    second = decide(r, c, situation(t=8.0, heard=alarm, tracks=both))
-    assert second["toward_track"] == "t2"
-    # t1 has not moved 12 s after being told: walked out, and the robot stays at the exit afterwards
-    out = decide(r, c, situation(t=21.0, heard=alarm, tracks=both))
+    room = decide(r, c, situation(t=2.0, heard=alarm, tracks=both))
+    assert room["toward_track"] == "room" and "walk each of you out" in room["say"]
+    out = decide(r, c, situation(t=3.0, heard=alarm, tracks=both))
     assert out["action"] == "guide" and out["target"] == "t1" and out["return_to_post"] is False
+    assert out["destination"] == "Ambulance handover bay"
+    assert decide(r, c, situation(t=5.0, heard=alarm, tracks=both))["reason"] == "guiding"
 
 
 def test_of_two_people_that_way_the_one_walking_up_is_taken_for_the_speaker():

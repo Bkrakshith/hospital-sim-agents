@@ -192,3 +192,77 @@ def test_the_guide_is_tried_again_with_someone_following_out_of_view_behind():
     r.pending = _Pending("guide", 140.0, "t3", aid="rb22", extra={"back": False})
     d = r.decide(c, sit(172.8, [], ["- rb22 walking to a goal: failed (blocked_by_person)"]), actions)
     assert d["action"] == "guide" and d["target"] == "t3", d
+
+
+# ---- evacuation: every person walked out by the robot ------------------------------------------------------------------
+_EVAC_JOB = ("When the alarm sounds, get everyone out by a safe open way. Once the people near you are on their way "
+             "out, check the A&E waiting area and walk anyone still there out.")
+_EVAC_CARD = "\n".join(["THE HOSPITAL", "Places you know:", "- Lobby: Main lobby and reception (lobby)",
+                        "- AE_Waiting: A&E walk-in reception + 15-seat waiting (waiting)",
+                        "- AE_Handover: Ambulance handover bay (handover)", "", "YOUR JOB",
+                        "Role: fire evacuation guide", f"Job: {_EVAC_JOB}",
+                        "Safe exit: the safe way out is the Ambulance handover bay in A&E.", "", "YOUR BODY",
+                        "A humanoid."])
+_EVAC_ACTIONS = ["none", "wait", "go_to", "approach", "guide", "follow", "tell_staff", "press_call"]
+
+
+def _evac_sit(t, *, room="Main lobby and reception", x=0.0, y=0.0, heard=(), tracks=(), results=(), events=()):
+    return "\n".join([f"NOW t={t:.1f} s. You are at (x={x:.2f}, y={y:.2f}), facing 0 degrees, in {room}.",
+                      "You are holding: nothing.", "Heard recently, newest last:", "- 1 s ago, an alarm, 85 dB",
+                      *heard, "People your camera sees (anonymous tracks):", *(tracks or ["- nobody in view"]),
+                      "Objects in view:", "- nothing notable",
+                      *(["Results of your recent actions:", *results] if results else []),
+                      "Your last events, oldest first:", *events, "Decide what to do now."])
+
+
+def test_someone_frozen_while_walked_out_is_calmed_and_offered_the_walk_again_at_once():
+    """The person it walks out freezes and calls out from behind it (out of the camera's view): a calm word to them
+    with the walk offered again, once for that line, while the walk goes on otherwise."""
+    from wardzero_agents.llm.fake_robot import _Pending
+    r = ScriptedRobot()
+    r.decide(_EVAC_CARD, _evac_sit(11.0, tracks=["- t2: 1.5 m, straight ahead, standing, still, at (x=1.50, y=0.00)"]),
+             _EVAC_ACTIONS)
+    r.mem.update({"alarm": True, "alarm_t": 1.0, "announced": True, "guided": {"t2"},
+                  ("guide_to", "t2"): "Ambulance handover bay"})
+    r.pending = _Pending("guide", 12.2, "t2", aid="rb3", extra={"back": False})
+    cry = ['- 0 s ago, someone nearby, 55 dB, from behind you: "I don\'t know where to go!"']
+    d = r.decide(_EVAC_CARD, _evac_sit(18.9, x=-2.0, heard=cry), _EVAC_ACTIONS)
+    assert d["action"] == "guide" and d["target"] == "t2" and d["toward_track"] == "t2", d
+    assert d["destination"] == "Ambulance handover bay" and d["return_to_post"] is False
+    assert "right here with you" in d["say"]
+    d = r.decide(_EVAC_CARD, _evac_sit(19.5, x=-2.2, heard=cry), _EVAC_ACTIONS)
+    assert d["action"] == "none" and d["reason"] == "guiding", d
+
+
+def test_a_word_of_thanks_from_the_person_walked_out_does_not_restart_the_walk():
+    from wardzero_agents.llm.fake_robot import _Pending
+    r = ScriptedRobot()
+    r.decide(_EVAC_CARD, _evac_sit(11.0), _EVAC_ACTIONS)
+    r.mem.update({"alarm": True, "alarm_t": 1.0, "announced": True, "guided": {"t2"}})
+    r.pending = _Pending("guide", 12.2, "t2", aid="rb3", extra={"back": False})
+    d = r.decide(_EVAC_CARD, _evac_sit(14.0, heard=['- 0 s ago, someone nearby, 55 dB, from behind you: "Thank you"']),
+                 _EVAC_ACTIONS)
+    assert d["action"] == "none" and d["reason"] == "guiding", d
+
+
+def test_after_walking_one_out_it_goes_back_for_the_person_it_left_in_the_lobby_first():
+    """Back at the exit with nobody in view: it goes back for the person it saw standing still in the lobby when the
+    alarm sounded before the one it passed on the way (the room the job names is checked after)."""
+    from wardzero_agents.llm.fake_robot import _Pending
+    r = ScriptedRobot()
+    lobby = ["- t1: 4.7 m, straight ahead, standing, still, at (x=-2.00, y=1.00)",
+             "- t2: 1.6 m, straight ahead, standing, still, at (x=1.00, y=-0.90)"]
+    d = r.decide(_EVAC_CARD, _evac_sit(0.5, x=2.5, y=-0.5, tracks=lobby), _EVAC_ACTIONS)
+    assert d["toward_track"] == "room", d  # the word to the room
+    d = r.decide(_EVAC_CARD, _evac_sit(2.1, x=2.5, y=-0.5, tracks=lobby), _EVAC_ACTIONS)
+    assert d["action"] == "guide" and d["target"] == "t2", d
+    r.pending.aid = "rb3"
+    # on the way it passes someone seated still in the A&E waiting area
+    r.decide(_EVAC_CARD, _evac_sit(40.0, x=-8.0, y=2.0, room="A&E walk-in reception + 15-seat waiting",
+                                   tracks=["- t3: 2.0 m, to your left, seated, still, at (x=-9.00, y=0.00)"]),
+             _EVAC_ACTIONS)
+    done = ["- rb3 walking to a goal: ok (arrived)"]
+    r.decide(_EVAC_CARD, _evac_sit(60.2, x=-29.1, y=6.7, room="Ambulance handover bay", results=done), _EVAC_ACTIONS)
+    d = r.decide(_EVAC_CARD, _evac_sit(82.0, x=-29.1, y=6.7, room="Ambulance handover bay", results=done),
+                 _EVAC_ACTIONS)
+    assert d["action"] == "approach" and d["target"] == "t1", d
