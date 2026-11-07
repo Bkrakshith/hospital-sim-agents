@@ -27,12 +27,16 @@ SHORTTERM_DB = "shortterm.sqlite"
 
 
 def _held_while_pending(h: Heard) -> bool:
-    """Speech that must still reach the next decision: anything the robot says, and speech to me."""
-    return h.source_kind == "robot" or (h.source_kind == "person" and h.addressed_to_me)
+    """What must still reach the next decision: anything the robot says, speech to me, an alarm and a PA
+    announcement (each is heard once, and missing a fire alarm is not like missing small talk)."""
+    return (h.source_kind in ("robot", "alarm", "pa")
+            or (h.source_kind == "person" and h.addressed_to_me))
 
 
 class Effects(Protocol):
-    def publish_intent(self, intent: Intent) -> None: ...
+    # Returns the id of the intent in effect (this one, or the running one it repeats and that was kept), or None
+    # when the intent was simply sent.
+    def publish_intent(self, intent: Intent) -> Optional[str]: ...
     def publish_say(self, say: Say) -> None: ...
 
 

@@ -371,3 +371,39 @@ def test_legacy_prompt_unchanged_from_843145b():
     for role in ("patient", "companion", "visitor", "staff"):
         assert system_fixed(role) == SYSTEM_FIXED
         assert decision_schema(role)["properties"]["intent"]["properties"]["kind"]["enum"] == old_enum
+
+
+def test_legacy_situation_unchanged_from_843145b():
+    """A situation rendered for the original reception scenario (no robot brief) is byte for byte what 843145b
+    rendered: the robot is still "the reception robot g1" there."""
+    import hashlib
+    from wardzero_agents.contracts import Heard, Nudge, Seen, Status
+    from wardzero_agents.mind.prompts import render_situation, robot_role_of
+    root = Path(__file__).resolve().parents[1]
+    ld = load_scenario(root / "config" / "scenarios" / "waiting_area_v1.yaml")
+    assert robot_role_of(ld.scenario) is None
+    inst = {i.person_id: i for i in ld.instances}["P5"]
+    seat, sign = ld.area.seats[0], ld.signs[0]
+    obs = Observation(person="P5", t=300.0, visible=[
+        Seen(kind="robot", id="g1", distance=1.6, bearing_deg=30.0),
+        Seen(kind="person", id="P3", distance=2.4, bearing_deg=-100.0, detail="standing"),
+        Seen(kind="sign", id=sign.id, distance=4.0, bearing_deg=5.0, detail=sign.text),
+        Seen(kind="seat", id=seat.id, distance=1.0, bearing_deg=150.0)],
+        heard=[Heard(source_kind="robot", source_id="g1", text="Please take a seat", received_db=60.0, partial=False,
+                     addressed_to_me=True),
+               Heard(source_kind="person", source_id="P3", text="How long is the wait?", received_db=50.0,
+                     partial=True, addressed_to_me=False),
+               Heard(source_kind="pa", source_id="pa", text="Clinic 2 is running late", received_db=70.0,
+                     partial=False, addressed_to_me=False),
+               Heard(source_kind="cough", source_id="P1", text=None, received_db=40.0, partial=False,
+                     addressed_to_me=False)])
+    st = Status(person="P5", t=300.0, x=seat.x, y=seat.y, yaw=0.0, posture="seated", intent_id="i1",
+                intent_kind="sit_idle", progress=1.0, state="done")
+    s = render_situation(inst, obs, st, ["addressed_speech", "robot_near", "nudge"],
+                         [Nudge(person="P5", t=300.0, card="c", message="You feel restless")], 5.0, mood="anxious",
+                         patience_left=0.4, current_intent={"id": "i1", "kind": "sit_idle", "target": None,
+                                                            "state": "done"},
+                         area=ld.area, site=ld.site, robot_role=robot_role_of(ld.scenario))
+    assert "- the reception robot g1 (1.6 m ahead to your left)" in s.splitlines()
+    # sha256 of the same situation rendered by render_situation at 843145b
+    assert hashlib.sha256(s.encode()).hexdigest() == "7b4cc2ceebc512aa5ddc906b0c334c818ad1b4be92ba36fdfe1c4169f2291c61"

@@ -5,8 +5,11 @@ from typing import Optional
 
 from ..contracts import Nudge, Observation, Status
 
-URGENT = {"addressed_speech", "nudge"}
-REASONS = ("addressed_speech", "speech_nearby", "robot_near", "new_sign", "new_person",
+URGENT = {"addressed_speech", "nudge", "alarm"}
+# Sounds that get a decision at once whatever the debounce: an alarm, and a PA announcement (which keeps its speech
+# reason, so the prompts of runs without an alarm do not change).
+URGENT_SOURCES = ("alarm", "pa")
+REASONS = ("alarm", "addressed_speech", "speech_nearby", "robot_near", "new_sign", "new_person",
            "intent_done", "intent_failed", "cough_nearby", "patience_timer", "nudge", "start")
 
 
@@ -38,9 +41,12 @@ class TriggerGate:
         if self._first_check is None:
             self._first_check = t
         found: set[str] = set()
+        urgent_sound = any(h.source_kind in URGENT_SOURCES for h in obs.heard)
         for h in obs.heard:
             if h.source_kind == "cough":
                 found.add("cough_nearby")
+            elif h.source_kind == "alarm":
+                found.add("alarm")
             elif h.source_kind in ("robot", "person", "pa"):
                 found.add("addressed_speech" if h.addressed_to_me else "speech_nearby")
         prev = last_obs.visible if last_obs is not None else []
@@ -67,7 +73,7 @@ class TriggerGate:
             found.add("start")
 
         if (self._last_decision is not None and t - self._last_decision < self.min_interval_s
-                and not (found & URGENT)):
+                and not (found & URGENT) and not urgent_sound):
             self._candidate_end = None
             return []
         return [r for r in REASONS if r in found]
