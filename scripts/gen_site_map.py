@@ -143,7 +143,7 @@ HINTS = {
     "evacuation_guide": {"focus_rooms": ["Lobby", "Main_Corridor", "AE_Waiting"], "route_rooms": []},
     "specimen_run": {"focus_rooms": ["Ward_Corridor", "Main_LiftLobby"],
                      "route_rooms": ["Ward_Entrance", "Main_Corridor"]},
-    "visiting_rush": {"focus_rooms": ["Ward_Corridor"], "route_rooms": ["Lobby", "Main_Corridor", "Ward_Entrance"]},
+    "visiting_rush": {"focus_rooms": ["Ward_Corridor"], "route_rooms": ["Lobby", "Main_Corridor", "Ward_Entrance", "Ward_WS1"]},
     "wandering_patient": {"focus_rooms": ["Ward_Corridor"] + BEDROOMS, "route_rooms": ["Ward_Entrance"]},
     "night_call_bell": {"focus_rooms": BEDROOMS + ["Ward_WS1", "Ward_WS2"], "route_rooms": ["Ward_Corridor"]},
     "ae_waiting": {"focus_rooms": ["AE_Waiting", "AE_Triage", "Lobby"], "route_rooms": ["Main_Corridor"]},

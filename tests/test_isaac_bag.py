@@ -111,7 +111,7 @@ def test_it_records_an_allowlist_without_images_by_default(tmp_path):
     rec = argv[10:]
     rt = topics.robot_topics("robot")
     want = {rt[k] for k in ("clock", "tf", "joint_states", "joint_command", "odom", "cmd_vel", "camera_info", "bbox_3d",
-                            "heard", "say", "goal_pose", "task_action", "task_result", "task_brief")}
+                            "heard", "say", "say_toward", "goal_pose", "task_action", "task_result", "task_brief")}
     assert set(rec) == want
     assert not {rt["camera_rgb"], rt["camera_depth"], rt["lidar"]} & set(rec)
     # nothing of the people's private wz.v1 topics, and no wildcard

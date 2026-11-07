@@ -76,7 +76,7 @@ def test_report_html_has_sections_and_invalid_banner(tmp_path):
     assert "INVALID" not in page and "prefers-color-scheme:dark" in page
     assert not re.search(r'(src|href)="https?:', page) and "<script" not in page
     assert "The nurse was alerted [04:10]." in page and "Answer questions about waiting" in page
-    assert "Triage alerted within a minute" in page and "Waits answered within 30 seconds" in page
+    assert "Staff alerted within a minute" in page and "Waits answered within 30 seconds" in page
     rep = json.loads((rd / "report.json").read_text())
     assert rep["verdict"]["label"] == "FAIL" and rep["valid"] is True
     by = {c["id"]: c for c in rep["criteria"]}

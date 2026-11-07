@@ -293,9 +293,10 @@ _TYPES = {"clock": "rosgraph_msgs/Clock", "tf": "tf2_msgs/TFMessage", "joint_sta
           "camera_info": "sensor_msgs/CameraInfo", "bbox_3d": "std_msgs/String (JSON)",
           "lidar": "sensor_msgs/PointCloud2", "objects": "std_msgs/String (JSON)",
           "heard": "std_msgs/String (JSON)", "say": "std_msgs/String (JSON)",
+          "say_toward": "std_msgs/String (track id)",
           "goal_pose": "geometry_msgs/PoseStamped", "task_action": "std_msgs/String (JSON)",
           "task_result": "std_msgs/String (JSON)", "task_brief": "std_msgs/String (JSON)"}
-_OUT = {"joint_command", "cmd_vel", "goal_pose", "say", "task_action"}  # the robot publishes these
+_OUT = {"joint_command", "cmd_vel", "goal_pose", "say", "say_toward", "task_action"}  # the robot publishes these
 
 
 def topic_table(profile: RobotProfile) -> list[dict]:
@@ -311,7 +312,7 @@ def topic_table(profile: RobotProfile) -> list[dict]:
     if "mic" not in kinds:
         skip.add("heard")
     if "speaker" not in kinds:
-        skip.add("say")
+        skip |= {"say", "say_toward"}
     if not profile.can_move:
         skip |= {"cmd_vel", "goal_pose"}
     return [{"name": name, "type": _TYPES.get(key, "std_msgs/String"), "dir": "robot_to_sim" if key in _OUT

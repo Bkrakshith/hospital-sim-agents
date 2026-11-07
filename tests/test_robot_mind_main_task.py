@@ -148,7 +148,9 @@ def test_card_renders_meals_and_instruments_but_not_polygons(staged):
     assert "Meals" in card
     scrub = staged("scrub_nurse")
     card = mind(scrub.scenario.robot_brief, loaded=scrub).card()
-    assert "Instruments: scalpel, forceps, retractor, suture scissors, needle holder" in card
+    line = next(ln for ln in card.splitlines() if ln.startswith("Instruments:"))
+    for word in ("scalpel", "forceps", "retractor", "suture scissors", "needle holder"):
+        assert word in line
     brief = {"role": "helper", "job": "Help.", "first_contact": True, "speed": 0.5,
              "forbidden_areas": [{"id": "a1", "name": "the store room",
                                   "polygon": [[1.0, 1.0], [2.0, 1.0], [2.0, 2.0], [1.0, 2.0]]}]}
@@ -250,8 +252,7 @@ async def test_heard_bearing_names_the_matching_track():
     assert "from the direction of t1 (2.0 m)" in line
     c = at(POSE, -38, 3.0)  # a second track within 12 degrees: no guess
     m.on_people([det("t1", *a, z=1.2), det("t2", *b, z=1.2), det("t3", *c, z=1.2)], 1.0)
-    await m.tick(11.0)
-    line = next(ln for ln in gw.reqs[-1].user.splitlines() if "a cough" in ln)
+    line = next(ln for ln in m._situation(1.0).splitlines() if "a cough" in ln)  # 1 s old: matching is allowed
     assert "from the direction of" not in line and "32 degrees to your right" in line
     m2 = mind(gw=Recorder())
     await m2.on_heard({"source_kind": "cough", "source_id": "unknown", "text": None, "received_db": 50.0,

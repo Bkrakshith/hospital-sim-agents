@@ -51,8 +51,8 @@ class RobotProfile:
             f"Your hands reach between {lo:g} m and {hi:g} m above the floor, within arm's length of you.",
             "You can hand an item you are holding to a person, take an item lying within arm's length, "
             "spray a fire extinguisher at a small fire, press the staff call button, speak, and wait.",
-            "You can tell the staff that someone needs help (tell_staff): you go to the reception desk (or the "
-            "nurse base on a ward) and speak to the member of staff there.",
+            "You can tell the staff that someone needs help (tell_staff): at reception you go to the desk; on a ward you "
+            "are led to the nearest nurse. You speak to them, then walk back to your post.",
         ]
         if desk_staffed:
             lines.append("You can leave a note about someone on the reception desk computer (note_desk): the "

@@ -39,7 +39,7 @@ def bag_env(domain: int, base: Optional[dict] = None) -> dict:
 
 IMAGE_KEYS = ("camera_rgb", "camera_depth", "lidar")  # big: only with --bag-images
 BAG_KEYS = ("clock", "tf", "joint_states", "joint_command", "odom", "cmd_vel", "camera_info", "bbox_3d", "heard", "say",
-            "goal_pose", "task_action", "task_result", "task_brief")
+            "say_toward", "goal_pose", "task_action", "task_result", "task_brief")
 
 
 def bag_topics(ns: str = "robot", images: bool = False) -> list[str]:

@@ -110,7 +110,7 @@ def run_cli(tmp_path, *extra, probe=False):
 def test_a_robot_on_the_robot_domain_gets_the_world_and_is_heard(tmp_path):
     run, result = run_cli(tmp_path, "--bot", "none", probe=True)
     got = json.loads(result.read_text())
-    assert got["brief"] == BRIEF
+    assert got["brief"] == {**BRIEF, "desk_staffed": False}  # no receptionist in this scenario
     assert got["clock"] > 5
     assert got["person_boxes"] > 0, "no person ever appeared on the robot's camera topic"
     assert not [t for t in got["topics"] if t.startswith(("/humans", "/scenario", "/sim", "/agents"))]

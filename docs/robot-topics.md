@@ -35,16 +35,17 @@ for `speech/say`, a mobile base for `cmd_vel` and `goal_pose`).
 | `<ns>/camera/rgb`, `camera/depth`, `camera/camera_info` | `sensor_msgs/Image`, `CameraInfo` | in | Isaac host only. 5 Hz, from the robot's camera mount (frame = the sensor's link). `depth` only for a depth camera (kind `rgbd`). |
 | `<ns>/camera/bbox_3d` | `std_msgs/String` (JSON) | in | 5 Hz. Anonymous person tracks (see below). |
 | `<ns>/lidar/point_cloud` | `sensor_msgs/PointCloud2` | in | Isaac host only. |
-| `<ns>/perception/objects` | `std_msgs/String` (JSON) | in | 5 Hz. Items, held items, beds, fires, call lights and seats (`id`, `x`, `y`, `free`; never a staff chair) in view. |
+| `<ns>/perception/objects` | `std_msgs/String` (JSON) | in | 5 Hz. Items, held items, beds, fires, call lights, seats (`id`, `x`, `y`, `free`; never a staff chair) and route blocked signs (`blocked`: `id`, `x`, `y`, `text`) in view. |
 | `<ns>/audio/heard` | `std_msgs/String` (JSON) | in | What the microphone picks up. `source_id` is always `unknown`. |
 | `<ns>/speech/say` | `std_msgs/String` | out | Plain text. 72 dB at 1 m. |
+| `<ns>/speech/toward` | `std_msgs/String` | out | Optional. A track id (`t3`) sent just before a `speech/say` line: the line is addressed to that person if they are in view and within 4 m (and named within 3 s). Without it the sim guesses the listener. |
 | `<ns>/goal_pose` | `geometry_msgs/PoseStamped` | out | Walk to a point on the map. Mobile robots only. |
 | `<ns>/task/action` | `std_msgs/String` (JSON) | out | One task action (below). |
 | `<ns>/task/result` | `std_msgs/String` (JSON) | in | One result per action, and one per goal. |
-| `<ns>/task/brief` | `std_msgs/String` (JSON) | in | Latched. `{role, job}`: the robot's job for this scenario, plus `forbidden_areas` when the scenario has any (below). |
+| `<ns>/task/brief` | `std_msgs/String` (JSON) | in | Latched. `{role, job}`: the robot's job for this scenario, plus `forbidden_areas` when the scenario has any (below), `desk_staffed` (whether a receptionist is on duty, so `note_desk` can work) and any other fields the scenario's brief sets (for example `first_contact: false` when greeting people is not part of the job). |
 
 The stub sim publishes only: clock, odom, bbox_3d, objects, audio/heard, task/result and
-task/brief, and listens on cmd_vel, goal_pose, speech/say and task/action. The Isaac host adds
+task/brief, and listens on cmd_vel, goal_pose, speech/say, speech/toward and task/action. The Isaac host adds
 the rest, from the robot's OmniGraph on the robot domain: `/clock`, `/tf`, joint states and
 commands, the camera, and for a wheeled base that can move `odom` and `cmd_vel` as a Twist into a
 differential drive. Its `camera/bbox_3d` is the same JSON as the stub's: the host turns Isaac's
@@ -74,11 +75,11 @@ Each message is a JSON object with a unique `id` and an `action`:
 | `hand_over` | `item`, `to` (a track), optional `place` `[x, y, z]` | Holds an item out to a person; the result comes when it resolves. |
 | `take` | `item` | Picks up an unheld item within 0.8 m. |
 | `extinguish` | `fire` | Sprays until the fire is out or the robot moves away. |
-| `press_call` | none | Chimes at the nearest nurse base. |
+| `press_call` | optional `track` | Chimes at the call point serving the robot's area (the nearest nurse base or triage, in its own compartment first). Every staff member who hears it is told where the robot is, which call lights are on and, with `track`, who needs them. |
 | `guide_start` | `track`, `place`, optional `seat` (true) | Walks to the place at the person's pace; the person is offered a walk and can follow. With `seat`, it ends beside the nearest free seat the robot can see there and shows it to them. |
 | `approach` | `track` | Walks up to the person (1.2 m from them) and faces them. Result `started`, `already_there`, `no_route`, `unknown_track` or `cannot_walk`; the walk reports as a goal. |
 | `guide_stop` | none | Cancels guiding. |
-| `tell_staff` | `about` (a track), optional `message` (text) | Walks to the reception counter (on a ward: the nurse base), faces the desk and says `message` to the member of staff there. |
+| `tell_staff` | `about` (a track), optional `message` (text) | At reception, walks to the counter, faces the desk and says `message` to the member of staff there. On a ward, it is led to the nearest ward staff member (it speaks from where it stands when she is within 5 m in sight). Then it walks back to its post. |
 | `note_desk` | `about` (a track), `message` (text) | Leaves a note about the person on the reception desk computer. The robot does not move or speak. |
 
 `tell_staff`, for example:
@@ -89,10 +90,13 @@ Each message is a JSON object with a unique `id` and an `action`:
 
 The staff member hears it only if they are within hearing (the audio model, and within 5 m): they are often away from
 the desk. If they heard it, they also learn who the person is and where, and decide for themselves whether to go and
-help. The result is `ok` with reason `told`, or `ok: false` with `no_staff_to_tell` (nobody at a desk or nurse base
+help. The result is `ok` with reason `told`, or `ok: false` with `no_staff_to_tell` (no receptionist or ward staff
 in this scenario), `staff_not_at_desk` (nobody heard it), `no_route`, `unknown_track` or `superseded` (another goal
 replaced the walk there). The robot is never told where the staff member is. A robot that cannot walk speaks from
 where it stands. Without a `message` the robot says "Excuse me, someone here needs help from a nurse."
+
+`press_call` always ends `ok`, with reason `answered` when at least one member of staff heard the chime and
+`unanswered` when nobody did. Scores and flows count only an answered call as an alert.
 
 `note_desk` is the quiet way to involve the desk: the receptionist is often busy at the computer, and a note
 interrupts nobody while the robot stays with the person. The result comes at once: `ok` with reason `noted`, or
@@ -112,7 +116,7 @@ An unknown action or a malformed message gets a result with `ok: false` and reas
 Every action ends in exactly one result:
 
 ```json
-{"id": "rb3", "action": "press_call", "ok": true, "reason": "ok", "t": 41.2}
+{"id": "rb3", "action": "press_call", "ok": true, "reason": "answered", "t": 41.2}
 ```
 
 A goal (from `goal_pose`, or the walking part of `guide_start`) reports its outcome as:
@@ -123,7 +127,7 @@ A goal (from `goal_pose`, or the walking part of `guide_start`) reports its outc
 
 `reason` for a goal is one of `arrived`, `stuck`, `no_route`, `superseded` (a newer goal
 replaced it) or `cancelled`. Goal ids are `goal_pose-N` for `goal_pose`, the action id for
-a guide or for the walk of a `tell_staff`, and `<id>-return` for the walk back after a guide. Action results carry no `kind`, so a consumer must key results on the pair
+a guide or for the walk of a `tell_staff`, and `<id>-return` for the walk back after a guide or a `tell_staff`. Action results carry no `kind`, so a consumer must key results on the pair
 `(id, kind)`: an action and a goal can share an id.
 
 ## Message shapes
@@ -135,4 +139,5 @@ camera image: the box is the world's estimate, not Isaac's). Posture is read fro
 seated, a low long box is a person lying down.
 
 `audio/heard`: `{"source_kind": "person"|"robot"|"pa"|"cough"|"alarm", "source_id": "unknown",
-"text": "...", "received_db": 58.0, "partial": false, "addressed_to_me": true}`.
+"text": "...", "received_db": 58.0, "partial": false, "addressed_to_me": true, "bearing_deg": -32.0}`. `bearing_deg`
+(degrees in the robot frame, positive to the left, about 10 degrees of noise) comes only with a voice or a cough.
