@@ -380,9 +380,12 @@ def render_html(facts: dict) -> str:
                   "of it are marked not measured or failed.</small></div>") + banner
     crit_rows = []
     for c in facts["criteria"]:
-        status = c.get("status") or ("pass" if c["passed"] else "fail")  # an older report.json has no status
+        status = c.get("status")  # an older report.json has no status: a None passed was "not measured"
+        if not status:
+            status = "pass" if c["passed"] else "none" if c["passed"] is None else "fail"
         tag = ('<span class="tag na" title="Nothing to measure in this run: left out of the score">n/a</span>'
                if status == "n/a" else
+               '<span class="tag none">not measured</span>' if status == "none" else
                '<span class="tag pass">pass</span>' if status == "pass" else '<span class="tag fail">fail</span>')
         crit_rows.append([_e(c["label"]), _e(_fmt(c["value"])), _e(f"{c['op']} {_fmt(c['threshold'])}"),
                           _e(_fmt(c["weight"])), tag])

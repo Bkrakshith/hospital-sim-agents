@@ -183,3 +183,15 @@ def test_criteria_with_no_task_metric_pass_on_what_applies(tmp_path):  # a user'
     p = preset({"id": "contacts", "label": "No contact", "metric": "contacts", "op": "==", "threshold": 0, "weight": 3})
     r = evaluate(p, make_run(tmp_path, {}, robot_pose=[pose(t, 0.2 * t, 0) for t in range(10)]))
     assert r.passed is True and r.judged is True
+
+
+def test_an_older_report_json_without_status_still_shows_not_measured(tmp_path):
+    """A report.json written before criteria had a status: a None passed shows 'not measured', not 'fail'."""
+    perfect_bell_run(tmp_path)
+    facts = build_facts(tmp_path, NIGHT_BELL)
+    for c in facts["criteria"]:
+        c.pop("status", None)
+    facts["criteria"][0].update(value=None, passed=None)
+    page = render_html(facts)
+    assert '<span class="tag none">not measured</span>' in page
+    assert page.count('<span class="tag na"') == 0
