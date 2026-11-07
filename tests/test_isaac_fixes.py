@@ -89,8 +89,8 @@ def test_stage_fixes_returns_the_baked_colliders_and_static_leaves(monkeypatch, 
 
 # ---- a NavMesh where the stage's include volume does not reach (the theatre wing) ---------------------------
 def test_kept_rooms_outside_the_include_volume_get_an_include_of_their_own(v1):
-    # scrub_nurse keeps Scrub and Theatre, south of the hospital's only include slab (y >= -4.8): with nothing else the
-    # bake made no NavMesh, the Behavior System was off and the surgeon stood in a T-pose (QA bug 12)
+    # a run that keeps Scrub and Theatre, south of the hospital's only include slab (y >= -4.8): with nothing else the
+    # bake made no NavMesh, the Behavior System was off and the characters stood in a T-pose (QA bug 12)
     plan = cull_plan(v1, rooms=["Scrub", "Theatre"])
     box = fixes.nav_include_box(VOLUMES, v1.site, plan)
     assert box is not None

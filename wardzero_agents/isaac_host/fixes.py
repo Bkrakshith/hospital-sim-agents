@@ -17,7 +17,7 @@
 3. A NavMesh over the theatre wing. The stage's only Include volume (``NavMeshVolume``, the hospital's slab, y from
    -4.8 to 37.2) does not reach the wing south of the hospital (Scrub, Theatre, y down to -24.4). A run that keeps only
    the wing also culls the whole ``Navmesh`` scope (its box misses the kept rooms), so the bake made no NavMesh at all:
-   the Behavior System switched itself off, no character got an agent and the surgeon stood in a T-pose. Fix: when a
+   the Behavior System switched itself off, no character got an agent and each stood in a T-pose. Fix: when a
    kept room is not inside an Include volume, the wrapper layer defines one more Include volume over those rooms
    (``NAV_INCLUDE_PATH``, outside every culled group).
 

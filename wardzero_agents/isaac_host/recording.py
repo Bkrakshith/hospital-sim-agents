@@ -109,7 +109,7 @@ class RecordConfig:
 
 
 DISK_MARGIN_B = 64 * 2**20  # free space kept on top of what an encode needs
-FOLLOW_MP4_RATIO = 0.75  # follow.mp4's size over its JPEG frames': 0.40 to 0.60 measured at 720p (scrub_nurse,
+FOLLOW_MP4_RATIO = 0.75  # follow.mp4's size over its JPEG frames': 0.40 to 0.60 measured at 720p (a wing run,
 # ward_fire), with room to spare
 
 
