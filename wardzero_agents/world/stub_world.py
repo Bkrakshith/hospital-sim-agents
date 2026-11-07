@@ -83,6 +83,8 @@ SPOT_ROBOT_M = 1.2  # an Isaac character may stop up to 0.4 m short of or past i
 # robot standing still at the bedside, so they reach the patient (it stays still: no contact)
 ATTEND_ROBOT_M = 0.8
 ATTENDED_M = 1.5  # staff standing this close to a patient whose call bell is on answer it: the call light goes off
+REACH_SPOT_M = 1.4  # staff whose nearest free spot is further than ATTENDED_M from the person go round to one this close
+REACH_SPOT_TRIES = 8  # ... trying this many candidate spots (nearest first) for a route
 SPOT_PEOPLE_M = 0.6
 SPOT_SEARCH_M = 1.6
 KEEP_SIT = ("sit_idle", "use_phone", "read_sign", "gesture")  # quick things that do not cancel sitting down
@@ -166,6 +168,10 @@ class _Phase:
     lazy: bool = False  # walk: re-route from wherever the walker is when the phase starts
     carry: Optional[str] = None  # walk: id of a person who is led (escorted) along
     trail: bool = False  # walk: follow the robot (follow is "g1"), 1.0-1.5 m behind it, until it stops
+    # walk up to someone: the spot chosen to stand at and where they were then; kept while they stay within REROUTE_M
+    # of it and the spot stays free, so the walker does not hop between spots as their own position changes
+    spot: Optional[tuple[float, float]] = None
+    spot_at: Optional[tuple[float, float]] = None
 
 
 @dataclass
@@ -519,6 +525,14 @@ class StubWorld:
             path = [(p.x, p.y)] + list(path)  # in a chair: step out to the route's free start first, not across the row
         return _Phase("walk", dest=None if follow else goal, follow=follow, speed=speed, path=path, i=1, goal=goal)
 
+    def _route_to_person(self, p: _Person, target: str, speed: float) -> Optional[_Phase]:
+        """A walk up to target, keeping the spot chosen for it."""
+        first = _Phase("walk", follow=target)
+        walk = self._route(p, self._walk_dest(p, first), speed, follow=target)
+        if walk is not None:
+            walk.spot, walk.spot_at = first.spot, first.spot_at
+        return walk
+
     def apply_intent(self, intent: Intent) -> list[AudioEvent]:
         p = self._get(intent.person)
         if p.posture == "gone":
@@ -589,7 +603,7 @@ class StubWorld:
                 self._fail(p, intent, "unknown target" if kind == "escort" else "no safe compartment")
                 return []
             lead_path = self.router.route((q.x, q.y), dest)
-            walk = self._route(p, self._walk_dest(p, _Phase("walk", follow=intent.target)), speed, follow=intent.target)
+            walk = self._route_to_person(p, intent.target, speed)
             if lead_path is None or walk is None:
                 self._fail(p, intent, "no route")
                 return []
@@ -614,7 +628,7 @@ class StubWorld:
             if tgt is None or tgt == intent.person or self._pos(tgt) is None:
                 self._fail(p, intent, "unknown target")
                 return []
-            walk = self._route(p, self._walk_dest(p, _Phase("walk", follow=tgt)), speed, follow=tgt)
+            walk = self._route_to_person(p, tgt, speed)
             if walk is None:
                 self._fail(p, intent, "no route")
                 return []
@@ -679,9 +693,42 @@ class StubWorld:
         d = math.hypot(p.x - tp[0], p.y - tp[1])
         if d <= APPROACH_GAP_M:
             return p.x, p.y
+        robot_m = self._robot_keep_m(p, ph.follow)
+        if ph.spot is not None and ph.spot_at is not None \
+                and math.hypot(tp[0] - ph.spot_at[0], tp[1] - ph.spot_at[1]) <= REROUTE_M \
+                and self._spot_ok(ph.spot[0], ph.spot[1], p.inst.person_id, robot_m):
+            return ph.spot
         k = APPROACH_GAP_M / d
-        return self.free_spot(tp[0] + (p.x - tp[0]) * k, tp[1] + (p.y - tp[1]) * k, p.inst.person_id,
-                              robot_m=self._robot_keep_m(p, ph.follow))
+        ray = (tp[0] + (p.x - tp[0]) * k, tp[1] + (p.y - tp[1]) * k)
+        spot = self.free_spot(ray[0], ray[1], p.inst.person_id, robot_m=robot_m)
+        if self._attending(p, ph.follow) and math.hypot(spot[0] - tp[0], spot[1] - tp[1]) > ATTENDED_M:
+            spot = self._reach_spot(p, tp, ray, robot_m) or spot
+        ph.spot, ph.spot_at = spot, (tp[0], tp[1])
+        return spot
+
+    def _attending(self, p: _Person, target: Optional[str]) -> bool:
+        """p is a member of staff walking up to someone (not the robot)."""
+        return bool(target) and target != ROBOT_ID and target in self.people and p.inst.role in STAFF_ROLES
+
+    def _reach_spot(self, p: _Person, tp: tuple[float, float], ray: tuple[float, float],
+                    robot_m: float) -> Optional[tuple[float, float]]:
+        """Free floor within REACH_SPOT_M of the person at tp that p can walk to, nearest the spot p would have taken
+        (ray): staff go round the bed when the free floor on their side is out of reach (the robot standing at the
+        bedside takes the only gap there). None if there is none."""
+        res = self.site.grid.res
+        n = int(REACH_SPOT_M / res)
+        pid = p.inst.person_id
+        cands = []
+        for dy in range(-n, n + 1):
+            for dx in range(-n, n + 1):
+                cx, cy = tp[0] + dx * res, tp[1] + dy * res
+                if math.hypot(dx, dy) * res <= REACH_SPOT_M and self._spot_ok(cx, cy, pid, robot_m):
+                    cands.append((math.hypot(cx - ray[0], cy - ray[1]), cx, cy))
+        for _, cx, cy in sorted(cands)[:REACH_SPOT_TRIES]:
+            path = self.router.route((p.x, p.y), (cx, cy), self._robot_disc(p))
+            if path is not None and math.hypot(path[-1][0] - cx, path[-1][1] - cy) <= ARRIVE_M * 4:
+                return cx, cy
+        return None
 
     def _robot_still(self) -> bool:
         r = self.robot
