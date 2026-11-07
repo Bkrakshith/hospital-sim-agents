@@ -105,13 +105,25 @@ def test_goal_unreachable_returns_false(tmp_path):
 
 
 def test_contact_logged_when_too_close(tmp_path):
+    """The robot drives up to a standing person: a contact, logged once. (A contact is the robot's only when its own
+    motion closed the gap, so the robot moves here; a person put beside a standing robot is not one.)"""
+    w = world(tmp_path, bed=False)
+    place_robot(w, 0.46, 1.26, 0.0)
+    put(w, "P1", 0.46 + 0.9, 1.26)
+    w.robot.set_cmd_vel(0.5, 0.0)
+    for k in range(1, 15):
+        w.step(0.1 * k)
+    recs = [r for s, r in w.drain_log() if s == "world" and r.get("kind") == "contact"]
+    assert len(recs) == 1 and recs[0]["person"] == "P1"  # logged once, not every step
+
+
+def test_no_contact_when_a_person_steps_up_to_a_standing_robot(tmp_path):
     w = world(tmp_path, bed=False)
     place_robot(w, 0.46, 1.26, 0.0)
     put(w, "P1", 0.46 + 0.4, 1.26)
     w.step(0.1)
     w.step(0.2)
-    recs = [r for s, r in w.drain_log() if s == "world" and r.get("kind") == "contact"]
-    assert len(recs) == 1 and recs[0]["person"] == "P1"  # logged once, not every step
+    assert not [r for s, r in w.drain_log() if r.get("kind") == "contact"]
 
 
 def test_no_contact_when_far(tmp_path):

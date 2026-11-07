@@ -13,6 +13,10 @@ from .model import OccGrid
 
 CLEARANCE = 0.3
 NEAR_PENALTY = 3.0  # extra cost per step inside the clearance band
+TIGHT_M = 0.35  # a robot's narrower berth: its radius (0.3 m) and a little; the robot_near_furniture_s distance
+# (default only for a router whose clearance is no wider: a wider clearance is a wider body, such as the walking G1)
+DETOUR_RATIO = 1.25  # the hard band's route is kept unless it is this much longer than the tight band's ...
+DETOUR_M = 2.0  # ... plus this
 _SQ2 = math.sqrt(2.0)
 _NB = [(-1, 0, 1.0), (1, 0, 1.0), (0, -1, 1.0), (0, 1, 1.0),
        (-1, -1, _SQ2), (-1, 1, _SQ2), (1, -1, _SQ2), (1, 1, _SQ2)]
@@ -23,18 +27,30 @@ class Router:
     more, so routes keep clear of walls where the map allows and still squeeze through tight doorways.
 
     hard (metres, 0 = off): a stricter band for a robot's body. A route first keeps out of every cell within ``hard`` of
-    a blocked cell (except near its two ends, so it can start or stop beside furniture), and only where no such route
-    exists (a doorway narrower than the band) falls back to the soft band."""
+    a blocked cell (except near its two ends, so it can start or stop beside furniture). Where that route does not
+    exist, or is a long detour (more than DETOUR_RATIO x the other + DETOUR_M: a 1 m link the wide berth cannot pass,
+    such as the corridor-to-ambulance-bay link), the route keeps out of the ``tight`` band instead (TIGHT_M: the body's
+    radius and a little, so the body still clears every wall and piece of furniture). Only where neither exists (a
+    doorway narrower than the tight band) does it fall back to the soft band.
 
-    def __init__(self, grid: OccGrid, clearance: float = CLEARANCE, cache_size: int = 4096, hard: float = 0.0):
+    tight (metres): None (default) is TIGHT_M when ``clearance`` is no wider than TIGHT_M, else no tight band: a router
+    built with a wider clearance is for a wider body (the walking G1, 0.6 m), whose berth must not narrow to 0.35 m.
+    0 turns the tier off; any other value is used as given (below ``hard``)."""
+
+    def __init__(self, grid: OccGrid, clearance: float = CLEARANCE, cache_size: int = 4096, hard: float = 0.0,
+                 tight: Optional[float] = None):
         self.grid = grid
         self.clearance = float(clearance)  # kept: block() and with_rects_blocked() rebuild the band with it
         self.hard = float(hard)
+        if tight is None:
+            tight = TIGHT_M if self.clearance <= TIGHT_M else 0.0
+        self.tight = float(tight) if 0.0 < float(tight) < self.hard else 0.0  # a middle tier only below the hard one
         occ = grid.occ.astype(bool)
         near = self._inflate(occ, clearance)
         self._raw = occ.tolist()
         self._near = near.tolist()
         self._hard = self._inflate(occ, self.hard).tolist() if self.hard > 0 else None
+        self._tight = self._inflate(occ, self.tight).tolist() if self._hard is not None and self.tight > 0 else None
         self._b = self._raw
         self._cache: "OrderedDict[tuple, Optional[list]]" = OrderedDict()
         self._size = cache_size
@@ -72,7 +88,10 @@ class Router:
         self._b = self._raw
         self._near = self._inflate(raw, self.clearance).tolist()
         self._hard = self._inflate(raw, self.hard).tolist() if getattr(self, "hard", 0.0) > 0 else None
+        tight = getattr(self, "tight", 0.0)
+        self._tight = self._inflate(raw, tight).tolist() if self._hard is not None and tight > 0 else None
         self._hard_cells = None
+        self._tight_cells = None
         self._cache.clear()
 
     def with_rects_blocked(self, rects) -> "Router":
@@ -240,13 +259,49 @@ class Router:
             return tuple(p) if self.grid.to_cell(*p) == c else self.grid.to_world(*c)
 
         ea, eb = endpoint(a, ca), endpoint(b, cb)
+        return self._ends_clear(self._route(ca, cb, ea, eb, a, avoid), ca, cb)
+
+    def _seg_clear(self, p, q) -> bool:
+        """No raw-blocked cell on the straight segment p-q (sampled at a quarter cell)."""
+        g = self.grid
+        n = max(1, int(math.ceil(math.hypot(q[0] - p[0], q[1] - p[1]) / (g.res / 4))))
+        for k in range(n + 1):
+            iy, ix = g.to_cell(p[0] + (q[0] - p[0]) * k / n, p[1] + (q[1] - p[1]) * k / n)
+            if not g.in_grid(iy, ix) or self._raw[iy][ix]:
+                return False
+        return True
+
+    def _ends_clear(self, pts, ca, cb):
+        """The inner waypoints are planned from cell centres; the route's own ends are the exact points. Where the leg
+        from the exact start (or to the exact goal) would cut the corner of a blocked cell, it goes by its cell's centre
+        first (or last), so a body beside furniture is never sent into it."""
+        if pts is None or len(pts) < 2:
+            return pts
+        pts = list(pts)
+        c0, c1 = self.grid.to_world(*ca), self.grid.to_world(*cb)
+        if not self._seg_clear(pts[0], pts[1]) and tuple(pts[0]) != c0 and tuple(pts[1]) != c0:
+            pts.insert(1, c0)
+        if not self._seg_clear(pts[-2], pts[-1]) and tuple(pts[-1]) != c1 and tuple(pts[-2]) != c1:
+            pts.insert(len(pts) - 1, c1)
+        return pts
+
+    def _route(self, ca, cb, ea, eb, a, avoid):
         hz = self._hazard_cells(a)
         if cb in hz:
             return None  # the goal is in a fire
         if getattr(self, "_hard", None) is not None:
-            strict = self._strict(ca, cb, avoid, hz)
-            if strict is not None:
-                return [ea] + list(strict) + [eb]
+            key = ("band", ca, cb)
+            if not avoid and not hz and key in self._cache:  # the band routes are cached like the plain ones
+                self._cache.move_to_end(key)
+                mid = self._cache[key]
+            else:
+                mid = self._banded(ca, cb, avoid, hz)
+                if not avoid and not hz:
+                    self._cache[key] = mid
+                    if len(self._cache) > self._size:
+                        self._cache.popitem(last=False)
+            if mid is not None:
+                return [ea] + list(mid) + [eb]
         extra = self._discs(avoid, (ca, cb)) if avoid else frozenset()
         if extra:
             mid = self._plan(ca, cb, extra | hz)
@@ -266,19 +321,42 @@ class Router:
                 self._cache.popitem(last=False)
         return None if mid is None else [ea] + list(mid) + [eb]
 
-    def _strict(self, ca, cb, avoid, hz=frozenset()) -> Optional[list]:
-        """The inner waypoints of a route that keeps out of the hard band (and of the avoid discs if it can), or None.
-        Band cells within ``hard`` + 0.5 m of either end stay open, so a route can leave or reach a spot by furniture."""
+    def _cells_len(self, ca, cb, mid) -> float:
+        pts = [self.grid.to_world(*ca)] + list(mid) + [self.grid.to_world(*cb)]
+        return sum(math.hypot(q[0] - p[0], q[1] - p[1]) for p, q in zip(pts, pts[1:]))
+
+    def _banded(self, ca, cb, avoid, hz) -> Optional[list]:
+        """The inner waypoints of the hard band's route, or the tight band's where the hard one has none or is a long
+        detour; None when neither band has a route."""
+        strict = self._strict(ca, cb, avoid, hz)
+        if getattr(self, "_tight", None) is None:
+            return strict
+        straight = self._cells_len(ca, cb, [])
+        if strict is not None and self._cells_len(ca, cb, strict) <= DETOUR_RATIO * straight + DETOUR_M:
+            return strict  # no route can be much shorter: the wide berth it is
+        tight = self._strict(ca, cb, avoid, hz, which="tight")
+        if strict is None:
+            return tight
+        if tight is not None and self._cells_len(ca, cb, strict) > DETOUR_RATIO * self._cells_len(ca, cb, tight) + DETOUR_M:
+            return tight
+        return strict
+
+    def _strict(self, ca, cb, avoid, hz=frozenset(), which: str = "hard") -> Optional[list]:
+        """The inner waypoints of a route that keeps out of the hard band (or the tight one) and of the avoid discs if
+        it can, or None. Band cells within the band's width + 0.5 m of either end stay open, so a route can leave or
+        reach a spot by furniture."""
         g = self.grid
-        hard = self._hard
+        hard = self._hard if which == "hard" else self._tight
+        width = self.hard if which == "hard" else self.tight
+        attr = "_hard_cells" if which == "hard" else "_tight_cells"
         h, w = len(hard), len(hard[0])
-        open_r = int(math.ceil((self.hard + 0.5) / g.res))
+        open_r = int(math.ceil((width + 0.5) / g.res))
         ends = {(c[0] + dy, c[1] + dx) for c in (ca, cb) for dy in range(-open_r, open_r + 1)
                 for dx in range(-open_r, open_r + 1) if dy * dy + dx * dx <= open_r * open_r}
-        base = getattr(self, "_hard_cells", None)
+        base = getattr(self, attr, None)
         if base is None or base[0] != self.version:  # the band's cells, once per change of the map
             base = (self.version, frozenset((y, x) for y in range(h) for x in range(w) if hard[y][x] and not self._raw[y][x]))
-            self._hard_cells = base
+            setattr(self, attr, base)
         band = (base[1] - ends) | hz
         discs = self._discs(avoid, (ca, cb)) if avoid else frozenset()
         if discs:

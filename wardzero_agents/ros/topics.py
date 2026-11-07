@@ -41,6 +41,9 @@ def reflex(pid: str) -> str:
     return f"/humans/{pid}/reflex"
 
 
+TOWARD_ROOM = "room"  # speech/toward value: the line is for everyone in the robot's room (no addressee)
+
+
 def robot_topics(ns: str = "robot") -> dict[str, str]:
     """Every robot-side topic for namespace ns, keyed by a short name.
 
@@ -65,7 +68,8 @@ def robot_topics(ns: str = "robot") -> dict[str, str]:
         "objects": f"{p}/perception/objects",
         "heard": f"{p}/audio/heard",
         "say": f"{p}/speech/say",
-        "say_toward": f"{p}/speech/toward",  # optional: the track the next speech/say is for (String), sent just before it
+        # optional: who the next speech/say is for (String), sent just before it: a track id, or TOWARD_ROOM
+        "say_toward": f"{p}/speech/toward",
         "goal_pose": f"{p}/goal_pose",
         "task_action": f"{p}/task/action",
         "task_result": f"{p}/task/result",
