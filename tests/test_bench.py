@@ -132,10 +132,11 @@ def test_instruments_rate_and_latency(tmp_path):
         audio=[req(10, "Scalpel, please"), req(40, "Forceps, please"), req(70, "Suture scissors, please")],
         robot_tasks=given("a", 11, "scalpel") + given("b", 42, "scalpel") + given("c", 90, "suture_scissors"),
     )
-    # scalpel answered in 2 s (hand over at 11, result at 12). Forceps asked, scalpel (not requested) given.
-    # Suture scissors arrive 21 s after the request: late (60 s window) but still correct here.
+    # scalpel held out 1 s after the request (hand over sent at 11, accepted at 12: latency runs to the offer, the
+    # surgeon's time to take it is hers). Forceps asked, scalpel (not requested) given. Suture scissors held out
+    # 20 s after the request: late (60 s window) but still correct here.
     assert val(d, "instruments_correct_rate") == pytest.approx(2 / 4)  # 2 correct / (3 requests + 1 unrequested)
-    assert val(d, "instrument_mean_latency_s") == pytest.approx((2 + 21) / 2)
+    assert val(d, "instrument_mean_latency_s") == pytest.approx((1 + 20) / 2)
 
 
 def test_fire_out(tmp_path):
@@ -426,7 +427,7 @@ def test_repeated_instrument_request_counts_once(tmp_path):
         robot_tasks=_given("a", 16, "scalpel") + _given("b", 31, "forceps") + _given("c", 51, "retractor"),
     )
     assert val(d, "instruments_correct_rate") == pytest.approx(1.0)
-    assert val(d, "instrument_mean_latency_s") == pytest.approx((7 + 2 + 2) / 3)  # the scalpel from t=10
+    assert val(d, "instrument_mean_latency_s") == pytest.approx((6 + 1 + 1) / 3)  # the scalpel from t=10, to the offer
 
 
 def test_thanks_after_a_hand_over_is_not_a_request(tmp_path):
@@ -441,8 +442,8 @@ def test_thanks_after_a_hand_over_is_not_a_request(tmp_path):
 
 
 def test_a_late_repeat_extends_the_request_window(tmp_path):
-    # she repeats 55 s after the first request and the scalpel comes 7 s after the repeat (62 s after the first):
-    # one request, answered, with the latency from the first
+    # she repeats 55 s after the first request and the scalpel is held out 6 s after the repeat (61 s after the
+    # first) and taken a second later: one request, answered, with the latency from the first to the offer
     d = make_run(
         tmp_path,
         objects=[_instruments(0), _instruments(73, scalpel="S1")],
@@ -450,7 +451,7 @@ def test_a_late_repeat_extends_the_request_window(tmp_path):
         robot_tasks=_given("a", 71, "scalpel"),
     )
     assert val(d, "instruments_correct_rate") == pytest.approx(1.0)
-    assert val(d, "instrument_mean_latency_s") == pytest.approx(62.0)
+    assert val(d, "instrument_mean_latency_s") == pytest.approx(61.0)
 
 
 def test_a_mention_soon_after_the_hand_over_is_not_a_request_before_the_holder_shows(tmp_path):

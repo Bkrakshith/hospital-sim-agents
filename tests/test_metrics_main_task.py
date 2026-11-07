@@ -183,6 +183,18 @@ def test_instrument_latency_without_offer_rows_is_to_the_hand_over(tmp_path):  #
     assert val(d, "instrument_mean_latency_s") == pytest.approx(2.0)
 
 
+def test_instrument_latency_without_offer_rows_is_to_the_hand_over_action(tmp_path):
+    """QA run E (no offer rows yet): hand_over sent 0.6 s after the request, the surgeon took 2.9 s to accept; the
+    world opens the offer as the hand_over arrives, so her time to accept is not the robot's."""
+    d = make_run(tmp_path, {}, objects=[instruments(0), instruments(13.54, scalpel="S1")],
+                 audio=[ask(10.0, "Scalpel, please")],
+                 robot_tasks=[{"t": 10.6, "kind": "action", "id": "h1", "action": "hand_over", "item": "scalpel",
+                               "to": "t1"},
+                              {"t": 13.54, "kind": "result", "id": "h1", "action": "hand_over", "ok": True,
+                               "reason": "ok"}])
+    assert val(d, "instrument_mean_latency_s") == pytest.approx(0.6)
+
+
 def test_instruments_nobody_asked_for_score_zero(tmp_path):
     d = make_run(tmp_path, {}, objects=[instruments(0), instruments(12, forceps="S1")],
                  robot_tasks=[{"t": 12, "kind": "action", "id": "h1", "action": "hand_over", "item": "forceps"},

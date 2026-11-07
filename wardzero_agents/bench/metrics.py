@@ -563,7 +563,7 @@ def _holder_at(states: list[tuple[float, dict]], t: float) -> Optional[str]:
 def _instrument_matches(d: RunData):
     """(requests, matches, unrequested): requests are (t, item id) for each instrument a person named
     to the robot; matched to the earliest ok hand_over of that instrument from the request until 60 s after its
-    latest repeat.
+    latest repeat. matches are (request t, hand-over result t, item id, t the robot sent that hand_over or None).
 
     Not every mention is a new request. Naming an item again within 60 s of the last mention of a request for it,
     with no ok hand-over of it in between, repeats that request (the earliest time counts for latency). Naming it
@@ -574,8 +574,9 @@ def _instrument_matches(d: RunData):
     pats = {iid: re.compile(r"\b(" + "|".join(re.escape(x.lower()) for x in
                                               {iid.replace("_", " "), iid, str(o.get("label") or iid)}) + r")\b")
             for iid, o in names.items()}
-    gives = [(res["t"], act.get("item") or res.get("item")) for act, res in _ok_results(d, "hand_over")
-             if (act.get("item") or res.get("item")) in names]
+    oks = [(act, res) for act, res in _ok_results(d, "hand_over") if (act.get("item") or res.get("item")) in names]
+    gives = [(res["t"], act.get("item") or res.get("item")) for act, res in oks]
+    sent = [_num(act.get("t")) for act, _ in oks]  # when the robot sent each hand_over (None: no action row)
     reqs = []
     for a in _requests(d):
         text = str(a.get("text") or "").lower()
@@ -598,17 +599,20 @@ def _instrument_matches(d: RunData):
         for k, (t_res, item) in enumerate(gives):
             if k not in used and item == iid and t_req <= t_res <= t_last + INSTRUMENT_WINDOW_S:
                 used.add(k)
-                matches.append((t_req, t_res, iid))
+                matches.append((t_req, t_res, iid, sent[k]))
                 break
     return reqs, matches, len(gives) - len(used)
 
 
-def _offer_t(d: RunData, item: str, t_res: float) -> float:
+def _offer_t(d: RunData, item: str, t_res: float, t_sent: Optional[float] = None) -> float:
     """When the robot held out the item it handed over at t_res: its latest offer row (robot_tasks kind hand_over,
-    event offer) for that item at or before t_res; t_res itself in a run without offer rows."""
+    event offer) for that item at or before t_res. In a run without offer rows, when the robot sent that hand_over
+    (t_sent: the world opens the offer as the action arrives), else t_res itself."""
     ts = [r["t"] for r in d.robot_tasks if r.get("kind") == "hand_over" and r.get("event") == "offer"
           and r.get("item") == item and _num(r.get("t")) is not None and r["t"] <= t_res + 1e-9]
-    return max(ts) if ts else t_res
+    if ts:
+        return max(ts)
+    return t_sent if t_sent is not None and t_sent <= t_res else t_res
 
 
 def instruments_correct_rate(d: RunData) -> Optional[float]:
@@ -624,10 +628,10 @@ def instruments_correct_rate(d: RunData) -> Optional[float]:
 def instrument_mean_latency_s(d: RunData) -> Optional[float]:
     """Mean seconds from an instrument request to the moment the robot held out the instrument that answers it
     (its offer row; the surgeon's time to take it is hers, not the robot's), over the correct ones; an offer made
-    before the request counts 0. In a run without offer rows, to the successful hand-over. None if there are none
-    (n/a when nothing was requested, failed when requests went unanswered)."""
+    before the request counts 0. In a run without offer rows, to when the robot sent the hand_over (see _offer_t).
+    None if there are none (n/a when nothing was requested, failed when requests went unanswered)."""
     _, matches, _ = _instrument_matches(d)
-    return _mean(max(0.0, _offer_t(d, iid, t_res) - t_req) for t_req, t_res, iid in matches)
+    return _mean(max(0.0, _offer_t(d, iid, t_res, t_sent) - t_req) for t_req, t_res, iid, t_sent in matches)
 
 
 def fire_out_s(d: RunData) -> Optional[float]:
