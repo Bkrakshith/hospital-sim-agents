@@ -937,6 +937,7 @@ class ScriptedRobot:
         return _decision(reason="staying beside her")
 
     NOT_MOVING_S = 12.0  # someone told the way out who has not set off after this long is walked out
+    WATCH_S = 4.0  # someone just told the way out is watched this long before the robot turns to the next person
 
     def evacuate(self, s: Situation, c: Card) -> dict:
         """On the alarm: tell the room the way out (not the blocked one), walk anyone who does not go, then check the
@@ -974,23 +975,27 @@ class ScriptedRobot:
         other = self._other_room(s, c)
         at_exit = s.room.lower() == exit_.lower() or exit_.lower() in s.room.lower()
         checking = other is not None and s.room == other
-        for tr in ([] if at_exit else sorted(s.tracks, key=lambda tr: tr.dist)):
-            if tr.id in guided or tr.dist > 8.0:
-                continue
-            if checking:  # the room it came to check: walk them out
-                guided.add(tr.id)
-                return self._start(s, _decision("guide", f"There is a fire. Please come with me, I'll walk with you "
-                                                f"to the {exit_}.", tr.id, tr.id, destination=exit_,
-                                                return_to_post=False, reason="walking them out"))
-            if p is not None and not p.extra.get("minor"):
-                continue
-            if tr.id not in told:
+        near = [] if at_exit else [tr for tr in sorted(s.tracks, key=lambda tr: tr.dist)  # (not those already out)
+                                   if tr.id not in guided and tr.dist <= 8.0 and exit_.lower() not in tr.line.lower()]
+        if checking and near:  # the room it came to check: walk them out
+            tr = near[0]
+            guided.add(tr.id)
+            return self._start(s, _decision("guide", f"There is a fire. Please come with me, I'll walk with you to "
+                                            f"the {exit_}.", tr.id, tr.id, destination=exit_, return_to_post=False,
+                                            reason="walking them out"))
+        free = p is None or p.extra.get("minor")
+        untold = [tr for tr in near if tr.id not in told]
+        if free and untold:  # first tell everyone in view the way out, one by one, watching each set off
+            if any(s.t - told[o.id] < self.WATCH_S for o in s.tracks if o.id in told and o.id not in guided):
+                return _decision(reason="watching that they set off")
+            tr = untold[0]
+            d = self.speak_to(s, tr, f"The main entrance is blocked by fire. Please walk to the {exit_} now, away from "
+                              "the fire.", "sending them out", urgent=True)
+            if d is not None:
                 told[tr.id] = s.t
-                d = self.speak_to(s, tr, f"The main entrance is blocked by fire. Please walk to the {exit_} now, "
-                                  "away from the fire.", "sending them out", urgent=True)
-                if d is not None:
-                    return d
-            if s.t - told[tr.id] >= self.NOT_MOVING_S and not tr.moving:
+                return d
+        for tr in near if free else []:  # then walk out anyone told who has not set off
+            if tr.id in told and s.t - told[tr.id] >= self.NOT_MOVING_S and not tr.moving:
                 guided.add(tr.id)
                 return self._start(s, _decision("guide", f"It's all right, come with me. I'll walk with you to the "
                                                 f"{exit_}.", tr.id, tr.id, destination=exit_, return_to_post=False,
@@ -1003,8 +1008,9 @@ class ScriptedRobot:
                 if tid in guided or s.track(tid) is not None or tid in self.mem.setdefault("looked_for", set()):
                     continue
                 x, y, moving, t_seen, line = self.last_seen.get(tid, (0.0, 0.0, True, -1e9, ""))
-                if moving or s.t - t_seen > 90.0 or exit_.lower() in line.lower():
-                    continue  # on their way, long gone, or already out
+                set_off = moving and t_seen - t_told >= self.WATCH_S
+                if set_off or s.t - t_seen > 90.0 or exit_.lower() in line.lower():
+                    continue  # seen on their way, long gone, or already out
                 self.mem["looked_for"].add(tid)
                 if "approach" in self.allowed:  # back to them by the track it saw (it ends facing them)
                     return self._start(s, _decision("approach", "", "", tid, reason="back to someone told the way "
@@ -1017,8 +1023,11 @@ class ScriptedRobot:
             return self.go(s, other, why=f"checking {other} for anyone still there")
         if checking and self.mem.get("looks", 0) < 3:  # nobody in view in the room it came to check: look round
             used = self.mem.setdefault("looked_at", set())
-            ways = sorted(((abs(_SECTOR_DEG.get(way, 0.0)), lab) for lab, way in s.route_dirs.items()
-                           if lab not in used and way != "straight ahead"), reverse=True)
+            # sideways first (a way back behind it leads out of the room it is checking), then behind
+            ways = sorted(((not way.startswith("behind"), abs(_SECTOR_DEG.get(way, 0.0)), lab)
+                           for lab, way in s.route_dirs.items() if lab not in used and way != "straight ahead"),
+                          reverse=True)
+            ways = [(w[1], w[2]) for w in ways]
             if ways:
                 self.mem["looks"] = self.mem.get("looks", 0) + 1
                 used.add(ways[0][1])

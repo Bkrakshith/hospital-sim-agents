@@ -183,3 +183,20 @@ def test_the_robot_role_in_the_scripted_gateway_uses_the_scripted_robot():
                      user=situation(objects=["- fire F9: 2.0 m, straight ahead, size 0.3"]),
                      schema={"properties": {"action": {"enum": ACTIONS}}})
     assert default_policy(req)["action"] == "extinguish"
+
+
+def test_the_evacuation_guide_tells_everyone_in_view_before_walking_anyone_out():
+    r = ScriptedRobot()
+    c = card("When the alarm sounds, get everyone out by a safe open way.", "Role: fire evacuation guide",
+             "Safe exit: the safe way out is the Ambulance handover bay in A&E.")
+    alarm = ["- 1 s ago, an alarm, 85 dB"]
+    both = [track("t1", 1.5, 1.5, 0.0), track("t2", 3.0, 3.0, 0.0)]
+    assert decide(r, c, situation(t=2.0, heard=alarm, tracks=both))["toward_track"] == "room"
+    first = decide(r, c, situation(t=3.0, heard=alarm, tracks=both))
+    assert first["toward_track"] == "t1" and "Ambulance handover bay" in first["say"]
+    assert "watching" in decide(r, c, situation(t=5.0, heard=alarm, tracks=both))["reason"]
+    second = decide(r, c, situation(t=8.0, heard=alarm, tracks=both))
+    assert second["toward_track"] == "t2"
+    # t1 has not moved 12 s after being told: walked out, and the robot stays at the exit afterwards
+    out = decide(r, c, situation(t=21.0, heard=alarm, tracks=both))
+    assert out["action"] == "guide" and out["target"] == "t1" and out["return_to_post"] is False
