@@ -96,6 +96,30 @@ def test_the_surgeon_names_each_instrument_in_turn_and_accepts_only_that_one(sta
     assert kind(nxt) == "request_instrument" and nxt["intent"]["text"] == "forceps"
 
 
+def test_the_surgeon_starts_each_new_batch_from_its_first_instrument(staged):
+    loaded = staged("scrub_nurse")
+    batch2 = BATCH.replace("scalpel, forceps, retractor", "suture scissors, needle holder")
+    first_batch = [f"t=30s; I felt: {BATCH}; I chose request_instrument (mood calm)",
+                   "t=34s; I chose accept_item (mood calm)"]
+    d = ask(loaded, "S1", [f"NUDGE: {batch2}"], first_batch)
+    assert kind(d) == "request_instrument" and d["intent"]["text"] == "suture scissors"
+
+
+def test_after_the_day_is_summarised_the_surgeon_counts_what_she_holds(staged):
+    loaded = staged("scrub_nurse")
+    # the day so far was summarised: her accepts are gone from the history, but she holds the scalpel
+    hist = [f"t=30s; I felt: {BATCH}"]
+    seen = "Objects you can see: a instrument (id scalpel, scalpel), held by S1."
+    d = ask(loaded, "S1", [seen, "Why you are deciding now: intent_done"], hist)
+    assert kind(d) == "request_instrument" and d["intent"]["text"] == "forceps"
+
+
+def test_a_schema_without_intent_kinds_still_idles():
+    req = LLMRequest(role="decide", person="p1", system_fixed="", persona_card="", user="nothing",
+                     schema={"type": "object", "properties": {}})
+    assert kind(default_policy(req)) == "sit_idle"
+
+
 def test_the_surgeon_idles_in_a_way_her_role_allows(staged):
     loaded = staged("scrub_nurse")
     d = ask(loaded, "S1", ["Why you are deciding now: start"])

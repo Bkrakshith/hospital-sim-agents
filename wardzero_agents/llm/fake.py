@@ -128,7 +128,9 @@ def _kinds(req: LLMRequest) -> list[str]:
 def _idle(req: LLMRequest) -> dict:
     """Waiting quietly, in a way this person's role allows (a surgeon cannot sit_idle)."""
     kinds = _kinds(req)
-    return _decision(next((k for k in ("sit_idle", "wait_standing") if not kinds or k in kinds), kinds[0]))
+    if not kinds:
+        return _decision("sit_idle")
+    return _decision(next((k for k in ("sit_idle", "wait_standing") if k in kinds), kinds[0]))
 
 
 def _card_places(card: str) -> list[tuple[str, str]]:
@@ -170,6 +172,11 @@ def _own_name(card: str) -> str:
     return m.group(1) if m else ""
 
 
+def _own_id(card: str) -> str:
+    m = re.match(r"You are .+? \(person id (\w+)\)", card or "")
+    return m.group(1) if m else ""
+
+
 def _asleep(u: str) -> bool:
     """Fell asleep (a nudge said so) and nobody has spoken to them since."""
     i = max(u.rfind("You are deeply asleep"), u.rfind("You are asleep"))
@@ -182,10 +189,18 @@ _OFFER = re.compile(r"NUDGE: The robot is holding out the (.+?) (?:to you|for yo
 _BATCH = re.compile(r"ask for these instruments, one at a time and in this order, by name: ([^.\n]+)")
 
 
-def _instruments(u: str) -> tuple[list[str], int, int]:
-    """(the instruments asked for, in order; how many were accepted; how many requests were made)."""
-    names = [n.strip().lower() for b in _BATCH.findall(u) for n in b.split(",") if n.strip()]
-    return names, u.count("I chose accept_item"), u.count("I chose request_instrument")
+def _instruments(u: str, me: str = "") -> tuple[list[str], int, int]:
+    """(the instruments of the latest batch asked for, in order; how many of them are in hand; how many requests
+    were made since that batch). What is in hand is read off the objects in view, so it holds after the day so far
+    has been summarised."""
+    batches = list(_BATCH.finditer(u))
+    if not batches:
+        return [], 0, 0
+    names = [n.strip().lower() for n in batches[-1].group(1).split(",") if n.strip()]
+    after = u[batches[-1].end():]
+    held = {lab.strip().lower() for lab in re.findall(r"\(id \w+, ([^)]+)\), held by " + re.escape(me or "\0"), u)}
+    in_hand = max(after.count("I chose accept_item"), sum(1 for n in names if n in held))
+    return names, in_hand, after.count("I chose request_instrument")
 
 
 def _wants(item: str, req: LLMRequest, u: str) -> bool:
@@ -199,7 +214,7 @@ def _wants(item: str, req: LLMRequest, u: str) -> bool:
     if re.search(r"\(([A-Z][a-z]+ ){1,2}[A-Z][a-z'-]+ - ", item):
         return False  # labelled for someone else
     if "request_instrument" in _kinds(req):
-        names, accepted, _ = _instruments(u)
+        names, accepted, _ = _instruments(u, _own_id(card))
         return accepted < len(names) and low == names[accepted]
     kind = low.split(" (", 1)[0].strip()
     own = "\n".join(ln for ln in card.splitlines() if "written to the robot" not in ln).lower()
@@ -221,7 +236,7 @@ def _surgeon(req: LLMRequest, u: str) -> Optional[dict]:
     """Ask the robot for the next instrument on the list once the last one is in hand."""
     if "request_instrument" not in _kinds(req):
         return None
-    names, accepted, asked = _instruments(u)
+    names, accepted, asked = _instruments(u, _own_id(req.persona_card or ""))
     if accepted < len(names) and asked <= accepted:
         d = _decision("request_instrument", "", "", "g1")
         d["intent"]["text"] = names[accepted]
