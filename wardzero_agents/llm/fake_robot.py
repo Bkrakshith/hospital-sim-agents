@@ -341,12 +341,16 @@ class ScriptedRobot:
 
     VOICE_DB = 60.0  # a person's speaking voice at 1 m: how loud it arrives says roughly how far away they are
 
+    WALK_MPS = 1.5  # how fast someone on the move may have come nearer since they spoke
+
     def _loud_enough(self, h: Heard, tr: Track) -> bool:
-        """Whether a voice this loud can come from someone this far away (within a factor of 2.5 either way)."""
+        """Whether a voice this loud can come from someone this far away (within a factor of 2.5 either way); someone
+        on the move may have walked up since they spoke, so they may be that much nearer now."""
         if h.db is None:
             return True
         est = 10.0 ** ((self.VOICE_DB - h.db) / 20.0)
-        return est / 2.5 <= max(tr.dist, 1.0) <= est * 2.5
+        nearer = (h.age + 1.0) * self.WALK_MPS if tr.moving else 0.0
+        return est / 2.5 - nearer <= max(tr.dist, 1.0) <= est * 2.5
 
     def _loudness_misfit(self, h: Heard, tr: Track) -> float:
         """How far this person's distance is from the one the voice's loudness gives: 0 a perfect fit, 1 a factor of
@@ -634,22 +638,36 @@ class ScriptedRobot:
         who = self._who(s, h) or ""
         rel = _bearing(h.line)
         where = None if rel is None else (s.x, s.y, s.yaw + rel)
+        tr = s.track(h.track) if h.track else None
+        if where is None and tr is not None:  # "from the direction of t1": that track's way
+            where = (s.x, s.y, math.degrees(math.atan2(tr.y - s.y, tr.x - s.x)))
         self.mem.setdefault("deferred", []).append((who, h, where, s.t))
         return self._said(_decision(say="I'll be with you in a moment.", toward=who, reason="busy"))
 
-    def _by_direction(self, s: Situation, where) -> Optional[Track]:
-        """The track that lies along the direction a voice came from (seen from where the robot stood then)."""
+    SEATED_FIT = 1.4  # someone seated and still is the speaker only when their distance fits the voice this closely
+
+    def _by_direction(self, s: Situation, where, h: Optional[Heard] = None) -> Optional[Track]:
+        """The track that lies along the direction a voice came from (seen from where the robot stood then), someone
+        up and about first. Someone seated and still has not moved since: they are taken for the speaker only when
+        their distance from where the robot heard it fits how loud the voice was."""
         if where is None:
             return None
         x0, y0, deg = where
+        est = None if h is None or h.db is None else 10.0 ** ((self.VOICE_DB - h.db) / 20.0)
         helped = self.mem.get("helped", set())
         best = None
         for tr in s.tracks:
             err = abs((math.degrees(math.atan2(tr.y - y0, tr.x - x0)) - deg + 180.0) % 360.0 - 180.0)
             if tr.id in helped:
                 continue  # someone it has already walked somewhere is not the one still waiting for an answer
-            if err <= self.BEARING_OK_DEG and (best is None or err < best[0]):
-                best = (err, tr)
+            settled = tr.posture.startswith("seated") and not tr.moving
+            if settled and est is not None:
+                d0 = max(math.hypot(tr.x - x0, tr.y - y0), 1.0)
+                if not est / self.SEATED_FIT <= d0 <= est * self.SEATED_FIT:
+                    continue
+            key = (settled, err)
+            if err <= self.BEARING_OK_DEG and (best is None or key < best[0]):
+                best = (key, tr)
         return best[1] if best else None
 
     def deferred(self, s: Situation, c: Card) -> Optional[dict]:
@@ -658,7 +676,7 @@ class ScriptedRobot:
         try:
             while self.mem.get("deferred"):
                 who, h, where, t0 = self.mem["deferred"].pop(0)
-                tr = s.track(who) or self._by_direction(s, where)
+                tr = s.track(who) or self._by_direction(s, where, h)
                 if tr is None:
                     if s.t - t0 <= self.DEFER_KEEP_S:
                         keep.append((who, h, where, t0))  # not in view yet: look again later
@@ -686,8 +704,8 @@ class ScriptedRobot:
         """Turn towards an unseen person who asked something: walk a little way to a known place that lies their
         way (the robot has no turn-on-the-spot action), so they come into view."""
         waiting = [w for w in self.mem.get("deferred", []) if w[2] is not None]
-        if not waiting or not self.free() or s.t - self.mem.get("looked_t", -1e9) < 6.0:
-            return None
+        if not waiting or not self.free() or s.t - self.mem.get("looked_t", -1e9) < 6.0 or self._returning(s):
+            return None  # (walking itself back after a guide turns it round anyway: a go_to would cancel that)
         _, _, (x0, y0, deg), _ = waiting[0]
         return self._go_facing(s, deg, "turning to see who spoke")
 
@@ -1208,6 +1226,11 @@ class ScriptedRobot:
     LOOK_FOR_ASKER_S = 60.0  # someone who asked while it was busy is looked for this long before it walks back
     RETURN_WAIT_S = 90.0  # after a guide or a walk to tell the staff, its own walk back is left this long to report
 
+    def _returning(self, s: Situation) -> bool:
+        """The robot's own walk back to its post after a guide or a walk to tell the staff is (likely) under way."""
+        back = self.mem.get("returning")
+        return back is not None and s.t - back[1] <= self.RETURN_WAIT_S
+
     def back_to_post(self, s: Situation) -> Optional[dict]:
         """A walk back to the place beside its post, when nothing keeps it here (a walk that ended away from the post,
         a guide held up short): from the post it sees who comes in. None at the post, while talking with someone, or while
@@ -1222,8 +1245,7 @@ class ScriptedRobot:
             return None
         if any(s.t - t0 <= self.LOOK_FOR_ASKER_S for _, _, _, t0 in self.mem.get("deferred", [])):
             return None  # still looking round for someone who asked while it was busy
-        back = self.mem.get("returning")
-        if back is not None and s.t - back[1] <= self.RETURN_WAIT_S:
+        if self._returning(s):
             return None  # walking itself back after a guide
         tries = self.mem.get("post_tries", 0)
         if tries >= self.POST_TRIES:
