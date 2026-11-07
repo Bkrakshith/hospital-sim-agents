@@ -306,6 +306,8 @@ class ScriptedRobot:
 
     def _start(self, s: Situation, d: dict, **extra) -> dict:
         if d["action"] not in ("none", "wait"):
+            if d["action"] == "guide":  # the robot walks itself back to its post after the guide, unless told not to
+                extra = {**extra, "back": d.get("return_to_post", True) is not False}
             self.pending = _Pending(d["action"], s.t, d.get("target") or "", extra=extra)
         if d["action"] == "guide" and d.get("target"):
             self.mem.setdefault("helped", set()).add(d["target"])
@@ -508,10 +510,19 @@ class ScriptedRobot:
             self.mem.pop("take_then_offer", None)
         if p.action == "guide" and r is not None and not r.ok and p.track:
             self.mem.setdefault("walk_on", []).append(p.track)  # held up short of the place: send them on
+        post = self.mem.get("post")
+        if (p.aid and r is not None and r.ok and post is not None and p.extra.get("back", True)
+                and p.action in ("guide", "tell_staff") and math.hypot(s.x - post[0], s.y - post[1]) > self.POST_M):
+            # a guide that got there, or a walk to tell the staff: the robot walks itself back to its post (goal
+            # "<id>-return"), so it leaves that walk alone until it reports
+            self.mem["returning"] = (p.aid, s.t)
 
     def on_result(self, s: Situation, c: Card, r: Result) -> None:
         if r.what == "press_call":
             self.mem["call"] = r.reason
+        back = self.mem.get("returning")
+        if back is not None and r.id == f"{back[0]}-return":
+            self.mem.pop("returning")  # the walk back reported: at the post, or stopped short (then it walks itself)
 
     # ---- shared skills ------------------------------------------------------------------------------------------------
     def busy(self) -> bool:
@@ -762,7 +773,9 @@ class ScriptedRobot:
                     return self.go(s, dest, "Excuse me, may I come past, please?", "room", "carrying on")
                 return self.go(s, dest, why="carrying the item")
         tried = self.mem.setdefault("tried", [])
-        marked = [tr for tr in s.tracks if "porter" in tr.line.lower() and tr.id not in tried]
+        # someone standing at the porter's place: the camera names the place a track stands at (", at Porter waiting
+        # point" after its position), never who they are, so only that place part of the line is read
+        marked = [tr for tr in s.tracks if "porter" in tr.line.split(")", 1)[-1].lower() and tr.id not in tried]
         cand = marked or sorted((tr for tr in s.tracks if tr.id not in tried and tr.posture == "standing"),
                                 key=lambda tr: tr.dist)
         if not cand:
@@ -1193,10 +1206,12 @@ class ScriptedRobot:
     POST_M = 2.0  # farther than this from its post, with nothing to do, the robot walks back to it
     POST_TRIES = 3
     LOOK_FOR_ASKER_S = 60.0  # someone who asked while it was busy is looked for this long before it walks back
+    RETURN_WAIT_S = 90.0  # after a guide or a walk to tell the staff, its own walk back is left this long to report
 
     def back_to_post(self, s: Situation) -> Optional[dict]:
         """A walk back to the place beside its post, when nothing keeps it here (a walk that ended away from the post,
-        a guide held up short): from the post it sees who comes in. None at the post, or while talking with someone."""
+        a guide held up short): from the post it sees who comes in. None at the post, while talking with someone, or while
+        the robot's own walk back after a guide is under way (a go_to would cancel it and stop short of the post)."""
         post, place = self.mem.get("post"), self.mem.get("post_place")
         if post is None or place is None or self.busy() or "go_to" not in self.allowed:
             return None
@@ -1207,6 +1222,9 @@ class ScriptedRobot:
             return None
         if any(s.t - t0 <= self.LOOK_FOR_ASKER_S for _, _, _, t0 in self.mem.get("deferred", [])):
             return None  # still looking round for someone who asked while it was busy
+        back = self.mem.get("returning")
+        if back is not None and s.t - back[1] <= self.RETURN_WAIT_S:
+            return None  # walking itself back after a guide
         tries = self.mem.get("post_tries", 0)
         if tries >= self.POST_TRIES:
             return None
@@ -1217,7 +1235,8 @@ class ScriptedRobot:
 _ROBOT = ScriptedRobot()
 
 
-def robot_policy(req) -> dict:
-    """The scripted robot's decision for a RobotMind request (the module's one robot: one robot per run)."""
+def robot_policy(req, robot: Optional[ScriptedRobot] = None) -> dict:
+    """The scripted robot's decision for a RobotMind request. A FakeGateway passes its own robot, so each run's memory
+    stays with that run; without one, the module's robot answers (one robot per process)."""
     allowed = list(((req.schema or {}).get("properties", {}).get("action", {}) or {}).get("enum", []))
-    return _ROBOT.decide(req.persona_card or "", req.user or "", allowed)
+    return (robot or _ROBOT).decide(req.persona_card or "", req.user or "", allowed)

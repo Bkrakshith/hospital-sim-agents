@@ -6,7 +6,7 @@ import time
 from typing import Callable, Optional
 
 from .fake_robot import GREET as ROBOT_GREETING  # noqa: F401  (what the scripted robot says to someone new)
-from .fake_robot import robot_policy
+from .fake_robot import ScriptedRobot, robot_policy
 from .gateway import LLMRequest, LLMResult
 
 LANDMARKS = ["entrance", "clinic_corridor", "ward_doors", "toilets", "reception_front", "nurse_call_point"]
@@ -330,12 +330,18 @@ class FakeGateway:
     def __init__(self, policy: Optional[Callable[[LLMRequest], dict]] = None, on_usage=None):
         self.policy = policy or default_policy
         self.on_usage = on_usage
+        self.robot = ScriptedRobot()  # this gateway's own scripted robot: one run's memory never reaches another
+
+    def _decide(self, req: LLMRequest) -> dict:
+        if req.role == "robot" and self.policy is default_policy:
+            return robot_policy(req, self.robot)
+        return self.policy(req)
 
     async def complete(self, req: LLMRequest) -> LLMResult:
         t0 = time.monotonic()
         model = "fake"
         try:
-            res = LLMResult(True, self.policy(req), None, model, cost_usd=0.0)
+            res = LLMResult(True, self._decide(req), None, model, cost_usd=0.0)
         except FakeRefusal:
             res = LLMResult(False, None, "refusal", model, cost_usd=0.0)
         except Exception:

@@ -376,3 +376,69 @@ def test_the_reception_guide_answers_someone_it_walks_up_to_once_they_are_close(
                                tracks=["- t2: 1.0 m, straight ahead, standing, still, at (x=8.42, y=5.90)"],
                                routes=["- Corridor to the outpatient clinics: about 4 m, setting off straight ahead."]))
     assert d["action"] == "guide" and d["target"] == "t2" and d["destination"] == "Corridor to the outpatient clinics"
+
+
+def test_the_reception_guide_leaves_the_walk_back_after_a_guide_to_the_robot_and_walks_back_only_if_it_fails():
+    r = ScriptedRobot()
+    c = card("Greet people who come to reception and walk them where they are going.", "Role: reception guide")
+    post = ["- In front of the reception desk: right beside you.", "- Ward entrance: about 15 m, setting off ahead."]
+    decide(r, c, situation(t=0.0, x=1.05, y=1.62, yaw=-90.0, routes=post))
+    ask = situation(t=40.0, x=1.05, y=1.62, yaw=-90.0, routes=post,
+                    heard=['- 0 s ago, someone speaking to you, 54 dB, from the direction of t3 (2.0 m): '
+                           '"Hello, could you take me to the ward entrance, please?"'],
+                    tracks=["- t3: 2.0 m, straight ahead, standing, still, at (x=1.05, y=-0.38)"])
+    d = decide(r, c, ask)
+    assert d["action"] == "guide" and d["target"] == "t3" and d.get("return_to_post", True) is not False
+    away = ["- In front of the reception desk: about 15 m, setting off behind you.",
+            "- Ward entrance: right beside you."]
+    started = ["- rb15 guide_start: ok (started)"]
+    ev = ["- t=40.0s You started guide as rb15 for track t3."]
+    decide(r, c, situation(t=45.0, x=4.0, y=4.0, yaw=0.0, room="Main corridor", results=started, events=ev))
+    # the guide's walk arrives: the robot walks itself back to its post (goal "rb15-return"), so no go_to of its own
+    arrived = started + ["- rb15 walking to a goal: ok (arrived)"]
+    for t in (56.8, 70.0, 85.0):
+        d = decide(r, c, situation(t=t, x=13.09, y=7.24, yaw=0.0, room="Main corridor", routes=away,
+                                   results=arrived, events=ev))
+        assert d["action"] == "none" and d["reason"] != "back to my post", (t, d)
+    # the walk back is stopped short (superseded): now the robot walks back itself
+    stopped = arrived + ["- rb15-return walking to a goal: failed (superseded)"]
+    d = decide(r, c, situation(t=90.0, x=8.0, y=5.0, yaw=0.0, room="Main corridor", routes=away, results=stopped,
+                               events=ev))
+    assert d["action"] == "go_to" and d["reason"] == "back to my post"
+
+
+def test_the_reception_guide_walks_back_itself_when_no_walk_back_comes_after_a_guide():
+    r = ScriptedRobot()
+    c = card("Greet people who come to reception and walk them where they are going.", "Role: reception guide")
+    post = ["- In front of the reception desk: right beside you."]
+    decide(r, c, situation(t=0.0, x=1.05, y=1.62, yaw=-90.0, routes=post))
+    r.pending = _Pending("guide", 40.0, "t3", aid="rb15")
+    away = ["- In front of the reception desk: about 15 m, setting off behind you."]
+    arrived = ["- rb15 guide_start: ok (started)", "- rb15 walking to a goal: ok (arrived)"]
+    d = decide(r, c, situation(t=56.8, x=13.09, y=7.24, room="Main corridor", routes=away, results=arrived))
+    assert d["reason"] != "back to my post"
+    # long after the guide ended it is still away and no walk back reported: it goes back itself
+    d = decide(r, c, situation(t=56.8 + ScriptedRobot.RETURN_WAIT_S + 1.0, x=13.09, y=7.24, room="Main corridor",
+                               routes=away, results=arrived))
+    assert d["action"] == "go_to" and d["reason"] == "back to my post"
+
+
+def test_each_scripted_gateway_has_its_own_robot_so_one_run_leaves_nothing_to_the_next():
+    import asyncio
+
+    from wardzero_agents.llm.fake import FakeGateway
+    c = card("Greet people who come to reception and walk them where they are going.", "Role: reception guide")
+    places = ["- In front of the reception desk: right beside you.", "- Ward entrance: about 15 m, setting off ahead."]
+
+    def req(s):
+        return LLMRequest(role="robot", person="g1", system_fixed="", persona_card=c, user=s,
+                          schema={"properties": {"action": {"enum": ACTIONS}}})
+
+    ask = situation(t=0.5, routes=places, heard=['- 0 s ago, someone speaking to you, 54 dB, from the direction of t3 '
+                                                 '(2.0 m): "Could you take me to the ward entrance, please?"'],
+                    tracks=["- t3: 2.0 m, straight ahead, standing, still, at (x=2.00, y=0.00)"])
+    first = asyncio.run(FakeGateway().complete(req(ask)))
+    assert first.data["action"] == "guide"
+    # a second run in the same process, same card, starting at t=0: nothing pending from the first
+    second = asyncio.run(FakeGateway().complete(req(situation(t=0.0, routes=places))))
+    assert second.data["reason"] != "carrying on", second.data
