@@ -18,6 +18,7 @@ import asyncio
 import json
 import os
 import shutil
+import signal
 import subprocess
 import time
 import uuid
@@ -51,6 +52,33 @@ def ros_ready() -> bool:
     return Path(ROS_SETUP).is_file()
 
 
+STOP_GRACE_S = 20.0  # cli run stops its nodes within its own SIGINT, SIGTERM, SIGKILL ladder (10 s + 5 s)
+
+
+def run_bounded(argv: list, *, env: dict, timeout_s: float) -> tuple[int, str, str]:
+    """Run argv in a process group of its own and return (exit code, stdout, stderr). Past timeout_s it is sent
+    SIGTERM, so ``cli run`` stops the nodes it started in sessions of their own (killing only the launcher would leave
+    them publishing on the e2e domains), then the group is killed; raises TimeoutError."""
+    p = subprocess.Popen(argv, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                         start_new_session=True)
+    try:
+        out, err = p.communicate(timeout=timeout_s)
+        return p.returncode, out, err
+    except subprocess.TimeoutExpired:
+        for sig, wait in ((signal.SIGTERM, STOP_GRACE_S), (signal.SIGKILL, 5.0)):
+            try:
+                os.killpg(p.pid, sig)
+            except ProcessLookupError:
+                pass
+            try:
+                out, err = p.communicate(timeout=wait)
+                break
+            except subprocess.TimeoutExpired:
+                out = err = ""
+        raise TimeoutError(f"{' '.join(map(str, argv))[:200]} ran past {timeout_s:g} s and was stopped\n"
+                           f"{(out or '')[-2000:]}\n{(err or '')[-2000:]}") from None
+
+
 def run_launch(preset_id: str, work: Path, *, bot: str, domain: int, timeout_s: float = 1200.0) -> tuple[Path, str]:
     """Stage and run one preset through ``cli run`` (stub, x10). bot: claude (the built-in robot on the scripted
     model) or none. Returns (the run folder, the log). The child gets a clean environment: no session bus, no
@@ -66,8 +94,8 @@ def run_launch(preset_id: str, work: Path, *, bot: str, domain: int, timeout_s: 
            f"exec {PYTHON} -m wardzero_agents.cli run {loaded.scenario_path} --sim stub --time-scale {TIME_SCALE:g} "
            f"--bot {bot} --no-panel --robot-domain {domain + 1}")
     before = set(runs.iterdir())
-    p = subprocess.run(["bash", "-c", cmd], env=env, capture_output=True, text=True, timeout=timeout_s)
-    log = f"exit {p.returncode}\n{p.stdout}\n{p.stderr}"
+    code, out, err = run_bounded(["bash", "-c", cmd], env=env, timeout_s=timeout_s)
+    log = f"exit {code}\n{out}\n{err}"
     (work / f"log_{bot}.txt").write_text(log)
     new = sorted(set(runs.iterdir()) - before)
     if not new:
