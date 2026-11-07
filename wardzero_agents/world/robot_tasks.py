@@ -130,6 +130,8 @@ GUIDE_HOLD_M = 2.5  # the robot waits while the guided person is further behind 
 GUIDE_RESUME_M = 2.0  # ... and walks on once they are this close again
 GUIDE_GIVE_UP_S = 30.0  # held this long without them coming within GUIDE_HOLD_M: the guide is given up
 GUIDE_ARRIVE_WAIT_S = 20.0  # at the place, wait this long for the person to arrive
+RETURN_CLEAR_M = 1.5  # after a guide the robot starts back to its post once nobody is this close ...
+RETURN_WAIT_S = 8.0  # ... or after this long
 NEAR_PLACE_M = 2.0  # a person this close to the place (or in the named room) has arrived
 GUIDE_CLEAR_M = 1.2  # the guide's walk ends at least this far from the person it guides (moved off the place if needed)
 NEAR_PERSON_M = 1.5  # another person this close slows the robot ...
@@ -181,6 +183,7 @@ class RobotTasks:
         self._spray: dict[str, str] = {}  # action id -> fire id
         self._to_fire: dict[str, str] = {}  # action id -> fire id, walking up to it before spraying
         self._guide: Optional[dict] = None
+        self._return_after: Optional[tuple] = None  # (goal id, t): the walk back to post after a guide, waiting to start
         self._following: Optional[dict] = None  # the follow action under way
         self._tell: Optional[dict] = None
         self._notes: list[dict] = []  # desk notes not read yet
@@ -611,8 +614,9 @@ class RobotTasks:
             self._end_guide(t, "arrived" if arrived else "timeout")
             # back to its post unless told to stay, and never while the fire alarm sounds (its post may be by the fire)
             if self.mobile and g.get("return", True) and not getattr(w, "alarm_active", False):
-                x, y, yaw = self.post
-                self._set_goal(f"{g['id']}-return", x, y, yaw, t)
+                # it lets the person it brought (and anyone else close by) go on past first: turning back at once in a
+                # doorway walks it into them
+                self._return_after = (f"{g['id']}-return", t)
 
     def free_seat(self, room: Optional[str]) -> Optional[str]:
         """The free seat nearest the robot that its camera could see from here, preferring one in the room."""
@@ -978,6 +982,28 @@ class RobotTasks:
                 f"{then}.")
 
     # ---- keeping clear of people -------------------------------------------------------------
+    def _start_return(self, t: float) -> None:
+        """The walk back to post after a guide starts once nobody is within RETURN_CLEAR_M of the robot, or after
+        RETURN_WAIT_S. A new walk, a follow or guide, cmd_vel or the fire alarm in the meantime calls it off."""
+        ra = self._return_after
+        if ra is None:
+            return
+        w = self.world
+        r = w.robot
+        walking = r.has_goal and r._had_goal  # a turn on the spot (facing someone) is no new walk
+        if walking and str(self.goal_id).startswith(SAFETY):
+            return  # a step back from someone too close: the walk back waits for it to end
+        if walking or self._guide is not None or self._following is not None or getattr(w, "alarm_active", False) \
+                or abs(getattr(r, "_v", 0.0)) > 1e-6 or abs(getattr(r, "_w", 0.0)) > 1e-6:
+            self._return_after = None
+            return
+        near = any(math.hypot(q.x - r.x, q.y - r.y) < RETURN_CLEAR_M for _, q in self._others())
+        if near and t - ra[1] < RETURN_WAIT_S:
+            return
+        self._return_after = None
+        x, y, yaw = self.post
+        self._set_goal(ra[0], x, y, yaw, t)
+
     def _others(self) -> list:
         w = self.world
         return [(pid, q) for pid, q in w.people.items() if q.posture != "gone" and q.kind != "static"]
@@ -1249,6 +1275,7 @@ class RobotTasks:
                         self._tell = None
                     if self._guide is not None and self._guide["id"] == self.goal_id:
                         self._end_guide(t, "no_route")
+        self._start_return(t)
         if getattr(w, "alarm_active", False) and str(self.goal_id).endswith(RETURN_SUFFIX) and \
                 w.robot.has_goal and w.robot._had_goal:
             w.robot.cancel_goal()  # the alarm sounded on its way back to post: it stays put (its post may be by the fire)

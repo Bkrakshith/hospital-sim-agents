@@ -256,6 +256,21 @@ def _asked_the_way(u: str) -> bool:
     return bool(re.search(r"I chose approach g1 and said \"Excuse me", u))
 
 
+def _going_on_through(req: LLMRequest, u: str, card: str) -> Optional[dict]:
+    """The robot just said its goodbye at the end of a guide: thank it and go on through the place they were going
+    (into the ward, down the corridor) rather than stand in the doorway, in everyone's way."""
+    mine = _my_place(card)
+    if not mine or not re.search(r"ROBOT SAID TO YOU: \"?Here we are", u) or "leave" not in (_kinds(req) or ["leave"]):
+        return None
+    through = next((pid for label, pid in _card_places(card) if label.split(",")[0].strip() == mine.lower()), None)
+    return _decision("leave", through, "Thank you") if through else None
+
+
+def _brought_there(u: str) -> bool:
+    """The robot already walked them where they were going (it said its goodbye at the end of a guide)."""
+    return bool(re.search(r"(?:the robot said to me|ROBOT SAID TO YOU:) \"?Here we are", u))
+
+
 def _carry_on(u: str) -> Optional[dict]:
     """Keep walking where they were going: a new sound or face is no reason to stop half way."""
     m = re.search(r"Current activity: (walk_to|approach) (\S+) \((sent|running)\)", u)
@@ -270,6 +285,9 @@ def person_policy(req: LLMRequest) -> dict:
     offered = _offer_reply(req, u)
     if offered is not None:
         return offered
+    through = _going_on_through(req, u, card)
+    if through is not None:
+        return through
     if ("NUDGE: The robot is offering to walk you" in u or re.search(r"Current activity: follow \S+ \((sent|running)\)", u)) \
             and "follow" in (_kinds(req) or ["follow"]):
         return _decision("follow", "g1")  # the natural reply to a guide offer, and keep following
@@ -286,6 +304,11 @@ def person_policy(req: LLMRequest) -> dict:
         if "where would you like to go" in line.lower() or ("where" in line.lower() and "?" in line):
             if mine:  # asked where they are going: they say
                 return _decision("wait_standing", "", f"I need to get to the {mine}, please.", "g1")
+        if mine and re.search(r"\b(help you|can i help|anything i can)\b", line.lower()) and _asked_the_way(u) \
+                and not _brought_there(u):
+            # they asked before and are still not where they need to be (their first ask went unheard: the robot was
+            # a room away): offered help, they say again what they need
+            return _decision("wait_standing", "", f"Yes please, I need to get to the {mine}.", "g1")
         lm = _place(line, card)
         return _decision("walk_to", lm, "Thank you") if lm else _decision("wait_standing", "", "Thank you")
     if "NUDGE:" in u:

@@ -233,3 +233,31 @@ def test_a_role_that_cannot_follow_does_not_answer_a_guide_offer_with_follow(tmp
     offer = "NUDGE: The robot is offering to walk you to Ward entrance. If you want to go there, follow it (follow g1)."
     d = ask(loaded, "RCP", [offer])
     assert kind(d) in decision_schema(inst.role)["properties"]["intent"]["properties"]["kind"]["enum"]
+
+
+def test_offered_help_a_visitor_says_where_she_still_needs_to_go(staged):
+    """Her first ask may have gone unheard (the robot was a room away): when the robot offers help she says it again."""
+    loaded = staged("reception_guide")
+    asked = ['t=59s; I felt: x; I chose approach g1 and said "Excuse me, can you help us? I need to get to the '
+             'corridor to the outpatient clinics." (mood calm)']
+    a = ask(loaded, "H1", ["ROBOT SAID TO YOU: Hello, I am the hospital robot. Can I help you?"], history=asked)
+    assert a["addressee"] == "g1" and "outpatient clinics" in a["say"].lower()
+    fresh = ask(loaded, "H1", ["ROBOT SAID TO YOU: Hello, I am the hospital robot. Can I help you?"])
+    assert "outpatient clinics" not in (fresh.get("say") or "").lower()  # never asked: a greeting is just a greeting
+    done = ask(loaded, "V1", ["ROBOT SAID TO YOU: Hello, I am the hospital robot. Can I help you?"],
+               history=['t=17s; the robot said to me "Here we are. Goodbye, and take care."'])
+    assert "ward entrance" not in (done.get("say") or "").lower()
+
+
+def test_brought_where_she_was_going_she_goes_on_through(staged):
+    """A visitor walked to the ward entrance goes on into the ward, not stand in the doorway in everyone's way."""
+    loaded = staged("reception_guide")
+    d = ask(loaded, "V1", ["ROBOT SAID TO YOU: Here we are. Goodbye, and take care."])
+    assert kind(d) == "leave" and d["intent"]["target"] == "ward_entrance"
+
+
+def test_the_goodbye_ends_the_follow_and_she_goes_on_through(staged):
+    loaded = staged("reception_guide")
+    d = ask(loaded, "V1", ["Current activity: follow g1 (running).",
+                           "ROBOT SAID TO YOU: Here we are. Goodbye, and take care."])
+    assert kind(d) == "leave" and d["intent"]["target"] == "ward_entrance"

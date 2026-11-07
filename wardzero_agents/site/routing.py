@@ -16,7 +16,13 @@ NEAR_PENALTY = 3.0  # extra cost per step inside the clearance band
 TIGHT_M = 0.35  # a robot's narrower berth: its radius (0.3 m) and a little; the robot_near_furniture_s distance
 # (default only for a router whose clearance is no wider: a wider clearance is a wider body, such as the walking G1)
 DETOUR_RATIO = 1.25  # the hard band's route is kept unless it is this much longer than the tight band's ...
-DETOUR_M = 2.0  # ... plus this
+DETOUR_M = 2.0  # ... plus this (the same bound caps the way round people standing in the way, see Router.route)
+
+
+def _length(pts) -> float:
+    return sum(math.hypot(q[0] - p[0], q[1] - p[1]) for p, q in zip(pts, pts[1:]))
+
+
 _SQ2 = math.sqrt(2.0)
 _NB = [(-1, 0, 1.0), (1, 0, 1.0), (0, -1, 1.0), (0, 1, 1.0),
        (-1, -1, _SQ2), (-1, 1, _SQ2), (1, -1, _SQ2), (1, 1, _SQ2)]
@@ -250,7 +256,9 @@ class Router:
         None if there is none or no route. Cached on the (cell_a, cell_b) pair.
 
         avoid: (x, y, radius) discs to keep out of, for this route only (people standing in the way). The cells at
-        either end stay open; with no route around the discs, the plain route is returned. Not cached."""
+        either end stay open; with no route around the discs, or only one more than DETOUR_RATIO x the plain route +
+        DETOUR_M (someone standing in a doorway must not send a body round the building), the plain route is
+        returned. Not cached."""
         ca, cb = self._snap(self.grid.to_cell(*a)), self._snap(self.grid.to_cell(*b))
         if ca is None or cb is None:
             return None
@@ -259,7 +267,12 @@ class Router:
             return tuple(p) if self.grid.to_cell(*p) == c else self.grid.to_world(*c)
 
         ea, eb = endpoint(a, ca), endpoint(b, cb)
-        return self._ends_clear(self._route(ca, cb, ea, eb, a, avoid), ca, cb)
+        pts = self._ends_clear(self._route(ca, cb, ea, eb, a, avoid), ca, cb)
+        if avoid and pts is not None:
+            plain = self._ends_clear(self._route(ca, cb, ea, eb, a, ()), ca, cb)
+            if plain is not None and _length(pts) > DETOUR_RATIO * _length(plain) + DETOUR_M:
+                return plain
+        return pts
 
     def _seg_clear(self, p, q) -> bool:
         """No raw-blocked cell on the straight segment p-q (sampled at a quarter cell)."""

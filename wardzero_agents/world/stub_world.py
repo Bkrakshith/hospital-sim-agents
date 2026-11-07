@@ -88,6 +88,10 @@ FOLLOW_FAR_M = 1.5
 FOLLOW_GAP_M = 1.25  # ... walking up to this far behind when they have fallen back
 FOLLOW_DONE_M = 1.75  # the robot has stopped and the follower is this close: the follow is done
 ROBOT_AVOID_M = 0.75  # people's routes keep this far from where the robot stands, when they can
+YIELD_GAP_M = 0.35  # a walker does not step closer than the robot's radius + this to a robot standing still ...
+YIELD_MAX_S = 5.0  # ... for up to this long (then they squeeze past); a robot on the move keeps clear itself
+ROBOT_STILL_MPS = 0.05
+LEAVE_AT_M = 1.0  # someone leaving by a door the robot stands at is through it this close to the door's point
 ARRIVAL_JITTER_M = 0.8  # people arriving mid-run appear up to this far from the entrance, so they do not stack
 ROBOT_SUBSTEP_S = 0.1  # the robot moves in steps no longer than this, its speed cap set before each one
 STAFF_ROLES = frozenset({"receptionist", "ward_nurse", "staff", "nurse", "porter", "surgeon"})
@@ -167,6 +171,7 @@ class _Person:
     intent_kind: Optional[str] = None
     state: str = "idle"
     reason: Optional[str] = None
+    yield_s: float = 0.0  # how long they have waited for a robot standing in their way
     progress: float = 0.0
     total_est: float = 1.0
     leaving: bool = False
@@ -442,6 +447,20 @@ class StubWorld:
         p.total_est = max(self._remaining(p), 1e-6)
         if not plan:
             self._finish(p)
+
+    def _yields(self, p: _Person, nxt: tuple[float, float], dt: float) -> bool:
+        """A walker about to come within the robot's radius + YIELD_GAP_M of a robot standing still waits (a route's
+        end can lie under the robot: the routes' robot disc leaves the end cells open), up to YIELD_MAX_S."""
+        if not self.loaded.scenario.robot.enabled:
+            return False
+        r = self.robot
+        near = r.radius + YIELD_GAP_M
+        d_now, d_next = math.hypot(p.x - r.x, p.y - r.y), math.hypot(nxt[0] - r.x, nxt[1] - r.y)
+        if abs(getattr(r, "vx", 0.0)) > ROBOT_STILL_MPS or d_next >= near or d_next >= d_now:
+            p.yield_s = 0.0
+            return False
+        p.yield_s += dt
+        return p.yield_s < YIELD_MAX_S
 
     def _robot_disc(self, p: Optional[_Person] = None) -> tuple:
         """Where people's routes keep clear of: the robot standing in the way (when the scenario has one). Someone
@@ -900,6 +919,14 @@ class StubWorld:
             if d > 1e-6:
                 p.yaw = math.atan2(wp[1] - p.y, wp[0] - p.x)
             reach = ph.speed * rem
+            nxt = wp if reach >= d else (p.x + (wp[0] - p.x) / d * reach, p.y + (wp[1] - p.y) / d * reach)
+            if self._yields(p, nxt, rem):
+                if p.leaving and len(p.plan) == 1 and ph.goal is not None and \
+                        math.hypot(ph.goal[0] - p.x, ph.goal[1] - p.y) <= LEAVE_AT_M:
+                    self._finish(p)  # at the door they leave by, the robot standing at it: through it, gone
+                    return
+                p.posture = "standing"
+                break  # waits this step for the robot standing in the way to move off
             if reach >= d:
                 p.x, p.y = wp
                 self._lead(p, ph)

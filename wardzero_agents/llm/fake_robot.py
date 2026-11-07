@@ -706,7 +706,14 @@ class ScriptedRobot:
         waiting = [w for w in self.mem.get("deferred", []) if w[2] is not None]
         if not waiting or not self.free() or s.t - self.mem.get("looked_t", -1e9) < 6.0 or self._returning(s):
             return None  # (walking itself back after a guide turns it round anyway: a go_to would cancel that)
-        _, _, (x0, y0, deg), _ = waiting[0]
+        _, h, (x0, y0, deg), _ = waiting[0]
+        # where they stood: along the voice's direction from where the robot heard it, as far as the voice's loudness
+        # puts them; the robot has moved since, so the way to look is worked out from here
+        est = 2.0 if h is None or getattr(h, "db", None) is None else 10.0 ** ((self.VOICE_DB - h.db) / 20.0)
+        est = max(1.0, min(est, 15.0))
+        px, py = x0 + est * math.cos(math.radians(deg)), y0 + est * math.sin(math.radians(deg))
+        if math.hypot(px - s.x, py - s.y) > 0.5:
+            deg = math.degrees(math.atan2(py - s.y, px - s.x))
         return self._go_facing(s, deg, "turning to see who spoke")
 
     def _go_facing(self, s: Situation, deg: float, why: str) -> Optional[dict]:

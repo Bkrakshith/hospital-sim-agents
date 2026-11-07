@@ -136,3 +136,20 @@ def test_a_wider_berth_router_gets_no_tight_band_unless_asked(evac):
     asked = Router(g, clearance=0.6, hard=0.5, tight=0.35)  # still there for a caller that wants it
     assert asked._tight is not None
     assert w.robot.router._tight is not None  # the stub robot's router keeps it by default
+
+
+@pytest.mark.parametrize("h1", [(0.1, -1.2), (5.1, 2.2), (6.0, 3.7), (12.0, 7.1)])
+def test_someone_in_the_way_never_sends_the_robot_round_the_building(tmp_path_factory, h1):
+    """e2e reception_guide: walking back from the ward entrance to its post with a visitor coming up the corridor, the
+    robot planned round the outside of the building (90 s). A person in the way is passed (slowly), not avoided at
+    any cost: with avoid discs the route is at most DETOUR_RATIO x the plain route + DETOUR_M."""
+    from wardzero_agents.site.routing import DETOUR_M, DETOUR_RATIO
+    p = load_scenario_presets(DEFAULT_CONFIG_ROOT)["reception_guide"]
+    ld = preset_to_scenario(p, DEFAULT_CONFIG_ROOT, tmp_path_factory.mktemp("rg"),
+                            characters=auto_staff.with_auto(list(p.characters), p))
+    r = StubWorld(ld, 7).robot.router
+    a, post = (12.7, 7.7), (1.05, 1.62)  # (12.0, 7.1): she stands in the ward entrance doorway, asking for help
+    plain = r.route(a, post)
+    around = r.route(a, post, [(h1[0], h1[1], 0.7)])
+    assert plain is not None and around is not None
+    assert length(around) <= DETOUR_RATIO * length(plain) + DETOUR_M, (length(around), length(plain))

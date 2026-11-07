@@ -69,3 +69,44 @@ def test_call_system_chimes_reach_the_staff_through_walls(tmp_path):
     res = [r for o in outs for r in o.task_results if r.get("id") == "pc"]
     assert res and res[0]["reason"] == "answered"
     assert [n.person for o in outs for n in o.nudges if n.card == rt.CALL_CARD] == ["N1"]
+
+
+def _rg(tmp_path):
+    p = load_scenario_presets(DEFAULT_CONFIG_ROOT)["reception_guide"]
+    ld = preset_to_scenario(p, DEFAULT_CONFIG_ROOT, tmp_path / "s", characters=auto_staff.with_auto(list(p.characters), p))
+    return StubSimService(ld, RunLog(tmp_path / "run"), wait_for=())
+
+
+def test_a_walker_waits_for_a_robot_standing_on_their_way(tmp_path):
+    """A route's end can lie under the robot (the routes' robot disc leaves the end cells open): the walker stops
+    short of a robot standing still instead of walking into it."""
+    import math
+    from wardzero_agents.contracts import Intent
+    from wardzero_agents.world.stub_world import YIELD_GAP_M
+    s = _rg(tmp_path)
+    w = s.world
+    we = w.site.landmarks["ward_entrance"]
+    w.robot.teleport(we.x, we.y, 0.0)
+    v = w.people["V2"]
+    v.x, v.y, v.posture, v.seat, v.plan = we.x - 4.0, we.y, "standing", None, []
+    s.on_intent(Intent(id="w", person="V2", t=s.t, kind="walk_to", target="ward_entrance"))
+    gaps = []
+    for _ in range(40):
+        s.step(0.1)
+        gaps.append(math.hypot(v.x - w.robot.x, v.y - w.robot.y))
+    assert min(gaps) >= w.robot.radius + YIELD_GAP_M - 1e-6
+    assert not [r for r in w.drain_log() if r[0] == "world" and r[1].get("kind") == "contact"]
+
+
+def test_someone_leaving_by_the_door_the_robot_stands_at_goes_through(tmp_path):
+    from wardzero_agents.contracts import Intent
+    s = _rg(tmp_path)
+    w = s.world
+    we = w.site.landmarks["ward_entrance"]
+    w.robot.teleport(we.x, we.y, 0.0)
+    v = w.people["V2"]
+    v.x, v.y, v.posture, v.seat, v.plan = we.x - 3.0, we.y, "standing", None, []
+    s.on_intent(Intent(id="l", person="V2", t=s.t, kind="leave", target="ward_entrance"))
+    for _ in range(60):
+        s.step(0.1)
+    assert v.posture == "gone"
