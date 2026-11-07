@@ -266,16 +266,28 @@ class Verdict:
         return out
 
 
-def debrief(run_dir: Path) -> None:
-    """The scripted debrief (as `cli run` does after a run), unless the run already has one."""
+def work_data_dir(run_dir: Path) -> Path:
+    """The data folder of a run's work folder: <work>/data (the launch path's WARDZERO_DATA_DIR for the child, whose
+    run folders sit in <work>/runs), never the user's own data dir."""
+    run_dir = Path(run_dir)
+    work = run_dir.parent.parent if run_dir.parent.name == "runs" else run_dir.parent
+    return work / "data"
+
+
+def debrief(run_dir: Path, db_path: Optional[Path] = None) -> None:
+    """The scripted debrief (as `cli run` does after a run), unless the run already has one. Its trust rows go to the
+    campaign database under the run's work folder (db_path to choose another)."""
     if (Path(run_dir) / "debrief.jsonl").exists():
         return
     from wardzero_agents.bench.metrics import RunData
-    from wardzero_agents.campaign.debrief import debrief as run_debrief
-    from wardzero_agents.config.presets import preset_for_run
+    from wardzero_agents.campaign import debrief as campaign
+    from wardzero_agents.config import presets as preset_cfg
     from wardzero_agents.llm.fake import FakeGateway
-    preset = preset_for_run(RunData.load(run_dir).meta)
-    asyncio.run(run_debrief(run_dir, FakeGateway(), preset=preset))
+    from wardzero_agents.memory import memory_path
+    db_path = Path(db_path) if db_path is not None else memory_path(work_data_dir(run_dir))
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    preset = preset_cfg.preset_for_run(RunData.load(run_dir).meta)
+    asyncio.run(campaign.debrief(run_dir, FakeGateway(), preset=preset, db_path=db_path))
 
 
 def judge(preset_id: str, run_dir: Path) -> Verdict:

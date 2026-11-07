@@ -1,7 +1,7 @@
 """The scripted built-in robot (WARDZERO_TEST_CLAUDE_BOT with the scripted model): it reads only the robot's own prompt
 (its card and situation) and does each preset's main task through the robot's real action schema and speech."""
 from wardzero_agents.llm.fake import default_policy
-from wardzero_agents.llm.fake_robot import ScriptedRobot, parse_card, parse_situation
+from wardzero_agents.llm.fake_robot import ScriptedRobot, _Pending, parse_card, parse_situation
 from wardzero_agents.llm.gateway import LLMRequest
 
 ACTIONS = ["none", "wait", "go_to", "approach", "guide", "follow", "tell_staff", "note_desk", "press_call", "take",
@@ -212,3 +212,66 @@ def test_of_two_people_that_way_the_one_walking_up_is_taken_for_the_speaker():
                   routes=["- Ward entrance: about 14 m, setting off to your left."])
     d = decide(r, c, s)
     assert d["action"] == "guide" and d["target"] == "t1"
+
+
+def test_the_reception_guide_walks_back_to_its_post_after_a_walk_that_ended_away_from_it():
+    r = ScriptedRobot()
+    c = card("Greet people who come to reception and walk them where they are going.", "Role: reception guide")
+    post = ["- Main entrance: about 5 m, setting off ahead and to your right.",
+            "- In front of the reception desk: right beside you.",
+            "- Corridor to the outpatient clinics: about 8 m, setting off to your left."]
+    decide(r, c, situation(t=0.0, x=1.05, y=1.62, yaw=-90.0, routes=post))
+    # a guide that ended blocked, far from the desk: nobody to help here, so back to the desk
+    away = ["- Main entrance: about 12 m, setting off ahead and to your left.",
+            "- In front of the reception desk: about 8 m, setting off ahead and to your left.",
+            "- Corridor to the outpatient clinics: right beside you."]
+    d = decide(r, c, situation(t=48.9, x=6.17, y=5.79, yaw=-161.0, room="Main corridor", routes=away,
+                               tracks=["- t4: 4.3 m, straight ahead, seated, still, at (x=2.00, y=4.75), "
+                                       "not spoken to yet"]))
+    assert d["action"] == "go_to" and d["destination"] == "In front of the reception desk"
+    # back at the desk, a newcomer at the entrance is greeted
+    r.pending = None
+    d = decide(r, c, situation(t=60.0, x=1.0, y=1.5, yaw=-140.0, routes=post,
+                               tracks=["- t5: 4.8 m, ahead and to your right, standing, still, at (x=-1.20, y=-2.57), "
+                                       "at Main entrance, not spoken to yet"]))
+    assert d["action"] == "approach" and d["target"] == "t5"
+
+
+def test_the_evacuation_guide_goes_back_for_someone_it_saw_in_the_room_it_checks():
+    r = ScriptedRobot()
+    c = card("When the alarm sounds, get everyone out by a safe open way. Once the people near you are on their way "
+             "out, check the A&E waiting area and walk anyone still there out.", "Role: fire evacuation guide",
+             "Safe exit: the safe way out is the Ambulance handover bay in A&E.")
+    alarm = ["- 1 s ago, an alarm, 85 dB"]
+    assert decide(r, c, situation(t=2.0, x=2.5, y=-0.5, heard=alarm))["toward_track"] == "room"
+    # while walking someone else out, the camera catches someone standing still in the A&E waiting area
+    r.pending = _Pending("guide", 41.0, "t2", aid="rb9")
+    r.mem["guided"].add("t2")
+    d = decide(r, c, situation(t=46.2, x=-3.94, y=1.84, yaw=176.0, heard=alarm,
+                               tracks=["- t3: 5.4 m, ahead and to your left, standing, still, at (x=-9.00, y=0.00)"]))
+    assert d["action"] == "none"
+    # later, checking the A&E waiting area, they are just behind the robot, out of view: go back to them
+    r.pending, r.mem["checked_other"] = None, True
+    routes = ["- Main lobby and reception: about 9 m, setting off ahead and to your left, through A&E walk-in "
+              "reception + 15-seat waiting, then Main lobby and reception.",
+              "- A&E walk-in reception + 15-seat waiting: right beside you.",
+              "- Ambulance handover bay: about 25 m, setting off behind you, through A&E walk-in reception + 15-seat "
+              "waiting, then Ambulance handover bay."]
+    d = decide(r, c, situation(t=136.8, x=-8.43, y=-0.54, yaw=-22.0, room="A&E walk-in reception + 15-seat waiting",
+                               routes=routes))
+    assert d["action"] == "approach" and d["target"] == "t3"
+    # once beside them and they are in view, they are walked out
+    r.pending = None
+    d = decide(r, c, situation(t=140.0, x=-8.6, y=-0.4, yaw=140.0, room="A&E walk-in reception + 15-seat waiting",
+                               routes=routes, tracks=[track("t3", 0.9, -9.0, 0.0)]))
+    assert d["action"] == "guide" and d["target"] == "t3" and d["return_to_post"] is False
+
+
+def test_an_action_the_body_cannot_do_leaves_nothing_pending():
+    r = ScriptedRobot()
+    c = card("Carry the specimen box to the porter, who waits in the main lift lobby, and hand it to the porter.",
+             "Role: specimen runner", "Items: specimen box",
+             places=["- Main_LiftLobby: Protected bed-lift lobby (lift_lobby)"])
+    fixed = [a for a in ACTIONS if a not in ("go_to", "approach", "guide", "follow")]
+    d = r.decide(c, situation(held="specimen box (item specimen_1)"), fixed)
+    assert d["action"] == "none" and r.pending is None

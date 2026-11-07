@@ -70,6 +70,7 @@ class Situation:
     places: list = field(default_factory=list)  # labels of the places the routes from here list
     route_dirs: dict = field(default_factory=dict)  # label -> the way the route sets off ("ahead and to your left")
     blocked: set = field(default_factory=set)  # labels of the places whose way the robot saw blocked
+    route_m: dict = field(default_factory=dict)  # label -> route length from here (0 when right beside it)
     results: list = field(default_factory=list)
     events: list = field(default_factory=list)
 
@@ -129,8 +130,10 @@ def parse_situation(u: str) -> Situation:
         elif (m := re.match(r"- call light on at bed (\w+)", ln)):
             s.lights.append(m.group(1))
     for ln in _section(u, "Getting there from ", "Results of your recent actions", "Your last events").splitlines():
-        if (m := re.match(r"- (.+?): (?:about [0-9]+ m|right beside you|the way there is blocked)", ln)):
+        if (m := re.match(r"- (.+?): (?:about ([0-9]+) m|(right beside you)|the way there is blocked)", ln)):
             s.places.append(m.group(1))
+            if m.group(2) or m.group(3):
+                s.route_m[m.group(1)] = float(m.group(2) or 0.0)
             way = re.search(r"setting off (.+?)(?:, through |\.$)", ln)
             if way:
                 s.route_dirs[m.group(1)] = way.group(1)
@@ -429,6 +432,10 @@ class ScriptedRobot:
         self.last_t = self.now = s.t
         c = self.card = parse_card(card_text or "")
         self.mem.setdefault("post", (s.x, s.y, s.yaw))  # where it starts is its post
+        if "post_place" not in self.mem and s.route_m:  # the place right beside its post, to walk back to
+            px, py, _ = self.mem["post"]
+            if math.hypot(s.x - px, s.y - py) <= 0.5:
+                self.mem["post_place"] = next((lab for lab, m in s.route_m.items() if m == 0.0), None)
         for tr in s.tracks:
             self.first_seen.setdefault(tr.id, s.t)
             self.last_seen[tr.id] = (tr.x, tr.y, tr.moving, s.t, tr.line)
@@ -436,6 +443,7 @@ class ScriptedRobot:
             c.places.setdefault(lab.lower(), lab)
         self.allowed = allowed or ["none"]
         self._ids(s)
+        before = self.pending
         new = self._new_results(s)
         done = self._finished(new)
         if self.pending is not None and (done is not None or s.t - self.pending.t > self.MAX_BUSY_S):
@@ -467,6 +475,8 @@ class ScriptedRobot:
             d = self.reception(s, c)
         if d["action"] not in self.allowed:
             d = {**d, "action": "none"}
+            if self.pending is not None and self.pending is not before and self.pending.action not in self.allowed:
+                self.pending = None  # never sent: nothing to wait for
         return d
 
     # hooks the jobs use
@@ -1022,6 +1032,12 @@ class ScriptedRobot:
                 return _decision(reason="making sure they are on their way")
             self.mem["checked_other"] = True
             return self.go(s, other, why=f"checking {other} for anyone still there")
+        if checking and p is None:  # nobody in view in the room it checks: first anyone it saw standing still here
+            tid = self._left_behind(s, guided, exit_)
+            if tid is not None and "approach" in self.allowed:
+                self.mem.setdefault("looked_for", set()).add(tid)
+                return self._start(s, _decision("approach", "", "", tid, reason="back to someone it saw standing "
+                                                "still here"))
         if checking and self.mem.get("looks", 0) < 3:  # nobody in view in the room it came to check: look round
             used = self.mem.setdefault("looked_at", set())
             # sideways first (a way back behind it leads out of the room it is checking), then behind
@@ -1038,6 +1054,21 @@ class ScriptedRobot:
             self.mem["to_exit"] = True
             return self.go(s, exit_, why="leaving by the safe exit")
         return self.default(s, c)
+
+    LEFT_BEHIND_M = 6.0  # someone last seen standing still this near where the robot now checks may still be there
+
+    def _left_behind(self, s: Situation, guided: set, exit_: str) -> Optional[str]:
+        """The nearest track out of view now that the camera last saw standing still near here (and not at the exit),
+        not walked out yet and not looked for already."""
+        looked = self.mem.get("looked_for", set())
+        best = None
+        for tid, (x, y, moving, _, line) in self.last_seen.items():
+            if tid in guided or tid in looked or moving or s.track(tid) is not None or exit_.lower() in line.lower():
+                continue
+            d = math.hypot(x - s.x, y - s.y)
+            if d <= self.LEFT_BEHIND_M and (best is None or d < best[0]):
+                best = (d, tid)
+        return best[1] if best else None
 
     def _other_room(self, s: Situation, c: Card) -> Optional[str]:
         """A room the job says to check ("check the A&E waiting area")."""
@@ -1113,7 +1144,27 @@ class ScriptedRobot:
         if self.busy():
             return _decision(reason="carrying on")
         g = self.greet(s)
-        return g or _decision(reason="waiting at the desk")
+        return g or self.back_to_post(s) or _decision(reason="waiting at the desk")
+
+    POST_M = 2.0  # farther than this from its post, with nothing to do, the robot walks back to it
+    POST_TRIES = 3
+
+    def back_to_post(self, s: Situation) -> Optional[dict]:
+        """A walk back to the place beside its post, when nothing keeps it here (a walk that ended away from the post,
+        a guide held up short): from the post it sees who comes in. None at the post, or while talking with someone."""
+        post, place = self.mem.get("post"), self.mem.get("post_place")
+        if post is None or place is None or self.busy() or "go_to" not in self.allowed:
+            return None
+        if math.hypot(s.x - post[0], s.y - post[1]) <= self.POST_M:
+            self.mem["post_tries"] = 0
+            return None
+        if any(o.dist <= self.SPEAK_M and s.t - self.spoke_t.get(o.id, -1e9) <= self.TALKING_S for o in s.tracks):
+            return None
+        tries = self.mem.get("post_tries", 0)
+        if tries >= self.POST_TRIES:
+            return None
+        self.mem["post_tries"] = tries + 1
+        return self._start(s, _decision("go_to", destination=place, reason="back to my post"), place=place, minor=True)
 
 
 _ROBOT = ScriptedRobot()
