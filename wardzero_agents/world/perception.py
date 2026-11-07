@@ -22,6 +22,7 @@ BLOCKED_SIGN = "route_blocked"  # the id prefix of the sign a route_blocked even
 # its arms' reach, like the instrument tray on the trolley just behind it)
 REACH_VIEW_M = 1.0
 ASLEEP_SEEN_M = 4.0  # the camera can tell someone is asleep (eyes shut, still) this close
+UNWELL_SEEN_M = 4.0  # ... or that someone looks unwell (slumped, pale, breathing hard) this close
 
 
 class Tracks:
@@ -109,6 +110,10 @@ def _seen_asleep(p, body: RobotBody) -> bool:
     return bool(getattr(p, "asleep", False)) and math.hypot(p.x - body.x, p.y - body.y) <= ASLEEP_SEEN_M
 
 
+def _seen_unwell(p, body: RobotBody) -> bool:
+    return bool(getattr(p, "unwell", False)) and math.hypot(p.x - body.x, p.y - body.y) <= UNWELL_SEEN_M
+
+
 def perceive_people(world, body: RobotBody) -> list[dict]:
     out = []
     for pid, p in _visible(world, body):
@@ -116,6 +121,8 @@ def perceive_people(world, body: RobotBody) -> list[dict]:
              "posture": p.posture, "moving": _moving(p), "holding": _holding(world, pid), "bed": p.bed}
         if _seen_asleep(p, body):
             d["asleep"] = True
+        if _seen_unwell(p, body):
+            d["unwell"] = True
         out.append(d)
     return out
 
@@ -169,4 +176,6 @@ def bbox_3d(world, body: RobotBody, t: float) -> dict:
         })
         if _seen_asleep(p, body):
             dets[-1]["asleep"] = True  # eyes shut and still, close enough for the camera to tell
+        if _seen_unwell(p, body):
+            dets[-1]["unwell"] = True  # slumped and looking unwell, close enough for the camera to tell
     return {"header": {"stamp": t, "frame_id": "map"}, "detections": dets}

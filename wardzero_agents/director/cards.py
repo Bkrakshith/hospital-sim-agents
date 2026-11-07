@@ -5,7 +5,9 @@ Cards never address the robot. The robot only meets the consequences.
 from __future__ import annotations
 
 import hashlib
+import logging
 import re
+import typing
 from typing import Optional
 
 from wardzero_agents.config.models import CardDef, Persona, PersonInstance
@@ -14,6 +16,11 @@ from wardzero_agents.contracts import Nudge, ReflexOverride, Roster, WorldEvent
 from .storyboard import CardFiring, WorldView
 
 _PLACEHOLDER = re.compile(r"\{([^{}]*)\}")
+log = logging.getLogger(__name__)
+PERSON_EVENTS = ("person_exit", "ring_bell", "asleep", "unwell")  # world events about the card's target person
+# the world event kinds this contract carries: a card whose world kind it lacks (unwell, before the contract had it)
+# still nudges, and leaves the world event out
+_EVENT_KINDS = set(typing.get_args(WorldEvent.model_fields["kind"].annotation))
 
 
 # who can walk in mid-run: visitors and patients, never staff, porters or companions (who come with someone)
@@ -117,6 +124,9 @@ class CardExecutor:
             if text is not None:
                 text = self._render(str(text), values_for(target), params)
             kind = w["kind"]
+            if kind not in _EVENT_KINDS:
+                log.warning("card '%s': world event kind '%s' is not in this contract; left out", card.id, kind)
+                return outs
             persona = w.get("persona") if kind == "arrival" else None
             if kind == "arrival" and persona is None and self.personas:
                 in_bed = {i.persona_id for i in self.instances.values() if i.start is not None and i.start.bed}
@@ -124,5 +134,5 @@ class CardExecutor:
             outs.append(WorldEvent(
                 id=firing.id, t=firing.t, kind=kind, text=text, x=w.get("x"), y=w.get("y"),
                 persona=persona,
-                person=target if kind in ("person_exit", "ring_bell", "asleep") else None))
+                person=target if kind in PERSON_EVENTS else None))
         return outs
