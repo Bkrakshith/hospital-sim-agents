@@ -109,6 +109,8 @@ class RecordConfig:
 
 
 DISK_MARGIN_B = 64 * 2**20  # free space kept on top of what an encode needs
+FOLLOW_MP4_RATIO = 0.75  # follow.mp4's size over its JPEG frames': 0.40 to 0.60 measured at 720p (scrub_nurse,
+# ward_fire), with room to spare
 
 
 def _free_bytes(path: Path) -> int:
@@ -550,8 +552,8 @@ class Recorder:
         if not files:
             log.warning("no follow-camera frames were written")
             return 0
-        # the MP4 is smaller than its JPEG frames (about 0.6 of them at 720p): their size is what the encode needs
-        msg = disk_problem(sum(p.stat().st_size for p in files), _free_bytes(cfg.video_dir), cfg.follow_mp4.name)
+        need = int(FOLLOW_MP4_RATIO * sum(p.stat().st_size for p in files))  # the MP4 is smaller than its frames
+        msg = disk_problem(need, _free_bytes(cfg.video_dir), cfg.follow_mp4.name)
         if msg:
             log.error("%s", msg)
             self.problems.append({"what": "disk_full", "message": msg})

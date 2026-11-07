@@ -385,3 +385,12 @@ def test_follow_encode_with_room_to_spare_has_no_problem(tmp_path, monkeypatch):
     monkeypatch.setattr(R, "_free_bytes", lambda path: 50 * 2**30)
     assert rec._encode_follow() == 4
     assert rec.problems == []
+
+
+def test_follow_encode_needs_less_than_its_jpeg_frames(tmp_path, monkeypatch):
+    # scrub_nurse, fx round: 645 MiB of frames, 589 MiB free, and follow.mp4 came out whole at 270 MB
+    rec = _recorder_with_frames(tmp_path, n=4, size=1000)
+    jpeg = 4 * 1000
+    monkeypatch.setattr(R, "_free_bytes", lambda path: int(0.9 * jpeg) + R.DISK_MARGIN_B)
+    rec._encode_follow()
+    assert rec.problems == []
