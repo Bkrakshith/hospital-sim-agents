@@ -113,6 +113,16 @@ def test_a_guide_still_under_way_at_the_end_does_not_count_when_the_person_walks
     d = make_run(tmp_path / "one_end", REC_META, robot_tasks=tasks,
                  status=_walk("H1", (-2.0, -2.6), (30.0, 4.0), 80.0, 120.0) + [status(150.0, "H1", 30.0, 4.0)])
     assert val(d, "people_reached_destination_rate") == pytest.approx(0.5)
+    # with no end row but the robot's own goal for the guide arrived, the person reaching the place in time counts
+    goal = {"t": 118.0, "kind": "goal", "id": "rb17", "action": "goal", "ok": True, "reason": "arrived"}
+    d = make_run(tmp_path / "goal", REC_META, robot_tasks=list(_H1_HELD) + [goal],
+                 status=_walk("H1", (-2.0, -2.6), (30.0, 4.0), 80.0, 120.0) + [status(150.0, "H1", 30.0, 4.0)])
+    assert val(d, "people_reached_destination_rate") == 1.0
+    # a goal that ended short is a miss
+    d = make_run(tmp_path / "goal_short", REC_META,
+                 robot_tasks=list(_H1_HELD) + [dict(goal, ok=False, reason="blocked_by_person")],
+                 status=_walk("H1", (-2.0, -2.6), (30.0, 4.0), 80.0, 120.0) + [status(150.0, "H1", 30.0, 4.0)])
+    assert val(d, "people_reached_destination_rate") == 0.0
 
 
 def test_a_person_walked_out_on_a_retry_counts_once(tmp_path):

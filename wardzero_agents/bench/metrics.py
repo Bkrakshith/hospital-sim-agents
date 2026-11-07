@@ -916,18 +916,33 @@ def _guided_people(d: RunData) -> Optional[dict[str, bool]]:
     """One verdict per person the robot led, from the sim's own guide rows (robot_tasks kind guide): True when any
     guide with them ended arrived (its end row, same id, says arrived: the person it walked was at the place), so a
     walk that was held up and then retried counts once; False when none did (blocked_by_person, left_behind, timeout,
-    superseded, or still under way when the run ended). None for a run with no guide start rows (recorded before
-    they were logged, or no guide at all)."""
+    superseded, or still under way when the run ended). A guide with no end row whose own goal row (same id) says
+    the robot arrived is judged on the person reaching the place in time (campaign guide_outcomes; not judged when
+    the run ended first); with no such goal row it never finished and is a miss, even if the person walked there
+    alone. None for a run with no guide start rows (recorded before they were logged, or no guide at all)."""
     rows = [r for r in d.robot_tasks if r.get("kind") == "guide" and _num(r.get("t")) is not None]
     starts = [r for r in rows if r.get("event") == "start" and isinstance(r.get("person"), str) and r["person"]]
     if not starts:
         return None
     ends = {r.get("id"): r for r in rows if r.get("event") == "end"}
+    goals = {r.get("id"): r for r in d.robot_tasks if r.get("kind") == "goal" and r.get("ok") is True
+             and r.get("reason") == "arrived"}
+    outcomes = None
     out: dict[str, bool] = {}
     for g in starts:
         e = ends.get(g.get("id"))
-        ok = e is not None and e.get("reason") == "arrived" and e.get("person", g["person"]) == g["person"]
-        out[g["person"]] = out.get(g["person"], False) or ok
+        if e is not None:
+            ok = e.get("reason") == "arrived" and e.get("person", g["person"]) == g["person"]
+        elif g.get("id") in goals:
+            if outcomes is None:
+                from ..campaign.experiences import _Run, guide_outcomes
+                outcomes = {o["id"]: o["arrived"] for o in guide_outcomes(_Run(d.run_dir))}
+            ok = outcomes.get(g.get("id"))
+            if ok is None:
+                continue
+        else:
+            ok = False
+        out[g["person"]] = out.get(g["person"], False) or bool(ok)
     return out
 
 
