@@ -155,10 +155,18 @@ def test_h1_is_an_outpatient_on_his_feet_who_is_glad_of_the_robots_help(staged):
     assert inst(loaded, "H1").start is None or inst(loaded, "H1").start.bed is None
 
 
-def test_a_persona_role_override_must_be_a_known_role():
-    with pytest.raises(ValueError):
-        CharacterSpec(id="X", name="A B", sex="male", age_band="31-50", role="patient", mood="custom", room="Lobby",
-                      x=0.0, y=0.0, persona_role="astronaut")
+def test_a_persona_role_override_must_be_a_patient_role():
+    for bad in ("astronaut", "ward_nurse"):
+        with pytest.raises(ValueError):
+            CharacterSpec(id="X", name="A B", sex="male", age_band="31-50", role="patient", mood="custom",
+                          room="Lobby", x=0.0, y=0.0, persona_role=bad)
+
+
+def test_the_override_is_dropped_when_the_character_is_moved_to_a_non_patient_role(tmp_path):
+    p = PRESETS["reception_guide"]
+    chars = [c.model_copy(update={"role": "visitor"}) if c.id == "H1" else c for c in p.characters]
+    loaded = preset_to_scenario(p, CONFIG, tmp_path, characters=chars)
+    assert inst(loaded, "H1").role == "ward_visitor"
 
 
 def test_the_reception_arrivals_are_unchanged_by_h1s_role(staged):

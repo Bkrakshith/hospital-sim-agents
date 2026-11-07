@@ -36,6 +36,7 @@ ROLE_INTENTS: dict[str, frozenset[str]] = {
 
 
 # ---- Studio presets: roles, moods and scenarios (spec 8 and 9) ------------------------------------
+PATIENT_PERSONA_ROLES = frozenset({"patient", "bed_patient", "ae_patient", "outpatient"})
 import re  # noqa: E402
 import tempfile  # noqa: E402
 from pathlib import Path  # noqa: E402
@@ -107,8 +108,9 @@ class CharacterSpec(_P):
     bed: Optional[str] = None
     start_seated: bool = False  # on a free A&E waiting seat at the start (the Studio picks the seat)
     start_asleep: bool = False  # a patient asleep from the start (the cast entry's start_asleep, when the sim has it)
-    # the person's own role instead of the role preset's (an outpatient on his feet uses the patient preset); one of
-    # ROLE_INTENTS
+    # a patient preset used for another kind of patient: the person's own persona role instead of the preset's (an
+    # outpatient on his feet uses the patient preset). Used only while the role is a patient one, so a character the
+    # Studio moves to a visitor or staff role gets that role's
     persona_role: Optional[str] = None
     auto: bool = False  # added by the Studio itself (the receptionist in a reception scene); the user may remove it
 
@@ -116,8 +118,8 @@ class CharacterSpec(_P):
     @field_validator("persona_role")
     @classmethod
     def _known_persona_role(cls, v: Optional[str]) -> Optional[str]:
-        if v is not None and v not in ROLE_INTENTS:
-            raise ValueError(f"unknown persona_role '{v}'")
+        if v is not None and v not in PATIENT_PERSONA_ROLES:
+            raise ValueError(f"persona_role '{v}' is not a patient role ({', '.join(sorted(PATIENT_PERSONA_ROLES))})")
         return v
 
 
@@ -266,7 +268,6 @@ def _clamp(v: float, lo: float = 0.0, hi: float = 1.0) -> float:
 
 
 STAFF_PRESET_ROLES = frozenset({"ward_nurse", "receptionist", "porter", "surgeon"})
-PATIENT_PERSONA_ROLES = frozenset({"patient", "bed_patient", "ae_patient", "outpatient"})
 
 
 def robot_duty_line(staff_line: Optional[str], robot_role: str = "") -> str:
@@ -304,7 +305,7 @@ def _persona_dict(c: CharacterSpec, role: RolePreset, mood: MoodPreset, staff_li
     role_text = (c.role_prompt if c.role_prompt is not None else role.prompt).strip()
     if is_staff and (staff_line or robot_role is not None):
         role_text = robot_duty_line(staff_line, robot_role or "") + "\n" + role_text  # first: among the goals
-    persona_role = c.persona_role or role.persona_role
+    persona_role = c.persona_role if c.persona_role and role.persona_role in PATIENT_PERSONA_ROLES else role.persona_role
     if c.mood_prompt is not None:
         mood_text = c.mood_prompt.strip()
     else:  # staff at work get the staff variant of a mood written for the public, patients the patient variant
