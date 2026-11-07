@@ -18,6 +18,7 @@ BOX_SEATED = (0.6, 0.6, 1.2)
 BOX_LYING = (1.8, 0.6, 0.5)
 DOOR_LIGHT_OUT_M = 0.3  # a call light over a door shows this far outside the room
 BLOCKED_SIGN = "route_blocked"  # the id prefix of the sign a route_blocked event puts up
+ASLEEP_SEEN_M = 4.0  # the camera can tell someone is asleep (eyes shut, still) this close
 
 
 class Tracks:
@@ -100,9 +101,11 @@ def _moving(p) -> bool:
 def perceive_people(world, body: RobotBody) -> list[dict]:
     out = []
     for pid, p in _visible(world, body):
-        out.append({"track": world.tracks.track(pid), "x": round(p.x, 3), "y": round(p.y, 3),
-                    "posture": p.posture, "moving": _moving(p), "holding": _holding(world, pid),
-                    "bed": p.bed})
+        d = {"track": world.tracks.track(pid), "x": round(p.x, 3), "y": round(p.y, 3),
+             "posture": p.posture, "moving": _moving(p), "holding": _holding(world, pid), "bed": p.bed}
+        if getattr(p, "asleep", False) and math.hypot(p.x - body.x, p.y - body.y) <= ASLEEP_SEEN_M:
+            d["asleep"] = True
+        out.append(d)
     return out
 
 

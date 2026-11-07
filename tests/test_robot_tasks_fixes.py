@@ -1,6 +1,7 @@
 """Robot tasks and world mechanics found wanting by the oracle runs: the speed cap before the move, actions planned on
 the step, tell spots clear of the furniture, hand-over offers and their reasons, the follow action, guide mechanics,
 sleep, blocked routes and what the logs carry (Quick 2D world)."""
+import dataclasses
 import json
 import math
 from pathlib import Path
@@ -8,11 +9,13 @@ from pathlib import Path
 import pytest
 
 from wardzero_agents.config.presets import load_scenario_presets, preset_to_scenario
-from wardzero_agents.contracts import Intent, WorldEvent
+from wardzero_agents.contracts import Intent, Nudge, WorldEvent
 from wardzero_agents.ros.stub_sim_node import StubSimService
 from wardzero_agents.runlog import RunLog
 from wardzero_agents.studio import auto_staff
 from wardzero_agents.world import robot_tasks as rt
+from wardzero_agents.world import stub_world as sw
+from wardzero_agents.world.perception import perceive_people
 
 CONFIG = Path(__file__).resolve().parents[1] / "config"
 PRESETS = load_scenario_presets(CONFIG)
@@ -424,3 +427,96 @@ def test_a_person_released_from_a_guide_does_not_follow_the_robot_again(staged, 
     _follow_robot(s, "V2")
     s.step(0.1)
     assert p.state == "running" and s.world.is_trailing("V2")
+
+
+# ---- asleep ---------------------------------------------------------------------------------------------------------
+def _beside_bed(s, pid):
+    w = s.world
+    x, y = s.tasks._reach_spots(w.people[pid], "tray")[0]
+    b = w.site.beds[w.people[pid].bed]
+    w.robot.teleport(x, y, math.atan2(b.y - y, b.x - x))
+    return w.tracks.track(pid)
+
+
+def _fall_asleep(s, pid):
+    s.world.apply_nudge(Nudge(person=pid, t=s.t, card="asleep", message="You are deeply asleep."))
+
+
+def _track_of(w, pid):
+    return next((d for d in perceive_people(w, w.robot) if d["track"] == w.tracks.track(pid)), None)
+
+
+def test_the_asleep_card_puts_her_to_sleep_and_the_robot_sees_it_within_4_m(staged, tmp_path):
+    s = svc(staged("meal_round"), tmp_path)
+    w = s.world
+    _beside_bed(s, "M2")
+    assert not [st for st in w.statuses() if st.person == "M2" and st.asleep]
+    assert not _track_of(w, "M2").get("asleep")
+    _fall_asleep(s, "M2")
+    assert [st.asleep for st in w.statuses() if st.person == "M2"] == [True]
+    assert [st.asleep for st in w.statuses() if st.person == "M1"] == [False]
+    assert _track_of(w, "M2")["asleep"] is True
+    # from further than 4 m the camera cannot tell
+    q = w.people["M2"]
+    for d in (4.6, 5.0, 5.5):
+        for k in range(24):
+            a = 2 * math.pi * k / 24
+            x, y = q.x + d * math.cos(a), q.y + d * math.sin(a)
+            if w.robot.router.is_clear(x, y) and w._los((x, y), (q.x, q.y)):
+                w.robot.teleport(x, y, math.atan2(q.y - y, q.x - x))
+                seen = _track_of(w, "M2")
+                if seen is not None:
+                    assert not seen.get("asleep")
+                    return
+    pytest.fail("no spot 4.6-5.5 m from M2 that can see her")
+
+
+def test_a_hand_over_to_someone_asleep_is_no_answer_at_once(staged, tmp_path):
+    s = svc(staged("meal_round"), tmp_path)
+    tr = _beside_bed(s, "M2")
+    _fall_asleep(s, "M2")
+    s.on_task_action({"id": "ho", "action": "hand_over", "item": "tray_M2", "to": tr})
+    outs = advance(s, 0.3)
+    assert [(r["ok"], r["reason"], r["person"]) for r in results(outs, "ho", "action")] == [
+        (False, "no_answer", "M2")]
+    assert not [n for o in outs for n in o.nudges if n.person == "M2"]  # she is not asked: she is asleep
+    assert s.world.objects.items["tray_M2"].holder == "g1"
+    assert [r["event"] for r in _robot_rows(tmp_path, "hand_over")] == ["offer"]
+
+
+def test_a_line_addressed_to_her_wakes_her_and_one_to_nobody_does_not(staged, tmp_path):
+    s = svc(staged("meal_round"), tmp_path)
+    w = s.world
+    tr = _beside_bed(s, "M2")
+    _fall_asleep(s, "M2")
+    s.on_robot_say("Lunch is here.", addressee=None)
+    advance(s, 0.2)
+    assert w.people["M2"].asleep
+    s.on_robot_say("George, your lunch is here.", addressee="M2")
+    advance(s, 0.2)
+    assert not w.people["M2"].asleep
+    s.on_task_action({"id": "ho", "action": "hand_over", "item": "tray_M2", "to": tr})
+    advance(s, 0.3)
+    s.on_intent(Intent(id="acc", person="M2", t=s.t, kind="accept_item"))
+    outs = advance(s, 1.0)
+    assert [(r["ok"], r["reason"]) for r in results(outs, "ho", "action")] == [(True, "ok")]
+
+
+def test_her_own_waking_intent_wakes_her_and_an_idle_one_does_not(staged, tmp_path):
+    s = svc(staged("meal_round"), tmp_path)
+    w = s.world
+    _fall_asleep(s, "M2")
+    s.on_intent(Intent(id="i1", person="M2", t=s.t, kind="sit_idle"))
+    s.on_intent(Intent(id="i2", person="M2", t=s.t, kind="cough", overlay=True))
+    advance(s, 0.2)
+    assert w.people["M2"].asleep
+    s.on_intent(Intent(id="i3", person="M2", t=s.t, kind="sit_up_in_bed"))
+    advance(s, 0.2)
+    assert not w.people["M2"].asleep
+
+
+def test_start_asleep_on_the_cast_entry(staged, tmp_path):
+    loaded = staged("meal_round")
+    insts = [i.model_copy(update={"start_asleep": True}) if i.person_id == "M2" else i for i in loaded.instances]
+    w = sw.StubWorld(dataclasses.replace(loaded, instances=insts), 1)
+    assert w.people["M2"].asleep and not w.people["M1"].asleep

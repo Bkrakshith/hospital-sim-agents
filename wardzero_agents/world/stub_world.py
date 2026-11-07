@@ -28,6 +28,7 @@ from wardzero_agents.contracts import (
     AudioEvent,
     Heard,
     Intent,
+    Nudge,
     Observation,
     Roster,
     SeenObject,
@@ -86,6 +87,10 @@ ROBOT_AVOID_M = 0.75  # people's routes keep this far from where the robot stand
 ARRIVAL_JITTER_M = 0.8  # people arriving mid-run appear up to this far from the entrance, so they do not stack
 ROBOT_SUBSTEP_S = 0.1  # the robot moves in steps no longer than this, its speed cap set before each one
 STAFF_ROLES = frozenset({"receptionist", "ward_nurse", "staff", "nurse", "porter", "surgeon"})
+ASLEEP_CARD = "asleep"  # a fired card with this id puts its person to sleep
+# what a person asleep may do and stay asleep (anything else their own mind chooses wakes them); a reflex (an overlay
+# intent such as a cough) never wakes them
+ASLEEP_KEEP = ("sit_idle", "wait_standing", "lie_back", "cough", "fidget")
 ROLE_KINDS = ("give_item", "take_item", "call_for_help", "call_bell", "accept_item", "refuse_item",
               "request_instrument", "reject_item", "take_instrument_self", "use_extinguisher",
               "sit_up_in_bed", "lie_back")
@@ -109,6 +114,16 @@ def spawned_instance(loaded: LoadedScenario, pid: str, persona_id: str,
     seed = loaded.scenario.seed * 1000 + 100 + n
     cast = CastEntry(id=pid, persona=persona_id, seed=seed, arrive_at_s=max(0.0, float(arrive_at_s)))
     return sample_instance(loaded.personas[persona_id], cast, loaded.scenario.seed, n)
+
+
+def _starts_asleep(inst: PersonInstance, scenario) -> bool:
+    """start_asleep: true on the person's scenario entry (the instance, or its cast entry)."""
+    if getattr(inst, "start_asleep", False):
+        return True
+    for c in getattr(scenario, "cast", None) or ():
+        if getattr(c, "id", None) == inst.person_id and getattr(c, "start_asleep", False):
+            return True
+    return False
 
 
 @dataclass
@@ -147,6 +162,7 @@ class _Person:
     kind: str = "mind"  # "static" for a patient lying in a bed with no mind
     bed: Optional[str] = None
     sitting_up: bool = False  # in a bed: propped up (posture stays "lying")
+    asleep: bool = False  # asleep until spoken to by address (a robot line to them) or their own mind acts
 
 
 class StubWorld:
@@ -154,6 +170,7 @@ class StubWorld:
         self.loaded = loaded
         self.rng = np.random.default_rng(seed)
         self._ear_rng = np.random.default_rng([seed, 1])  # the noise on the direction of what the robot hears
+        self._sleep_rng = np.random.default_rng([seed, 2])  # whether a sleeper's ears caught a line to them
         self._pa_blocked: set = set()  # (t, place) of route-block announcements already made
         self.signs: list[Sign] = list(loaded.signs)
         self.last_t = 0.0
@@ -208,6 +225,9 @@ class StubWorld:
                 self.people[inst.person_id] = _Person(inst, inst.start.x, inst.start.y, inst.start.yaw, "standing")
             else:
                 self.people[inst.person_id] = self._at_entrance(inst)
+        for inst in loaded.instances:
+            if _starts_asleep(inst, loaded.scenario):
+                self.people[inst.person_id].asleep = True
         self._seed_objects(loaded.scenario.objects)
         if loaded.scenario.static_patients:
             for b in self.site.beds.values():
@@ -319,6 +339,7 @@ class StubWorld:
         id (P1, N2, ...) is replaced by "unknown"; the kind of sound is kept. A person's voice or cough also
         carries the direction it came from (bearing_deg in the robot's frame, positive = left), give or take
         BEARING_NOISE_DEG, so the robot can tell which of the people it sees made it."""
+        self.hear_robot_line(ev)  # every sound in the world passes here: a line to someone asleep wakes them
         r = self.robot_pose
         h = audio.route(ev, r, ROBOT_ID, 0.0, self.rng)
         if h is None:
@@ -329,6 +350,34 @@ class StubWorld:
             noise = float(self._ear_rng.uniform(-BEARING_NOISE_DEG, BEARING_NOISE_DEG))
             upd["bearing_deg"] = round(wrap_deg(bearing_deg(r, ev.x, ev.y) + noise), 1)
         return h.model_copy(update=upd)
+
+    # ---- sleep -----------------------------------------------------------------------------
+    def apply_nudge(self, n: Nudge) -> None:
+        """A card fired at a person: the "asleep" card puts them to sleep (other cards only reach their mind)."""
+        if n.card != ASLEEP_CARD:
+            return
+        p = self.people.get(n.person)
+        if p is None or p.posture == "gone" or p.kind == "static" or p.asleep:
+            return
+        p.asleep = True
+        self._log.append(("world", {"t": n.t, "kind": "asleep", "event": "start", "person": n.person}))
+
+    def _wake(self, pid: str, t: float, reason: str) -> None:
+        p = self.people.get(pid)
+        if p is None or not p.asleep:
+            return
+        p.asleep = False
+        self._log.append(("world", {"t": t, "kind": "asleep", "event": "end", "person": pid, "reason": reason}))
+
+    def hear_robot_line(self, ev: AudioEvent) -> None:
+        """A robot line addressed to someone asleep wakes them, when it reaches their ears."""
+        if ev.source_kind != "robot" or not ev.addressee:
+            return
+        p = self.people.get(ev.addressee)
+        if p is None or not p.asleep or p.posture == "gone":
+            return
+        if audio.route(ev, Pose(p.x, p.y, p.yaw), ev.addressee, p.inst.hearing_loss_db, self._sleep_rng) is not None:
+            self._wake(ev.addressee, ev.t, "spoken_to")
 
     # ---- intents -------------------------------------------------------------------------
     def _fail(self, p: _Person, intent: Intent, reason: str) -> None:
@@ -390,6 +439,8 @@ class StubWorld:
             self._fail(p, intent, "patient is in bed")
             return []
         kind = intent.kind
+        if p.asleep and not intent.overlay and kind not in ASLEEP_KEEP:
+            self._wake(intent.person, intent.t, "own_intent")
         self._fighting.pop(intent.person, None)
         if kind in ROLE_KINDS:
             return self._role_action(p, intent)
@@ -967,7 +1018,7 @@ class StubWorld:
             Status(
                 person=pid, t=self.last_t, x=p.x, y=p.y, yaw=p.yaw, posture=p.posture,
                 intent_id=p.intent_id, intent_kind=p.intent_kind, progress=p.progress,
-                state=p.state, reason=p.reason,
+                state=p.state, reason=p.reason, asleep=p.asleep,
             )
             for pid, p in self.people.items()
         ]

@@ -262,6 +262,10 @@ class RobotTasks:
         if item is None or item.holder != "g1":
             return self._ho_result(aid, False, "not_holding", t, pid, item_id)
         q = w.people[pid]
+        if getattr(q, "asleep", False):
+            # held out to someone asleep: nobody answers (she is not asked, and nothing is put down)
+            self._log({"t": t, "kind": "hand_over", "event": "offer", "id": aid, "person": pid, "item": item.id})
+            return self._ho_result(aid, False, "no_answer", t, pid, item.id)
         if msg.get("place") is not None:
             place = tuple(float(v) for v in msg["place"])
             if len(place) != 3:

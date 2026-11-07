@@ -80,6 +80,7 @@ class Status(_Envelope):
     progress: float
     state: Literal["running", "done", "failed", "idle"]
     reason: Optional[str] = None
+    asleep: bool = False  # fell asleep (an "asleep" card, or start_asleep) and not woken yet
 
 
 class Seen(_Envelope):
