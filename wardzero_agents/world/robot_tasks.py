@@ -39,9 +39,9 @@ Guiding: the robot holds while the person it guides is more than 2.5 m behind (a
 2 m); that person, following behind it, does not slow it, but it keeps clear of them like anyone else, and its walk
 ends at least GUIDE_CLEAR_M from them (on its own side of them when they stand at the place). Other people within
 1.5 m slow it to 0.3 m/s. At the place it waits up to 20 s for them to arrive, says goodbye and walks back to its post
-(goal id "<id>-return"), unless return_to_post is false or a fire alarm has sounded. It gives up if they never
-come within 2.5 m for 30 s. Once a guide is over, the person does not take up following the robot again unless it
-guides them again.
+(goal id "<id>-return"), unless return_to_post is false (it says STAY_SAY and stays with them) or a fire alarm has
+sounded. It gives up if they never come within 2.5 m for 30 s. Once a guide is over, the person does not take up
+following the robot again unless it guides them again.
 
 A guide to a seat: when the robot reaches the place it picks the free seat nearest to it, among those its camera could
 see by turning its head (within its range, in line of sight; never a staff chair). It walks to a spot beside that seat,
@@ -145,6 +145,7 @@ TELL_SPOT_M = (1.0, 1.25, 1.5)  # ... walking to free floor this far from her
 TELL_SPOTS_TRIED = 8  # the nearest few such spots are tried, then the nurse base nearest her
 TELL_DEFAULT = "Excuse me, someone here needs help from a nurse."
 GOODBYE = "Here we are. Goodbye, and take care."
+STAY_SAY = "Here we are. I'll stay with you."  # the end of a guide with return_to_post false: it stays with them
 COUNTER = "reception_counter"  # where the robot stands to talk to the receptionist
 STAFF_SPOT = "reception_staff"  # where the receptionist sits (the robot faces it)
 STAFF_SEAT = "R1"  # the receptionist's chair, where the desk computer is
@@ -615,10 +616,13 @@ class RobotTasks:
         # waiting at the place
         arrived = self._arrived(g)
         if arrived or t - g["t_arrive"] >= GUIDE_ARRIVE_WAIT_S:
-            self._out.audio.append(w.robot_say(GOODBYE, t).model_copy(update={"addressee": g["pid"]}))
-            self._end_guide(t, "arrived" if arrived else "timeout")
             # back to its post unless told to stay, and never while the fire alarm sounds (its post may be by the fire)
-            if self.mobile and g.get("return", True) and not getattr(w, "alarm_active", False):
+            back = self.mobile and g.get("return", True) and not getattr(w, "alarm_active", False)
+            # told to stay with them: no goodbye
+            line = GOODBYE if g.get("return", True) else STAY_SAY
+            self._out.audio.append(w.robot_say(line, t).model_copy(update={"addressee": g["pid"]}))
+            self._end_guide(t, "arrived" if arrived else "timeout")
+            if back:
                 # it lets the person it brought (and anyone else close by) go on past first: turning back at once in a
                 # doorway walks it into them
                 self._return_after = (f"{g['id']}-return", t)

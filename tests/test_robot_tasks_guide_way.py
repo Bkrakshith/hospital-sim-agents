@@ -124,6 +124,36 @@ def guide_end(tmp_path):
     return [r for r in rows(tmp_path, kind="guide") if r.get("event") == "end"]
 
 
+# ---- what it says at the end of a guide --------------------------------------------------------------------------
+def robot_lines(outs):
+    return [a.text for o in outs for a in o.audio if a.source_kind == "robot"]
+
+
+def test_no_goodbye_when_it_stays_with_them(staged, tmp_path):
+    """wandering_patient t=59.92: told to stay (return_to_post false), it still said goodbye."""
+    s = svc(staged("reception_guide"), tmp_path)
+    w = s.world
+    alone_with(w, {"V2"})
+    put(w, "V2", 1.6, 0.0)
+    s.step(0.1)
+    outs, _ = guide(s, "V2", "ward_entrance", return_to_post=False)
+    outs += [s.step(0.1) for _ in range(30)]
+    assert [e["reason"] for e in guide_end(tmp_path)] == ["arrived"]
+    said = robot_lines(outs)
+    assert rt.GOODBYE not in said and rt.STAY_SAY in said
+    assert "goodbye" not in rt.STAY_SAY.lower() and rt.STAY_SAY.startswith("Here we are")
+
+
+def test_goodbye_when_it_walks_back(staged, tmp_path):
+    s = svc(staged("reception_guide"), tmp_path)
+    w = s.world
+    alone_with(w, {"V2"})
+    put(w, "V2", 1.6, 0.0)
+    s.step(0.1)
+    outs, _ = guide(s, "V2", "ward_entrance")
+    assert rt.GOODBYE in robot_lines(outs)
+
+
 # ---- where the guide's walk ends, when the person stands at the place ------------------------------------------------
 @pytest.mark.parametrize("side", [1.0, -1.0])
 def test_a_goal_moved_clear_of_the_guided_person_stays_on_the_robots_side_of_them(staged, tmp_path, side):
