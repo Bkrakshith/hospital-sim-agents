@@ -118,6 +118,17 @@ def test_an_unaddressed_line_heard_by_staff_naming_her_is_an_alert(tmp_path):
     assert val(run("patients_only", 1.0, heard_by=["P2"], to_room=True), "nurse_alerted_s") is None
 
 
+def test_an_addressed_line_the_addressee_never_heard_is_not_an_alert(tmp_path):
+    """Contract item 4: an addressed robot line whose heard_by leaves out its addressee (the nurse 20 m away behind
+    walls) did not reach her; without heard_by (an older run) the addressee alone decides."""
+    line = say(15, "N1", "Margaret in bed B2 needs you, please come.")
+    assert val(bell_run(tmp_path / "unheard", audio=[{**line, "heard_by": []}]), "nurse_alerted_s") is None
+    assert val(bell_run(tmp_path / "others", audio=[{**line, "heard_by": ["P1", "P2"]}]), "nurse_alerted_s") is None
+    assert val(bell_run(tmp_path / "heard", audio=[{**line, "heard_by": ["N1"]}]),
+               "nurse_alerted_s") == pytest.approx(5.0)
+    assert val(bell_run(tmp_path / "old", audio=[line]), "nurse_alerted_s") == pytest.approx(5.0)
+
+
 def test_an_unread_note_is_not_an_alert(tmp_path):
     d = bell_run(tmp_path, robot_tasks=[
         {"t": 30, "kind": "note", "id": "a2", "about": "P1", "staff": "RCP", "read": False, "left_at": 25}])
@@ -280,6 +291,20 @@ def test_a_nurse_spraying_when_it_went_out_takes_the_credit_away(tmp_path):
     d = fire_run(tmp_path, True)
     assert val(d, "fire_out_by_robot_s") is None
     assert val(d, "fire_out_s") == pytest.approx(36.0)
+
+
+def test_a_nurse_who_only_took_an_extinguisher_down_nearby_keeps_the_credit_with_the_robot(tmp_path):
+    """A done use_extinguisher state lingers on a person until her next intent: a nurse who took one off the wall
+    (done at once, no spray) and then stood 2.2 m from the fire did not put it out."""
+    n1 = [status(0, "N1", 19.0, 16.7), status(5, "N1", 19.0, 16.7, intent_kind="use_extinguisher", state="running"),
+          status(6, "N1", 19.0, 16.7, intent_kind="use_extinguisher", state="done")]
+    d = make_run(tmp_path, {"people": {"N1": {"role": "ward_nurse"}}},
+                 objects=[fire(0, 0.2), fire(31, 0.1), fire(36, 0.0, active=False)], status=n1,
+                 robot_pose=[pose(t, 17.0 + 0.05 * t, 14.5) for t in range(0, 40)],
+                 robot_tasks=[{"t": 30, "kind": "action", "id": "e1", "action": "extinguish", "fire": "fire_1"},
+                              {"t": 36, "kind": "result", "id": "e1", "action": "extinguish", "ok": True,
+                               "reason": "ok"}])
+    assert val(d, "fire_out_by_robot_s") == pytest.approx(36.0)
 
 
 # ---- follow and the new hand_over rows count as robot actions --------------------------------------------

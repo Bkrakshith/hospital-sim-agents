@@ -361,12 +361,14 @@ def _alert_after(d: RunData, t0: float, about: Optional[str] = None) -> Optional
 
 
 def _robot_line_to(d: RunData, a: dict) -> list[str]:
-    """Whom a robot audio row was for: its addressee; with none, everyone in its heard_by when it went to the room
-    (to_room), else those in heard_by within 4.0 m of the robot when it spoke. A line with no addressee and no heard_by
-    (an older run) is for nobody."""
-    if a.get("addressee") and a["addressee"] != "room":
-        return [str(a["addressee"])]
+    """Whom a robot audio row was for: its addressee, when it heard the line (in heard_by; a row with no heard_by, from
+    an older run, trusts the addressee); with none, everyone in its heard_by when it went to the room (to_room), else
+    those in heard_by within 4.0 m of the robot when it spoke. A line with no addressee and no heard_by (an older run)
+    is for nobody."""
     heard = [str(p) for p in a.get("heard_by") or [] if p]
+    if a.get("addressee") and a["addressee"] != "room":
+        to = str(a["addressee"])
+        return [to] if not isinstance(a.get("heard_by"), list) or to in heard else []
     if a.get("to_room") or a.get("addressee") == "room":
         return heard
     rp = d.robot_at(a["t"])
@@ -669,14 +671,27 @@ def fire_out_s(d: RunData) -> Optional[float]:
     return max(outs) - t_start
 
 
+SPRAY_DONE_SLACK_S = 1.0  # a spray that ended this long before the fire was seen out still put it out
+
+
 def _person_spraying(d: RunData, fx: float, fy: float, t: float) -> bool:
-    """Someone was using an extinguisher (status intent use_extinguisher, running or done) within 2.5 m of the fire
-    at (fx, fy) at time t."""
-    for person in d.tracks():
+    """Someone was using an extinguisher within 2.5 m of the fire at (fx, fy) at time t: status intent
+    use_extinguisher, running at t, or done with that done state begun no earlier than 1.0 s before t (her spray
+    finished the fire). A done state that began earlier lingers until her next intent and is not a spray: she only
+    took one off the wall, or finished an earlier spray."""
+    for person, (times, rows) in d.tracks().items():
         r = d.person_at(person, t)
-        if r is not None and r.get("intent_kind") == "use_extinguisher" and r.get("state") in ("running", "done") \
-                and math.hypot(r["x"] - fx, r["y"] - fy) <= FIRE_REACH_M:
+        if r is None or r.get("intent_kind") != "use_extinguisher" \
+                or math.hypot(r["x"] - fx, r["y"] - fy) > FIRE_REACH_M:
+            continue
+        if r.get("state") == "running":
             return True
+        if r.get("state") == "done":
+            i = bisect.bisect_right(times, t + 1e-9) - 1
+            while i > 0 and rows[i - 1].get("intent_kind") == "use_extinguisher" and rows[i - 1].get("state") == "done":
+                i -= 1
+            if times[i] >= t - SPRAY_DONE_SLACK_S:
+                return True
     return False
 
 
