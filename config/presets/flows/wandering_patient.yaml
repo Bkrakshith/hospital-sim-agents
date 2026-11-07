@@ -12,10 +12,14 @@ steps:
           label: The robot goes to W1
           when: {all: [{robot_near: {person: W1, within_m: 2.5}},
                        {any: [{robot_did: {action: approach, since_step: true}},
+                              {robot_did: {action: follow, about: W1, since_step: true}},
                               {robot_did: {action: guide, about: W1, since_step: true}}]}]}
           timeout_s: 60
-      - expect: {label: The robot speaks calmly to W1, when: {robot_spoke_to: W1}, timeout_s: 60}
+    - - expect:
+          label: The robot speaks calmly to W1
+          when: {all: [{robot_near: {person: W1, within_m: 3}}, {robot_spoke_to: {person: W1, since_step: true}}]}
+          timeout_s: 90
     - - expect:
           label: The robot calls a nurse
-          when: {any: [{robot_did: {action: tell}}, {robot_did: {action: press_call}}]}
+          when: {any: [{robot_did: {action: tell, since_step: true}}, {robot_did: {action: press_call, since_step: true}}]}
           timeout_s: 90

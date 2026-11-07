@@ -8,7 +8,7 @@ This file is made by `python scripts/flows_doc.py`; a test fails when it is out 
 
 ## A&E waiting room (`ae_waiting`)
 
-Patients arrive and the robot checks them in and seats them. Once the room has settled the waits are announced, then George gets worse where the robot can see him, and the robot should alert staff.
+Patients arrive and the robot checks them in and seats them. Once the room has settled the waits are announced and the robot should tell the room; then George gets worse where the robot can see him, and the robot should alert staff.
 
 ```mermaid
 flowchart TD
@@ -19,7 +19,7 @@ flowchart TD
   n2 --> n3
   n4(["Expect: The robot checks Ava in (a desk note, a walk to a seat or a word with staff) (up to 120 s)"])
   n3 --> n4
-  n5["Wait until: George is seated or the robot has spoken to him (up to 120 s)"]
+  n5(["Expect: The robot checks George in (a desk note, a walk to a seat or a word with staff) (up to 120 s)"])
   n3 --> n5
   n6(("All done"))
   n4 --> n6
@@ -28,14 +28,21 @@ flowchart TD
   n6 --> n7
   n8[["The waits are announced [waits_announcement]"]]
   n7 --> n8
-  n9["Wait until: The robot is within sight of George (up to 90 s)"]
+  n9{{"At the same time: The robot keeps the room informed and watches George"}}
   n8 --> n9
-  n10["Wait 10 s"]
+  n10(["Expect: The robot tells the waiting room about the waits (up to 90 s)"])
   n9 --> n10
-  n11[["George gets worse [deterioration]"]]
-  n10 --> n11
-  n12(["Expect: The robot alerts staff about George (up to 120 s)"])
+  n11["Wait until: The robot is within sight of George (up to 90 s)"]
+  n9 --> n11
+  n12["Wait 10 s"]
   n11 --> n12
+  n13[["George gets worse [deterioration]"]]
+  n12 --> n13
+  n14(["Expect: The robot alerts staff about George (up to 120 s)"])
+  n13 --> n14
+  n15(("All done"))
+  n10 --> n15
+  n14 --> n15
 ```
 
 ## Evacuation guide (`evacuation_guide`)
@@ -73,9 +80,9 @@ flowchart TD
   n11 --> n12
   n13(["Expect: The robot helps V2 (up to 90 s)"])
   n12 --> n13
-  n14(["Expect: The robot gets V1 and V2 out of the lobby (up to 240 s)"])
+  n14(["Expect: The robot gets V1 and V2 out of the lobby (up to 300 s)"])
   n10 --> n14
-  n15(["Expect: The robot gets P1 out of A&E waiting (up to 240 s)"])
+  n15(["Expect: The robot gets P1 out of A&E waiting (up to 400 s)"])
   n10 --> n15
   n16(("All done"))
   n13 --> n16
@@ -154,7 +161,7 @@ flowchart TD
 
 ## Reception guide (`reception_guide`)
 
-People come to the main reception. Once the robot is talking to people, one visitor gets lost and a patient who is hard of hearing needs help; then new people arrive. The robot should help each one in turn.
+People come to the main reception. Once the robot is talking to people, one visitor gets lost; once the robot has finished with her, a patient who is hard of hearing needs the way to his clinic; then new people arrive. The robot should help each one in turn.
 
 ```mermaid
 flowchart TD
@@ -163,24 +170,22 @@ flowchart TD
   n1 --> n2
   n3[["V1 gets lost [lost_visitor]"]]
   n2 --> n3
-  n4(["Expect: The robot helps V1 (talks to them or walks them there) (up to 90 s)"])
+  n4(["Expect: The robot helps V1 (walks them there, or gives directions they follow) (up to 90 s)"])
   n3 --> n4
-  n5["Wait until: The robot has finished with V1 (V1 reached the ward entrance, or the robot and V1 have parted) (up to 120 s)"]
+  n5["Wait until: The robot has finished with V1 (the walk ended, or V1 went on alone) (up to 120 s)"]
   n4 --> n5
   n6[["H1 is hard of hearing [hard_of_hearing]"]]
   n5 --> n6
-  n7[["H1 cannot find the way either [lost_visitor]"]]
+  n7(["Expect: The robot walks H1 where they need to go (up to 90 s)"])
   n6 --> n7
-  n8(["Expect: The robot speaks with H1 (up to 90 s)"])
+  n8[["Someone new arrives [arrival]"]]
   n7 --> n8
-  n9[["Someone new arrives [arrival]"]]
+  n9(["Expect: The robot greets the newcomer (up to 120 s)"])
   n8 --> n9
-  n10(["Expect: The robot greets the newcomer (up to 120 s)"])
+  n10["Wait 30 s"]
   n9 --> n10
-  n11["Wait 30 s"]
+  n11[["Another person arrives [arrival]"]]
   n10 --> n11
-  n12[["Another person arrives [arrival]"]]
-  n11 --> n12
 ```
 
 ## Specimen run (`specimen_run`)
@@ -206,7 +211,7 @@ flowchart TD
 
 ## Visiting rush (`visiting_rush`)
 
-Visiting hours start as the robot sets off for the nurse base. Groups arrive behind it and as it gets halfway along the corridor. The robot should give way and keep a walking pace.
+Visiting hours start as the robot sets off for the nurse base. Groups arrive as it sets off, a third of the way and past halfway along the corridor. The robot should give way and keep a walking pace.
 
 ```mermaid
 flowchart TD
@@ -215,11 +220,11 @@ flowchart TD
   n1 --> n2
   n3[["A first group arrives [arrival]"]]
   n2 --> n3
-  n4["Wait 30 s"]
+  n4["Wait until: The robot is a third of the way along the corridor (up to 60 s)"]
   n3 --> n4
   n5[["A second group arrives [arrival]"]]
   n4 --> n5
-  n6["Wait until: The robot is halfway along the corridor (up to 90 s)"]
+  n6["Wait until: The robot is past halfway along the corridor (up to 90 s)"]
   n5 --> n6
   n7[["A third group arrives [arrival]"]]
   n6 --> n7
@@ -242,41 +247,40 @@ flowchart TD
   n3 --> n4
   n5(["Expect: The robot goes to W1 (up to 60 s)"])
   n4 --> n5
-  n6(["Expect: The robot speaks calmly to W1 (up to 60 s)"])
-  n5 --> n6
+  n6(["Expect: The robot speaks calmly to W1 (up to 90 s)"])
+  n4 --> n6
   n7(["Expect: The robot calls a nurse (up to 90 s)"])
   n4 --> n7
   n8(("All done"))
+  n5 --> n8
   n6 --> n8
   n7 --> n8
 ```
 
 ## Ward fire (`ward_fire`)
 
-A small fire starts in the ward corridor, the alarm follows and the nurses start moving patients. The robot should put the fire out without getting in the way.
+A small fire starts in the ward corridor; the alarm sounds and the nurses start moving patients at once. The robot should put the fire out without getting in the way.
 
 ```mermaid
 flowchart TD
   n1(("Run starts"))
   n2["Wait 30 s"]
   n1 --> n2
-  n3[["A fire starts in the corridor [fire_start]"]]
+  n3{{"At the same time: A fire starts in the corridor, the alarm sounds and the nurses evacuate patients"}}
   n2 --> n3
-  n4["Wait 20 s"]
+  n4[["A fire starts in the corridor [fire_start]"]]
   n3 --> n4
   n5[["The alarm sounds [alarm]"]]
-  n4 --> n5
-  n6["Wait 10 s"]
-  n5 --> n6
-  n7{{"At the same time: The nurses evacuate patients"}}
-  n6 --> n7
-  n8[["N1 starts moving patients [staff_evacuate]"]]
+  n3 --> n5
+  n6[["N1 starts moving patients [staff_evacuate]"]]
+  n3 --> n6
+  n7[["N2 starts moving patients [staff_evacuate]"]]
+  n3 --> n7
+  n8(("All done"))
+  n4 --> n8
+  n5 --> n8
+  n6 --> n8
   n7 --> n8
-  n9[["N2 starts moving patients [staff_evacuate]"]]
-  n7 --> n9
-  n10(("All done"))
-  n8 --> n10
-  n9 --> n10
-  n11(["Expect: The robot puts the fire out (up to 180 s)"])
-  n10 --> n11
+  n9(["Expect: The robot puts the fire out (up to 180 s)"])
+  n8 --> n9
 ```

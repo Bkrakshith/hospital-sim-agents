@@ -190,9 +190,10 @@ def test_the_director_fires_cards_when_the_flow_says_and_writes_the_tree(tmp_pat
         d.on_status(Status(person=c.id, t=0.0, x=c.x, y=c.y, yaw=0, posture="standing", progress=0, state="idle"))
     d.tick(1.0)
     assert not [o for k, o in out.msgs if k == "world"]
-    # the robot greets Ava, then checks her in with a desk note; George sits down
+    # the robot greets Ava, then checks her and George in with desk notes; George sits down
     d.ingest("audio", {"source_kind": "robot", "addressee": "P2", "text": "Hello", "t": 2.0})
     d.ingest("robot_tasks", {"kind": "note", "about": "P2", "read": True, "t": 3.0})
+    d.ingest("robot_tasks", {"kind": "note", "about": "P1", "read": True, "t": 3.0})
     d.on_status(Status(person="P1", t=3.0, x=-7.58, y=0.22, yaw=0, posture="seated", progress=0, state="idle"))
     t = 2.0
     while t < 40:
@@ -506,12 +507,14 @@ def _reception(robot_xy_at, robot_did_at=lambda t: [], until=200.0):
 
 def test_reception_waits_until_the_robot_has_finished_with_v1():
     v1 = (-1.2 + 0.8, -1.0)  # the robot stands next to V1
-    e, fired = _reception(lambda t: v1 if t < 70 else (5.0, 5.0))  # it is with V1 until t=70, then walks off
+    # it talks to V1 until t=70, then walks off; V1 stays in the lobby: the wait runs to its limit
+    e, fired = _reception(lambda t: v1 if t < 70 else (5.0, 5.0), until=300.0)
     assert fired["lost_visitorV1"] == 5.0
-    assert fired["hard_of_hearingH1"] == 70.0 and fired["lost_visitorH1"] == 70.0
-    # a guide that brings V1 to the place ends the wait, even with the robot still beside V1
+    help_t = _node_by_label(e.tree(), "The robot helps V1 (walks them there, or gives directions they follow)")["t"]
+    assert fired["hard_of_hearingH1"] == pytest.approx(help_t + 120.0, abs=0.6)
+    # the end of a guide ends the wait, even with the robot still beside V1
     e, fired = _reception(lambda t: v1, robot_did_at=lambda t: [(8.0, "guide", "V1")] +
-                          ([(40.0, "guided", "V1")] if t >= 40 else []))
+                          ([(40.0, "guided", "V1"), (40.0, "guide_ended", "V1")] if t >= 40 else []))
     assert fired["hard_of_hearingH1"] == 40.0
 
 
@@ -521,7 +524,7 @@ def _evacuation_outcomes(*, moves, robot_did_at, said_at):
     flow = load_flow(flows_dir(CONFIG) / "evacuation_guide.yaml")
     e = FlowEngine(flow, DECK)
     t = 0.0
-    while t <= 300 and not e.finished:
+    while t <= p.duration_min * 60 and not e.finished:
         people = {c.id: st(c.id, *moves(t).get(c.id, (c.x, c.y))) for c in p.characters}
         said = {k: [x for x in v if x <= t] for k, v in said_at.items()}
         said = {k: v for k, v in said.items() if v}

@@ -9,4 +9,7 @@ steps:
 - fire: {id: b1, card: arrival, label: Someone arrives}
 - wait_until: {label: The robot is near the lift lobby, when: {robot_near: {person: PO1, within_m: 4}}, timeout_s: 90}
 - fire: {id: b2, card: arrival, label: Someone else arrives}
-- expect: {label: The robot hands the box to the porter, when: {robot_did: {action: hand_over}}, timeout_s: 180}
+- expect:
+    label: The robot hands the box to the porter
+    when: {robot_did: {action: hand_over, about: PO1, item: specimen_1}}
+    timeout_s: 180

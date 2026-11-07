@@ -210,3 +210,195 @@ def test_a_single_step_parallel_branch_has_no_extra_in_order_row():
     assert [c["kind"] for c in par["children"]] == ["fire"] * 5  # each branch is one card: no "In order" row
     everyone = tree["children"][2]
     assert everyone["children"][0]["kind"] == "sequence"  # a branch of several steps keeps its row
+
+
+# ---- each preset flow credits only the right thing --------------------------------------------------------------
+def test_specimen_run_credits_only_the_box_handed_to_the_porter():
+    label = "The robot hands the box to the porter"
+    near = lambda t: {"robot_xy": (9.6, 0.66) if t >= 20 else (19.0, 6.0)}  # noqa: E731
+    e, _ = _run("specimen_run", view_kw=lambda t: {**near(t), "robot_did": [(30.0, "hand_over", "TR2", "specimen_1")]
+                                                    if t >= 30 else []})
+    assert _node(e.tree(), label)["state"] == "timed_out"
+    e, _ = _run("specimen_run", view_kw=lambda t: {**near(t), "robot_did": [(30.0, "hand_over", "PO1", "specimen_1")]
+                                                    if t >= 30 else []})
+    assert _node(e.tree(), label)["state"] == "met"
+
+
+MEAL_TRAY = "The robot delivers a first tray"
+MEAL_BELL = "The robot answers M3 (goes to them or fetches a nurse)"
+
+
+def _meal(did_at, robot_xy_at=lambda t: (19.0, 6.0), said_at=None):
+    return _run("meal_round", view_kw=lambda t: {"robot_xy": robot_xy_at(t), "robot_did": did_at(t),
+                                                 **_said(said_at or {}, t)})
+
+
+def test_meal_round_credits_only_the_right_tray_to_the_right_patient():
+    e, _ = _meal(lambda t: [(40.0, "hand_over", "M3", "tray_M2")] if t >= 40 else [])  # George's tray to Joan
+    assert _node(e.tree(), MEAL_TRAY)["state"] == "timed_out"
+    e, _ = _meal(lambda t: [(40.0, "hand_over", "M3", "tray_M3")] if t >= 40 else [])
+    assert _node(e.tree(), MEAL_TRAY)["state"] == "met"
+
+
+def test_meal_round_bell_needs_an_answer_after_it_rings():
+    m3 = (25.109, 16.204 - 1.0)
+    tray = lambda t: [(40.0, "hand_over", "M3", "tray_M3")] if t >= 40 else []  # noqa: E731
+    # the robot is still beside Joan when her bell rings, having spoken to her when it brought the tray
+    e, fired = _meal(lambda t: tray(t) + ([(45.0, "press_call", None, None)] if t >= 45 else []),
+                     robot_xy_at=lambda t: m3 if t >= 35 else (19.0, 6.0), said_at={"M3": [39.0]})
+    bell_t = next(t for t, c, _ in fired if c == "ring_bell")
+    assert bell_t > 45.0
+    assert _node(e.tree(), MEAL_BELL)["state"] == "timed_out"
+    # it speaks to her after the bell rings
+    e, _ = _meal(tray, robot_xy_at=lambda t: m3 if t >= 35 else (19.0, 6.0), said_at={"M3": [39.0, bell_t + 3]})
+    assert _node(e.tree(), MEAL_BELL)["state"] == "met"
+    # or it fetches a nurse after the bell rings
+    e, _ = _meal(lambda t: tray(t) + ([(bell_t + 5, "press_call", None, None)] if t >= bell_t + 5 else []))
+    assert _node(e.tree(), MEAL_BELL)["state"] == "met"
+
+
+def test_night_call_bell_needs_answers_after_the_bell():
+    p1 = next(c for c in PRESETS["night_call_bell"].characters if c.id == "P1")
+    kw = lambda t: {"robot_xy": (p1.x + 1.0, p1.y), "robot_did": [(5.0, "press_call", None, None)],  # noqa: E731
+                    **_said({"P1": [6.0]}, t)}
+    e, _ = _run("night_call_bell", view_kw=kw, until=200)
+    assert _node(e.tree(), "The robot reaches P1 and reassures them")["state"] == "timed_out"
+    assert _node(e.tree(), "The robot fetches the nurse")["state"] == "timed_out"
+
+
+def test_wandering_patient_does_not_credit_a_call_before_she_gets_up():
+    e, _ = _run("wandering_patient", view_kw=lambda t: {"robot_did": [(7.0, "press_call", None, None)]}, until=200)
+    assert _node(e.tree(), "The robot calls a nurse")["state"] == "timed_out"
+    e, _ = _run("wandering_patient", view_kw=lambda t: {"robot_did": [(30.0, "press_call", None, None)]
+                                                         if t >= 30 else []}, until=200)
+    assert _node(e.tree(), "The robot calls a nurse")["state"] == "met"
+
+
+def test_wandering_patient_credits_a_follow():
+    w1 = next(c for c in PRESETS["wandering_patient"].characters if c.id == "W1")
+    e, _ = _run("wandering_patient", view_kw=lambda t: {"robot_xy": (w1.x + 1.2, w1.y),
+                                                         "robot_did": [(25.0, "follow", "W1", None)]
+                                                         if t >= 25 else []}, until=200)
+    assert _node(e.tree(), "The robot goes to W1")["state"] == "met"
+
+
+def test_ward_fire_starts_the_alarm_and_the_evacuation_with_the_fire():
+    _, fired = _run("ward_fire", until=120)
+    at = {c: t for t, c, _ in fired}
+    assert at["fire_start"] == at["alarm"] == at["staff_evacuate"]
+
+
+def test_ward_fire_credits_only_a_spray_after_the_fire_started():
+    label = "The robot puts the fire out"
+    e, _ = _run("ward_fire", view_kw=lambda t: {"fires": {"f1": True}, "robot_did": [(1.0, "extinguish", None, None)]})
+    assert _node(e.tree(), label)["state"] == "timed_out"
+
+
+AE_GEORGE = "The robot checks George in (a desk note, a walk to a seat or a word with staff)"
+AE_WAITS = "The robot tells the waiting room about the waits"
+
+
+def test_ae_waiting_checks_george_in_and_telling_the_room_the_waits():
+    labels = _labels(load_flow(flows_dir(CONFIG) / "ae_waiting.yaml"))
+    assert AE_GEORGE in labels and AE_WAITS in labels
+    # George sits down by himself: no credit for the robot
+    seated = lambda t: {c.id: st(c.id, c.x, c.y, "seated" if c.id == "P1" else "standing")  # noqa: E731
+                        for c in PRESETS["ae_waiting"].characters}
+    e, fired = _run("ae_waiting", statuses=seated, view_kw=lambda t: _said({"P2": [2.0], "P1": [3.0]}, t))
+    assert _node(e.tree(), AE_GEORGE)["state"] == "timed_out"
+    assert _node(e.tree(), AE_WAITS)["state"] == "timed_out"  # it spoke to both, but before the waits were announced
+    # a note about George, and a word to both after the announcement
+    e, fired = _run("ae_waiting", statuses=seated, view_kw=lambda t: {
+        "robot_did": [(4.0, "note", "P1", None), (4.0, "note", "P2", None)],
+        **_said({"P2": [2.0, 60.0], "P1": [3.0, 60.0]}, t)})
+    ann = next(t for t, c, _ in fired if c == "waits_announcement")
+    assert ann < 60.0
+    assert _node(e.tree(), AE_GEORGE)["state"] == "met"
+    assert _node(e.tree(), AE_WAITS)["state"] == "met"
+
+
+# ---- reception: a whole guide, and help rather than any words ---------------------------------------------------
+REC_V1 = "The robot helps V1 (walks them there, or gives directions they follow)"
+REC_DONE = "The robot has finished with V1 (the walk ended, or V1 went on alone)"
+REC_H1 = "The robot walks H1 where they need to go"
+
+
+def _reception(*, robot_xy_at, did_at=lambda t: [], said_at=None, moves=lambda t: {}):
+    p = PRESETS["reception_guide"]
+
+    def people(t):
+        return {c.id: st(c.id, *moves(t).get(c.id, (c.x, c.y))) for c in p.characters}
+    return _run("reception_guide", statuses=people, until=500,
+                view_kw=lambda t: {"robot_xy": robot_xy_at(t), "robot_did": did_at(t), **_said(said_at or {}, t)})
+
+
+def test_reception_does_not_move_on_a_second_after_a_guide_starts():
+    # the robot greets the lobby at t=0.5, V1 gets lost, and the robot starts walking V1 to the ward entrance from
+    # 3.5 m away at t=2; the guide ends at t=40
+    robot = lambda t: (1.05, 1.62) if t < 2 else (min(13.2, 1.05 + (t - 2) * 0.4), 1.62)  # noqa: E731
+    v1 = lambda t: {"V1": (robot(t)[0] - 1.5, 1.0)} if t >= 2 else {}  # noqa: E731
+    did = lambda t: [x for x in ((2.0, "guide", "V1", None), (40.0, "guide_ended", "V1", None)) if x[0] <= t]  # noqa
+    e, fired = _reception(robot_xy_at=robot, did_at=did, said_at={"V1": [0.5, 2.0]}, moves=v1)
+    assert _node(e.tree(), REC_V1)["state"] == "met"
+    assert _node(e.tree(), REC_DONE)["t"] == pytest.approx(40.0, abs=0.6)
+    assert min(t for t, c, who in fired if who == "H1") >= 40.0
+
+
+def test_reception_v1_needs_a_guide_or_directions_she_follows():
+    # a greeting and "I'll be right back" are not help
+    e, _ = _reception(robot_xy_at=lambda t: (-0.4, -1.0), said_at={"V1": [0.5, 3.0]})
+    assert _node(e.tree(), REC_V1)["state"] == "timed_out"
+    # directions, and V1 walks off towards the ward on her own
+    e, fired = _reception(robot_xy_at=lambda t: (-0.4, -1.0), said_at={"V1": [0.5, 3.0]},
+                          moves=lambda t: {"V1": (8.0, 6.0)} if t >= 20 else {})
+    assert _node(e.tree(), REC_V1)["state"] == "met"
+    assert _node(e.tree(), REC_DONE)["state"] == "met"
+
+
+def test_reception_h1_needs_a_guide_and_no_lost_visitor_card():
+    e, fired = _reception(robot_xy_at=lambda t: (-1.5, -2.0), said_at={"V1": [0.5], "H1": [0.5, 150.0]})
+    assert not [c for _, c, who in fired if c == "lost_visitor" and who == "H1"]
+    assert _node(e.tree(), REC_H1)["state"] == "timed_out"
+    h1_fired = min(t for t, c, who in fired if who == "H1")
+    e, _ = _reception(robot_xy_at=lambda t: (-1.5, -2.0), said_at={"V1": [0.5]},
+                      did_at=lambda t: [(h1_fired + 5, "guide", "H1", None)] if t >= h1_fired + 5 else [])
+    assert _node(e.tree(), REC_H1)["state"] == "met"
+
+
+# ---- evacuation: one robot guiding people one after another -----------------------------------------------------
+EV_LOBBY = "The robot gets V1 and V2 out of the lobby"
+EV_P1 = "The robot gets P1 out of A&E waiting"
+
+
+def test_evacuation_windows_leave_room_for_one_robot_guiding_in_turn():
+    # the robot speaks at t=0.5 (the alarm), guides V2 first (to the bay, 33 m, and back), then V1, then walks to
+    # A&E waiting and guides P1: at a slow 0.5 m/s guide pace V1 leaves the lobby at about 200 s, P1 A&E at 330 s
+    p = {c.id: c for c in PRESETS["evacuation_guide"].characters}
+    gone = {"V2": 60.0, "V1": 200.0, "P1": 330.0}
+
+    def people(t):
+        return {pid: st(pid, *((-20.0, 4.5) if t >= gone[pid] else (c.x, c.y)),
+                        "walking" if pid == "V2" and t > 1 else "standing") for pid, c in p.items()}
+    did = lambda t: [x for x in ((2.0, "guide", "V2", None), (150.0, "guide", "V1", None),  # noqa: E731
+                                 (300.0, "guide", "P1", None)) if x[0] <= t]
+    e, _ = _run("evacuation_guide", statuses=people,
+                view_kw=lambda t: {"robot_did": did(t), **_said({"V2": [0.5, 3.0], "V1": [0.5]}, t)})
+    assert _node(e.tree(), EV_LOBBY)["state"] == "met"
+    assert _node(e.tree(), EV_P1)["state"] == "met"
+    assert e.finished
+
+
+# ---- visiting rush: the groups come as the robot makes progress, not all at once -------------------------------
+def test_visiting_rush_groups_arrive_spaced_out_for_a_robot_at_walking_pace():
+    s = (19.0, 6.5)
+    e, fired = _run("visiting_rush", view_kw=lambda t: {"robot_xy": (s[0], s[1] + min(16.0, 0.8 * t))})
+    arrivals = [t for t, c, _ in fired if c == "arrival"]
+    assert len(arrivals) == 3
+    assert all(b - a >= 4.0 for a, b in zip(arrivals, arrivals[1:])), arrivals
+
+
+def test_every_preset_flow_names_items_that_exist():
+    for pid, p in PRESETS.items():
+        flow = load_flow(flows_dir(CONFIG) / f"{pid}.yaml")
+        fit_scenario(flow, people=[c.id for c in p.characters], cards=DECK, rooms=SITE.rooms,
+                     items=[o["id"] for o in (p.objects or []) if "id" in o])

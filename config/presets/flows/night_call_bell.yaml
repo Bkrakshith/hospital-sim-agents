@@ -14,11 +14,11 @@ steps:
     branches:
     - - expect:
           label: The robot reaches P1 and reassures them
-          when: {all: [{robot_near: {person: P1, within_m: 2.5}}, {robot_spoke_to: P1}]}
+          when: {all: [{robot_near: {person: P1, within_m: 2.5}}, {robot_spoke_to: {person: P1, since_step: true}}]}
           timeout_s: 90
     - - expect:
           label: The robot fetches the nurse
-          when: {any: [{robot_did: {action: tell}}, {robot_did: {action: press_call}}]}
+          when: {any: [{robot_did: {action: tell, since_step: true}}, {robot_did: {action: press_call, since_step: true}}]}
           timeout_s: 120
     - - unless:
           label: The nurse reaches P1
