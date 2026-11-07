@@ -86,7 +86,7 @@ def test_people_are_told_the_robot_by_its_role(tmp_path):
     assert "reception robot" not in req.persona_card
     assert "reception robot" not in req.system_fixed
     assert "reception robot" not in system_fixed("ward_nurse", robot_role="ward fire responder")
-    assert "reception robot" not in _seen_line(seen("robot", "g1"))
+    assert "reception robot" not in _seen_line(seen("robot", "g1"), robot_role="ward fire responder")
     inst = next(i for i in loaded.instances if i.person_id == "N1")
     no_role = SimpleNamespace(robot_brief={"job": "Help people."})
     assert robot_role_of(no_role) == ""  # a brief with no role

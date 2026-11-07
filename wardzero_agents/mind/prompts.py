@@ -321,12 +321,14 @@ def _direction(bearing: float) -> str:
     return f"behind you to the {side}"
 
 
-def _seen_line(s: Seen) -> str:
+def _seen_line(s: Seen, robot_role: Optional[str] = None) -> str:
+    """robot_role as robot_role_of gives it: None (no robot brief, the original reception scenarios) keeps their
+    exact words, "the reception robot"."""
     where = f"{s.distance:.1f} m {_direction(s.bearing_deg)}"
     if s.kind == "sign":
         return f"- sign {s.id}: \"{s.detail or ''}\" ({where})"
     if s.kind == "robot":
-        return f"- the robot {s.id} ({where})"
+        return f"- the {'reception robot' if robot_role is None else 'robot'} {s.id} ({where})"
     if s.kind == "person":
         return f"- person {s.id}{f' ({s.detail})' if s.detail else ''} ({where})"
     return f"- seat {s.id} ({where})"
@@ -387,8 +389,8 @@ TRIGGER_WORDS = {"start": "you are just starting: take stock of where you are an
 def render_situation(inst: PersonInstance, obs: Observation, status: Status, triggers: list[str],
                      nudges: list[Nudge], clock_min: float, *, mood: str = "calm",
                      patience_left: float = 1.0, current_intent: Optional[dict] = None,
-                     area: Optional[WaitingArea] = None, site=None) -> str:
-    """What this person perceives now. Nudges come last, one per line."""
+                     area: Optional[WaitingArea] = None, site=None, robot_role: Optional[str] = None) -> str:
+    """What this person perceives now. Nudges come last, one per line. robot_role as robot_role_of gives it."""
     m = round(clock_min)
     lines = [f"You have been waiting about {m} minute{'' if m == 1 else 's'}."]
     lines.append(_where(status, area, site))
@@ -407,7 +409,7 @@ def render_situation(inst: PersonInstance, obs: Observation, status: Status, tri
         lines.append("You can see:")
         order = {"robot": 0, "person": 1, "sign": 2, "seat": 3}
         for s in sorted(obs.visible, key=lambda s: (order[s.kind], s.distance)):
-            lines.append(_seen_line(s))
+            lines.append(_seen_line(s, robot_role))
     else:
         lines.append("You see nothing of note.")
     if obs.objects:

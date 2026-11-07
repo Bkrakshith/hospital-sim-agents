@@ -184,7 +184,7 @@ def build_graph(deps: "MindDeps", checkpointer: Any = None):
         patience = state.get("patience_left", 1.0)
         situation = render_situation(inst, obs, status, state["triggers"], nudges, frame["clock_min"],
                                      mood=mood, patience_left=patience, current_intent=current,
-                                     area=loaded.area, site=loaded.site)
+                                     area=loaded.area, site=loaded.site, robot_role=robot_role)
         return {"situation": situation, "current_intent": current, "mood": mood,
                 "patience_left": patience, "short_term": state.get("short_term", []),
                 "last_summary_t": state.get("last_summary_t", state["t"]),
