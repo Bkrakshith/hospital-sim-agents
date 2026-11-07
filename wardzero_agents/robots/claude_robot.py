@@ -427,10 +427,13 @@ _BELL_TEXT = re.compile(r"call bell, bed (\w+)", re.I)
 def chime_words(h: dict) -> Optional[str]:
     """What a call-system sound is, in words, or None for any other sound: a bed's call bell ("a call bell (bed B3)"),
     the robot's own staff call ("your staff call chime"), or a chime the microphone could not name (an old run's
-    bell: a person sound with no words)."""
+    bell: a person sound with no words). An old run's bell also came as a person sound with the chime's words: only
+    those exact words, not said to the robot, count as a chime (a person who mentions their call bell is speaking)."""
     kind, text = h.get("source_kind"), h.get("text") or ""
-    m = _BELL_TEXT.search(text) if isinstance(text, str) else None
-    if kind == "bell" or (kind == "person" and (m or text == "staff call chime")):
+    text = text.strip() if isinstance(text, str) else ""
+    m = _BELL_TEXT.search(text) if kind == "bell" else _BELL_TEXT.fullmatch(text)
+    old_bell = kind == "person" and not h.get("addressed_to_me") and (m or text == "staff call chime")
+    if kind == "bell" or old_bell:
         if m:
             return f"a call bell (bed {m.group(1)})"
         if "staff call" in text:

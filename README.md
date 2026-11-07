@@ -272,7 +272,7 @@ The robot fairness rule: the robot sees the world only through its own senses.
 
 - The robot hears people only on `/g1/audio/heard`.
 - It speaks by publishing plain text on `/g1/speech/say`.
-- Robot speech is 72 dB at 1 m. Who a line is addressed to (the track named on `speech/toward`, the room, or the last person who spoke to the robot) is described exactly in [docs/robot-topics.md](docs/robot-topics.md#addressing-a-line-speechtoward). The robot itself never sees who spoke.
+- Robot speech is 72 dB at 1 m. Who a line is addressed to (the track named on `speech/toward`, the room, or the last person the robot heard speaking to it or to nobody in particular) is described exactly in [docs/robot-topics.md](docs/robot-topics.md#addressing-a-line-speechtoward). The robot itself never sees who spoke.
 - In the stub the robot gets anonymous person boxes on `camera/bbox_3d` and the objects in view
   on `perception/objects`, but no camera images or lidar. Those come with Isaac.
 

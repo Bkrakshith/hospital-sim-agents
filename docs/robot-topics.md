@@ -63,8 +63,9 @@ lines sent one after the other each reach the person meant. A `toward` that wait
   away, gone, or walls in the way) the line is said to nobody in particular; it never goes to anyone else.
 - `room`: the line is for everyone in the robot's room, with no one addressee (a call to the whole waiting room, for
   example). Everyone who hears it hears it as said to the room.
-- No `toward`: the line is addressed to the last person who spoke to the robot, if that was within the last 20 s and
-  they are still within 3.0 m of it (once: the next line without a `toward` does not go to them again); otherwise it
+- No `toward`: the line is addressed to the last person whose speech the robot heard, said to the robot or to nobody
+  in particular (not a line said to someone else), if that was within the last 20 s and they are still within 3.0 m
+  of it (once: the next line without a `toward` does not go to them again); otherwise it
   is said to nobody in particular, however near anyone stands.
 
 Whoever is within hearing hears every line, addressed or not (the audio model: distance, and walls between rooms). The

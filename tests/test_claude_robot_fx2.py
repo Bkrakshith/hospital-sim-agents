@@ -81,3 +81,21 @@ def test_the_places_it_knows_are_listed_by_name_not_by_id(reception):
     places = m.card().split("Places you know:")[1].split("YOUR JOB")[0]
     assert "Main_LiftLobby" not in places and "_" not in places, places
     assert "- Protected bed-lift lobby: " in places and "(lift lobby)" in places
+
+
+def test_a_person_who_mentions_a_call_bell_is_heard_speaking_not_as_a_chime():
+    """Only an old run's chime row (a person sound whose whole text is the chime's words, not said to the robot) is
+    read as a chime: a patient saying something about their call bell, to the robot or near it, keeps their words."""
+    m = RobotMind(V1.site, {"job": "x"}, None, lambda: 0.0, known_places=[], pose=(1.0, 1.0, 0.0))
+    said = "I pressed my call bell, bed B3, twenty minutes ago and nobody came"
+    asyncio.run(m.on_heard({"source_kind": "person", "source_id": "unknown", "text": said, "received_db": 60.0,
+                            "partial": False, "addressed_to_me": True}, 92.0))
+    asyncio.run(m.on_heard({"source_kind": "person", "source_id": "unknown", "text": "staff call chime",
+                            "received_db": 60.0, "partial": False, "addressed_to_me": True}, 93.0))
+    asyncio.run(m.on_heard({"source_kind": "person", "source_id": "unknown", "text": "Is that a call bell, bed B4?",
+                            "received_db": 60.0, "partial": False, "addressed_to_me": False}, 94.0))
+    heard = m._situation(95.0).split("Heard recently, newest last:")[1].split("People your camera sees")[0]
+    lines = [ln for ln in heard.splitlines() if ln.startswith("- ")]
+    assert "someone speaking to you" in lines[0] and said in lines[0] and "a call bell" not in lines[0], lines
+    assert "someone speaking to you" in lines[1] and '"staff call chime"' in lines[1], lines
+    assert '"Is that a call bell, bed B4?"' in lines[2] and "a call bell (bed" not in lines[2], lines
