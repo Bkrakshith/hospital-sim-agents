@@ -223,3 +223,13 @@ def test_the_receptionist_stays_at_her_desk_for_a_note_that_needs_no_one(tmp_pat
     urgent = note.replace("New arrival checked in by the robot", "This patient needs a nurse now")
     d = ask(loaded, rcp, [urgent])
     assert kind(d) == "approach" and d["intent"]["target"] == "P1"
+
+
+def test_a_role_that_cannot_follow_does_not_answer_a_guide_offer_with_follow(tmp_path):
+    from wardzero_agents.studio import auto_staff
+    p = PRESETS["reception_guide"]
+    loaded = preset_to_scenario(p, CONFIG, tmp_path, characters=auto_staff.with_auto(list(p.characters), p))
+    inst = next(i for i in loaded.instances if i.person_id == "RCP")
+    offer = "NUDGE: The robot is offering to walk you to Ward entrance. If you want to go there, follow it (follow g1)."
+    d = ask(loaded, "RCP", [offer])
+    assert kind(d) in decision_schema(inst.role)["properties"]["intent"]["properties"]["kind"]["enum"]

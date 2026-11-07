@@ -270,7 +270,8 @@ def person_policy(req: LLMRequest) -> dict:
     offered = _offer_reply(req, u)
     if offered is not None:
         return offered
-    if "NUDGE: The robot is offering to walk you" in u or re.search(r"Current activity: follow \S+ \((sent|running)\)", u):
+    if ("NUDGE: The robot is offering to walk you" in u or re.search(r"Current activity: follow \S+ \((sent|running)\)", u)) \
+            and "follow" in (_kinds(req) or ["follow"]):
         return _decision("follow", "g1")  # the natural reply to a guide offer, and keep following
     if "Role: receptionist." in card or "NUDGE: The robot tells you" in u or "NUDGE: The robot pressed the staff" in u:
         errand = _staff_errand(u + "\n" + card)
