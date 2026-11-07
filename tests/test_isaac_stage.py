@@ -97,3 +97,58 @@ def test_the_floor_plane_is_never_culled_even_for_a_ward_scenario():
     boxes = {"/World/Hospital/GroundPlane": ((0.0, 0.0), (0.0, 0.0)),  # an empty bound placed at its origin
              "/World/Hospital/Lobby_Desk": ((0.0, 2.0), (4.0, 4.0))}
     assert select_off(boxes, ward) == ["/World/Hospital/Lobby_Desk"]
+
+
+# ---- the wrapper layer's extra NavMesh Include volume (QA bug 12) ---------------------------------------------------
+def test_the_wrapper_defines_a_traversable_navmesh_include_volume(tmp_path):
+    """Without a defined parent the volume is not traversed, and with the wrong attribute types it is not baked: either
+    way the wing's characters get no Behavior agent, which only an Isaac run would show. Needs pxr (skipped without)."""
+    pytest.importorskip("pxr")
+    from pxr import Sdf, Usd
+
+    from wardzero_agents.isaac_host import fixes
+    from wardzero_agents.isaac_host.stage import nav_include_attrs, write_wrapper
+
+    src = Sdf.Layer.CreateNew(str(tmp_path / "stage.usda"))
+    world = Sdf.CreatePrimInLayer(src, "/World")
+    world.specifier, world.typeName = Sdf.SpecifierDef, "Xform"
+    room = Sdf.CreatePrimInLayer(src, "/World/Room")
+    room.specifier, room.typeName = Sdf.SpecifierDef, "Xform"
+    src.defaultPrim = "World"
+    src.Save()
+    box = ((-10.0, -24.0), (6.0, -5.0))
+    out = write_wrapper(tmp_path / "wrap.usda", ["/World/Room"], stage_path=tmp_path / "stage.usda", nav_include=box)
+
+    stage = Usd.Stage.Open(str(out))
+    parent = stage.GetPrimAtPath(fixes.NAV_INCLUDE_PATH.rsplit("/", 1)[0])
+    assert parent.IsValid() and parent.IsDefined() and parent.GetTypeName() == "Scope"
+    vol = stage.GetPrimAtPath(fixes.NAV_INCLUDE_PATH)
+    assert vol.IsValid() and vol.IsDefined() and vol.IsActive()
+    assert vol.GetTypeName() == "NavMeshVolume"
+    assert "NavMeshAreaAPI" in vol.GetPrimTypeInfo().GetAppliedAPISchemas()
+    assert vol in list(stage.Traverse())  # what the bake walks
+    for name, (kind, value) in nav_include_attrs(box).items():
+        attr = vol.GetAttribute(name)
+        assert attr.IsValid(), name
+        assert attr.GetTypeName() == getattr(Sdf.ValueTypeNames, kind), name
+        want = Sdf.VariabilityUniform if name == "xformOpOrder" else Sdf.VariabilityVarying
+        assert attr.GetVariability() == want, name
+    assert vol.GetAttribute("nav:volume:type").Get() == "Include"
+    assert list(vol.GetAttribute("xformOpOrder").Get()) == ["xformOp:translate", "xformOp:scale"]
+    assert not stage.GetPrimAtPath("/World/Room").IsActive()  # the culled room stays off
+
+
+def test_the_wrapper_adds_no_include_volume_when_none_is_asked_for(tmp_path):
+    pytest.importorskip("pxr")
+    from pxr import Sdf, Usd
+
+    from wardzero_agents.isaac_host import fixes
+    from wardzero_agents.isaac_host.stage import write_wrapper
+
+    src = Sdf.Layer.CreateNew(str(tmp_path / "stage.usda"))
+    world = Sdf.CreatePrimInLayer(src, "/World")
+    world.specifier, world.typeName = Sdf.SpecifierDef, "Xform"
+    src.defaultPrim = "World"
+    src.Save()
+    out = write_wrapper(tmp_path / "wrap.usda", [], stage_path=tmp_path / "stage.usda")
+    assert not Usd.Stage.Open(str(out)).GetPrimAtPath(fixes.NAV_INCLUDE_PATH).IsValid()
