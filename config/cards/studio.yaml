@@ -52,9 +52,10 @@ cards:
 
   - id: deterioration
     label: Patient gets worse
-    channels: [reflex, nudge]
+    channels: [reflex, nudge, world]
     target_kind: person
     reflex: {duration_s: 60, severity: severe}
+    world: {kind: unwell}  # slumped, looks unwell to the robot's camera within 4 m, coughs quietly every 20-40 s
     nudge: "You feel much worse: dizzy and short of breath. You slump in your chair and cannot say much."
     companion_nudge: "{name} looks very unwell. Get someone to help straight away."
     tests: Whether the robot notices a patient getting worse and alerts triage.

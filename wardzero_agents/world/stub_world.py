@@ -15,6 +15,7 @@ from __future__ import annotations
 import logging
 import math
 import re
+import typing
 import uuid
 from dataclasses import dataclass, field
 from typing import Optional
@@ -78,6 +79,12 @@ APPROACH_KINDS = ("approach", "attend")
 # where a person is sent to stand (walking up to someone, following the robot) is moved to free floor: out of the
 # furniture's clearance band, this far from the robot and from other people, within SPOT_SEARCH_M of the first choice
 SPOT_ROBOT_M = 1.2  # an Isaac character may stop up to 0.4 m short of or past its spot: still 0.8 m off the robot
+# ... but staff going to a patient (sent by the robot's staff call or tell, or on their own) may stand this close to a
+# robot standing still at the bedside, so they reach the patient (it stays still: no contact)
+ATTEND_ROBOT_M = 0.8
+ATTENDED_M = 1.5  # staff standing this close to a patient whose call bell is on answer it: the call light goes off
+REACH_SPOT_M = 1.4  # staff whose nearest free spot is further than ATTENDED_M from the person go round to one this close
+REACH_SPOT_TRIES = 8  # ... trying this many candidate spots (nearest first) for a route
 SPOT_PEOPLE_M = 0.6
 SPOT_SEARCH_M = 1.6
 KEEP_SIT = ("sit_idle", "use_phone", "read_sign", "gesture")  # quick things that do not cancel sitting down
@@ -99,6 +106,12 @@ ASLEEP_CARD = "asleep"  # a fired card with this id puts its person to sleep
 # what a person asleep may do and stay asleep (anything else their own mind chooses wakes them); a reflex (an overlay
 # intent such as a cough) never wakes them
 ASLEEP_KEEP = ("sit_idle", "wait_standing", "lie_back", "cough", "fidget")
+UNWELL_CARDS = ("deterioration",)  # a fired card with one of these ids makes its person look unwell (or world kind unwell)
+UNWELL_COUGH_S = (20.0, 40.0)  # someone unwell coughs quietly once every this many seconds of sim time
+UNWELL_COUGH_DB = audio.COUGH_DB["mild"]
+# what a Status may say: a sim built against an older contract leaves out what it has no field or value for
+_STATUS_FIELDS = set(Status.model_fields)
+_STATUS_POSTURES = set(typing.get_args(Status.model_fields["posture"].annotation))
 ROLE_KINDS = ("give_item", "take_item", "call_for_help", "call_bell", "accept_item", "refuse_item",
               "request_instrument", "reject_item", "take_instrument_self", "use_extinguisher",
               "sit_up_in_bed", "lie_back")
@@ -155,6 +168,10 @@ class _Phase:
     lazy: bool = False  # walk: re-route from wherever the walker is when the phase starts
     carry: Optional[str] = None  # walk: id of a person who is led (escorted) along
     trail: bool = False  # walk: follow the robot (follow is "g1"), 1.0-1.5 m behind it, until it stops
+    # walk up to someone: the spot chosen to stand at and where they were then; kept while they stay within REROUTE_M
+    # of it and the spot stays free, so the walker does not hop between spots as their own position changes
+    spot: Optional[tuple[float, float]] = None
+    spot_at: Optional[tuple[float, float]] = None
 
 
 @dataclass
@@ -180,6 +197,7 @@ class _Person:
     bed: Optional[str] = None
     sitting_up: bool = False  # in a bed: propped up (posture stays "lying")
     asleep: bool = False  # asleep until spoken to by address (a robot line to them) or their own mind acts
+    unwell: bool = False  # got worse (the deterioration card): slumped, looks unwell, coughs quietly now and then
 
 
 class StubWorld:
@@ -189,6 +207,8 @@ class StubWorld:
         self._ear_rng = np.random.default_rng([seed, 1])  # the noise on the direction of what the robot hears
         self._repeaters: set[str] = set()  # ids of call-bell chimes repeated at a nurse base (no bearing to the bed)
         self._sleep_rng = np.random.default_rng([seed, 2])  # whether a sleeper's ears caught a line to them
+        self._unwell_rng = np.random.default_rng([seed, 3])  # when someone unwell coughs (the run's draws unchanged)
+        self._next_cough: dict[str, float] = {}  # person unwell -> sim time of their next quiet cough
         self._pa_blocked: set = set()  # (t, place) of route-block announcements already made
         self.signs: list[Sign] = list(loaded.signs)
         self.last_t = 0.0
@@ -389,7 +409,11 @@ class StubWorld:
 
     # ---- sleep -----------------------------------------------------------------------------
     def apply_nudge(self, n: Nudge) -> None:
-        """A card fired at a person: the "asleep" card puts them to sleep (other cards only reach their mind)."""
+        """A card fired at a person: the "asleep" card puts them to sleep, the "deterioration" card makes them look
+        unwell (other cards only reach their mind)."""
+        if n.card in UNWELL_CARDS:
+            self.set_unwell(n.person, n.t)
+            return
         if n.card != ASLEEP_CARD:
             return
         p = self.people.get(n.person)
@@ -397,6 +421,26 @@ class StubWorld:
             return
         p.asleep = True
         self._log.append(("world", {"t": n.t, "kind": "asleep", "event": "start", "person": n.person}))
+
+    def set_unwell(self, pid: str, t: float) -> None:
+        """pid has got worse: from now on they are slumped, the robot's camera sees they look unwell (within 4 m), and
+        they cough quietly every 20 to 40 s of sim time, whatever their own mind does."""
+        p = self.people.get(pid)
+        if p is None or p.posture == "gone" or p.kind == "static" or p.unwell:
+            return
+        p.unwell = True
+        self._next_cough[pid] = t + float(self._unwell_rng.uniform(*UNWELL_COUGH_S))
+        self._log.append(("world", {"t": t, "kind": "unwell", "event": "start", "person": pid}))
+
+    def _unwell_coughs(self, t: float) -> None:
+        for pid, due in list(self._next_cough.items()):
+            p = self.people.get(pid)
+            if p is None or p.posture == "gone":
+                self._next_cough.pop(pid)
+                continue
+            if t + 1e-9 >= due:
+                self._outbox.append(self._event(t, "cough", pid, p.x, p.y, PERSON_Z, UNWELL_COUGH_DB))
+                self._next_cough[pid] = t + float(self._unwell_rng.uniform(*UNWELL_COUGH_S))
 
     def _wake(self, pid: str, t: float, reason: str) -> None:
         p = self.people.get(pid)
@@ -482,6 +526,14 @@ class StubWorld:
             path = [(p.x, p.y)] + list(path)  # in a chair: step out to the route's free start first, not across the row
         return _Phase("walk", dest=None if follow else goal, follow=follow, speed=speed, path=path, i=1, goal=goal)
 
+    def _route_to_person(self, p: _Person, target: str, speed: float) -> Optional[_Phase]:
+        """A walk up to target, keeping the spot chosen for it."""
+        first = _Phase("walk", follow=target)
+        walk = self._route(p, self._walk_dest(p, first), speed, follow=target)
+        if walk is not None:
+            walk.spot, walk.spot_at = first.spot, first.spot_at
+        return walk
+
     def apply_intent(self, intent: Intent) -> list[AudioEvent]:
         p = self._get(intent.person)
         if p.posture == "gone":
@@ -552,7 +604,7 @@ class StubWorld:
                 self._fail(p, intent, "unknown target" if kind == "escort" else "no safe compartment")
                 return []
             lead_path = self.router.route((q.x, q.y), dest)
-            walk = self._route(p, self._walk_dest(p, _Phase("walk", follow=intent.target)), speed, follow=intent.target)
+            walk = self._route_to_person(p, intent.target, speed)
             if lead_path is None or walk is None:
                 self._fail(p, intent, "no route")
                 return []
@@ -577,7 +629,7 @@ class StubWorld:
             if tgt is None or tgt == intent.person or self._pos(tgt) is None:
                 self._fail(p, intent, "unknown target")
                 return []
-            walk = self._route(p, self._walk_dest(p, _Phase("walk", follow=tgt)), speed, follow=tgt)
+            walk = self._route_to_person(p, tgt, speed)
             if walk is None:
                 self._fail(p, intent, "no route")
                 return []
@@ -642,30 +694,76 @@ class StubWorld:
         d = math.hypot(p.x - tp[0], p.y - tp[1])
         if d <= APPROACH_GAP_M:
             return p.x, p.y
+        robot_m = self._robot_keep_m(p, ph.follow)
+        if ph.spot is not None and ph.spot_at is not None \
+                and math.hypot(tp[0] - ph.spot_at[0], tp[1] - ph.spot_at[1]) <= REROUTE_M \
+                and self._spot_ok(ph.spot[0], ph.spot[1], p.inst.person_id, robot_m):
+            return ph.spot
         k = APPROACH_GAP_M / d
-        return self.free_spot(tp[0] + (p.x - tp[0]) * k, tp[1] + (p.y - tp[1]) * k, p.inst.person_id)
+        ray = (tp[0] + (p.x - tp[0]) * k, tp[1] + (p.y - tp[1]) * k)
+        spot = self.free_spot(ray[0], ray[1], p.inst.person_id, robot_m=robot_m)
+        if self._attending(p, ph.follow) and math.hypot(spot[0] - tp[0], spot[1] - tp[1]) > ATTENDED_M:
+            spot = self._reach_spot(p, tp, ray, robot_m) or spot
+        ph.spot, ph.spot_at = spot, (tp[0], tp[1])
+        return spot
 
-    def _spot_ok(self, x: float, y: float, pid: str) -> bool:
+    def _attending(self, p: _Person, target: Optional[str]) -> bool:
+        """p is a member of staff walking up to someone (not the robot)."""
+        return bool(target) and target != ROBOT_ID and target in self.people and p.inst.role in STAFF_ROLES
+
+    def _reach_spot(self, p: _Person, tp: tuple[float, float], ray: tuple[float, float],
+                    robot_m: float) -> Optional[tuple[float, float]]:
+        """Free floor within REACH_SPOT_M of the person at tp that p can walk to, nearest the spot p would have taken
+        (ray): staff go round the bed when the free floor on their side is out of reach (the robot standing at the
+        bedside takes the only gap there). None if there is none."""
+        res = self.site.grid.res
+        n = int(REACH_SPOT_M / res)
+        pid = p.inst.person_id
+        cands = []
+        for dy in range(-n, n + 1):
+            for dx in range(-n, n + 1):
+                cx, cy = tp[0] + dx * res, tp[1] + dy * res
+                if math.hypot(dx, dy) * res <= REACH_SPOT_M and self._spot_ok(cx, cy, pid, robot_m):
+                    cands.append((math.hypot(cx - ray[0], cy - ray[1]), cx, cy))
+        for _, cx, cy in sorted(cands)[:REACH_SPOT_TRIES]:
+            path = self.router.route((p.x, p.y), (cx, cy), self._robot_disc(p))
+            if path is not None and math.hypot(path[-1][0] - cx, path[-1][1] - cy) <= ARRIVE_M * 4:
+                return cx, cy
+        return None
+
+    def _robot_still(self) -> bool:
+        r = self.robot
+        return not r.has_goal and abs(getattr(r, "vx", 0.0)) <= ROBOT_STILL_MPS
+
+    def _robot_keep_m(self, p: _Person, target: Optional[str]) -> float:
+        """How far from the robot the spot a person walks to must be: SPOT_ROBOT_M, or ATTEND_ROBOT_M for a member of
+        staff going to someone (a patient the robot called them to) while the robot stands still."""
+        if target and target != ROBOT_ID and target in self.people and p.inst.role in STAFF_ROLES \
+                and self._robot_still():
+            return ATTEND_ROBOT_M
+        return SPOT_ROBOT_M
+
+    def _spot_ok(self, x: float, y: float, pid: str, robot_m: float = SPOT_ROBOT_M) -> bool:
         if not self.router.is_free(x, y):
             return False
-        if self.loaded.scenario.robot.enabled and math.hypot(x - self.robot.x, y - self.robot.y) < SPOT_ROBOT_M:
+        if self.loaded.scenario.robot.enabled and math.hypot(x - self.robot.x, y - self.robot.y) < robot_m:
             return False
         return all(math.hypot(x - q.x, y - q.y) >= SPOT_PEOPLE_M for qid, q in self.people.items()
                    if qid != pid and q.posture != "gone")
 
-    def free_spot(self, x: float, y: float, pid: str) -> tuple[float, float]:
-        """(x, y) if a person can stand there (free floor clear of furniture, of the robot and of other people), else
-        the nearest such spot within SPOT_SEARCH_M that can be seen from (x, y); else (x, y) unchanged."""
-        if self._spot_ok(x, y, pid):
+    def free_spot(self, x: float, y: float, pid: str, robot_m: float = SPOT_ROBOT_M) -> tuple[float, float]:
+        """(x, y) if a person can stand there (free floor clear of furniture, of the robot (robot_m) and of other
+        people), else the nearest such spot within SPOT_SEARCH_M that can be seen from (x, y); else (x, y) unchanged."""
+        if self._spot_ok(x, y, pid, robot_m):
             return x, y
-        key = (round(x, 1), round(y, 1), pid)
+        key = (round(x, 1), round(y, 1), pid, robot_m)
         cache = self.__dict__.setdefault("_spots", {})
         if key in cache:
             return cache[key]
-        cache[key] = self._search_spot(x, y, pid)
+        cache[key] = self._search_spot(x, y, pid, robot_m)
         return cache[key]
 
-    def _search_spot(self, x: float, y: float, pid: str) -> tuple[float, float]:
+    def _search_spot(self, x: float, y: float, pid: str, robot_m: float = SPOT_ROBOT_M) -> tuple[float, float]:
         res = self.site.grid.res
         best, bd = None, math.inf
         n = int(SPOT_SEARCH_M / res)
@@ -675,7 +773,7 @@ class StubWorld:
                 if d >= bd or d > SPOT_SEARCH_M:
                     continue
                 cx, cy = x + dx * res, y + dy * res
-                if self._spot_ok(cx, cy, pid) and self._los((x, y), (cx, cy)):
+                if self._spot_ok(cx, cy, pid, robot_m) and self._los((x, y), (cx, cy)):
                     best, bd = (cx, cy), d
         return best if best is not None else (x, y)
 
@@ -790,7 +888,9 @@ class StubWorld:
         if not self.loaded.scenario.robot.enabled:
             return None
         rx, ry = self.robot.x, self.robot.y
-        keep = max(self.robot.radius + CONTACT_MARGIN_M + 0.15, SPOT_ROBOT_M)
+        plan = getattr(p, "plan", None)
+        target = plan[0].follow if plan and plan[0].kind == "walk" else None
+        keep = max(self.robot.radius + CONTACT_MARGIN_M + 0.15, self._robot_keep_m(p, target))
         d = math.hypot(goal[0] - rx, goal[1] - ry)
         moved = 1e-6 < d < keep
         if moved:
@@ -1072,15 +1172,23 @@ class StubWorld:
         return True
 
     # ---- outputs -------------------------------------------------------------------------
+    def _status_posture(self, p: _Person) -> str:
+        """The posture a Status reports: someone unwell sitting or standing is slumped (the world's own mechanics keep
+        p.posture, so a slumped person is still in their chair)."""
+        if p.unwell and p.posture in ("seated", "standing") and "slumped" in _STATUS_POSTURES:
+            return "slumped"
+        return p.posture
+
     def statuses(self) -> list[Status]:
-        return [
-            Status(
-                person=pid, t=self.last_t, x=p.x, y=p.y, yaw=p.yaw, posture=p.posture,
+        out = []
+        for pid, p in self.people.items():
+            extra = {"unwell": p.unwell} if "unwell" in _STATUS_FIELDS else {}
+            out.append(Status(
+                person=pid, t=self.last_t, x=p.x, y=p.y, yaw=p.yaw, posture=self._status_posture(p),
                 intent_id=p.intent_id, intent_kind=p.intent_kind, progress=p.progress,
-                state=p.state, reason=p.reason, asleep=p.asleep,
-            )
-            for pid, p in self.people.items()
-        ]
+                state=p.state, reason=p.reason, asleep=p.asleep, **extra,
+            ))
+        return out
 
     def roster(self, t: float) -> Roster:
         return Roster(
@@ -1247,6 +1355,9 @@ class StubWorld:
             # the asleep card as the sim gets it (the card's nudge only reaches the person's mind)
             self.apply_nudge(Nudge(person=ev.person or "", t=ev.t, card=ASLEEP_CARD, message=ev.text or ""))
             return []
+        if ev.kind == "unwell":  # the deterioration card (or any card with world kind unwell) as the sim gets it
+            self.set_unwell(ev.person or "", ev.t)
+            return []
         if ev.kind == "ring_bell":
             # the scenario rings the bell itself, so it does not hang on the patient's model choosing to ring
             q = self.people.get(ev.person or "")
@@ -1364,8 +1475,26 @@ class StubWorld:
                     self._fighting.pop(pid)
                     p.state, p.progress = "done", 1.0
         self._resolve_offers(t)
+        self._answer_bells(t)
+        self._unwell_coughs(t)
         self._fire_hazards()
         self._log_objects(t)
+
+    def _answer_bells(self, t: float) -> None:
+        """A lit call bell goes off once a member of staff stands within ATTENDED_M of the patient in that bed."""
+        for b in self.objects.bells.values():
+            if not b.active:
+                continue
+            pat = next((q for q in self.people.values() if q.bed == b.bed_id and q.posture == "lying"), None)
+            if pat is None:
+                continue
+            by = next((pid for pid, q in self.people.items()
+                       if q.kind != "static" and q.inst.role in STAFF_ROLES and q.posture not in ("gone", "lying", "walking")
+                       and math.hypot(q.x - pat.x, q.y - pat.y) <= ATTENDED_M), None)
+            if by is not None:
+                b.active = False
+                self._log.append(("world", {"t": t, "kind": "call_bell", "event": "answered", "bed": b.bed_id,
+                                            "by": by}))
 
     def _all_routers(self) -> list:
         """The people's router, the robot's, and the one the robot's body uses (it may have been swapped), each once."""
@@ -1539,6 +1668,11 @@ class StubWorld:
         if kind in ("give_item", "take_item"):
             return self._item_transfer(p, intent)
         if kind == "take_instrument_self":
+            if self.loaded.scenario.robot.enabled and getattr(self.loaded.scenario, "robot_brief", None):
+                # a robot with a job here is the scrub nurse: the trolley is outside her sterile field, and it passes
+                # her what she asks for (a scene with no robot, or the original robot with no brief, keeps her reach)
+                self._fail(p, intent, "the robot passes the instruments: ask it for one by name")
+                return []
             near = [i for i in self.objects.items.values()
                     if i.kind == "instrument" and i.holder is None
                     and math.hypot(i.x - p.x, i.y - p.y) <= TAKE_RANGE_M

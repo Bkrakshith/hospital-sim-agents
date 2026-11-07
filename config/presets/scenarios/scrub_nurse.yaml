@@ -17,8 +17,11 @@ robot_brief:
   instruments: "scalpel, forceps, retractor, suture_scissors (suture scissors), needle_holder (needle holder)"
   first_contact: false
 staff_line: >-
-  The robot scrub nurse keeps the instrument tray and passes you each instrument you ask for by name. Ask it, and take
-  what it holds out to you.
+  The robot scrub nurse keeps the instrument tray and passes the surgeon each instrument she asks for by name.
+staff_lines:
+  surgeon: >-
+    The robot scrub nurse keeps the instrument tray and passes you each instrument you ask for by name. Ask it, and
+    take what it holds out to you.
 # On the surgeon's side of the operating table, facing her; the tray is on the trolley just behind the robot.
 robot_start: {x: 22.2, y: -19.9, yaw: 1.45}
 characters:

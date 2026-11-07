@@ -1,6 +1,12 @@
-"""Deterministic offline gateway for tests. No network, no key, zero usage."""
+"""Deterministic offline gateway for tests. No network, no key, zero usage.
+
+WARDZERO_TEST_PEOPLE_WANDER=1 (opt-in, for no-robot probes): visitors and patients up and about who know where they
+are going (their card's goals name a place) walk there on their own, with no help, once they have been in the scene
+about half a minute, and stay there. Without it the scripted people move only when a nudge or a direction sends them.
+"""
 from __future__ import annotations
 
+import os
 import re
 import time
 from typing import Callable, Optional
@@ -107,6 +113,38 @@ def _card_places(card: str) -> list[tuple[str, str]]:
 
 _GO = re.compile(r"\b(?:walk|go|come|head|move|make your way|leave|get out)\b[^.]*?\b(?:to|towards|by|via|through)\b",
                  re.I)
+# a direction: a clause that tells the listener to go somewhere ("Please walk to ...", "Go to ...", "walk on into
+# ..."), not one that only names a place ("I've called the triage nurse", "a nurse will come to you")
+_DIRECTION = re.compile(r"(?:^|[.!?;:,]\s*|\b(?:please|just|now|then|so|and)\s+)"
+                        r"(?:walk|go|head|move|make your way|leave|get out|carry on|keep going)\b"
+                        r"(?:\s+[\w'-]+){0,6}?\s+(?:to|towards|into|through|via|by|down|along|onto)\b", re.I)
+
+
+# ... or a line that says where a place is, the place named as what "is" there ("clinic_corridor is down there", "the
+# toilets are just past the lifts"), and not where a person is ("the triage nurse is just behind the desk")
+_WHERE_TAIL = (r"\s+(?:just\s+|right\s+|straight\s+)?(?:down|through|along|up|past|round|around|over|ahead|behind|"
+               r"beside|next to|opposite|at the end|on (?:your|the) (?:left|right)|to (?:your|the) (?:left|right)|"
+               r"that way|this way|by the|there\b)")
+_WHERE_WORDS = r"\s+(?:is|are)" + _WHERE_TAIL
+_WHERE_IT = re.compile(r"\b(?:it's|it is)" + _WHERE_TAIL, re.I)
+# a line that tells them to stay where they are: where a place is is then no reason to go there
+_STAY = re.compile(r"\b(?:(?:take|have) a seat|stay (?:here|seated|put|where)|wait (?:here|for|until|where|in your)|"
+                   r"will (?:call|see|come to|fetch|be with) you|(?:is|are) coming|on (?:her|his|their) way)\b", re.I)
+
+
+def _says_where(text: str, card: str = "") -> bool:
+    """The line says where a place is (the place, or "it", is the subject), and does not tell them to stay put."""
+    if _STAY.search(text):
+        return False
+    low = text.lower()
+    names = {*LANDMARKS, *LABELS, *(label for label, _ in _card_places(card))}
+    return _WHERE_IT.search(text) is not None or any(
+        re.search(r"\b" + re.escape(n.lower()) + _WHERE_WORDS, low) for n in names)
+
+
+def _directs(text: str, card: str = "") -> bool:
+    """The line sends the listener somewhere: a direction to go, or where the place is."""
+    return _DIRECTION.search(text or "") is not None or _says_where(text or "", card)
 
 
 def _place(text: str, card: str) -> Optional[str]:
@@ -179,7 +217,15 @@ def _wants(item: str, req: LLMRequest, u: str) -> bool:
         return accepted < len(names) and low == names[accepted]
     kind = low.split(" (", 1)[0].strip()
     own = "\n".join(ln for ln in card.splitlines() if "written to the robot" not in ln).lower()
+    head = kind.split(" ")[0]
+    if head and any(head in sent and _NOT_MINE.search(sent) for sent in re.split(r"(?<=[.:;])\s+", own)):
+        return False  # their card says it is not theirs to take (a bed porter offered the specimen box)
+    own = _DUTY.sub(" ", own)  # what staff are told about the robot's job names its items, not theirs
     return bool(kind) and kind in own
+
+
+_NOT_MINE = re.compile(r"\b(not collecting|not for you|say no|turn it down|do not carry it)\b")
+_DUTY = re.compile(r"[^\n]*?leave that work to the robot.*?cannot help them\.")
 
 
 def _offer_reply(req: LLMRequest, u: str) -> Optional[dict]:
@@ -271,6 +317,42 @@ def _brought_there(u: str) -> bool:
     return bool(re.search(r"(?:the robot said to me|ROBOT SAID TO YOU:) \"?Here we are", u))
 
 
+_FREEZE = "The alarm has frozen you"
+FROZEN_LINE = "I don't know where to go!"
+
+
+def _frozen(u: str) -> bool:
+    """Frozen by the alarm (a nudge said so) and nobody has spoken to them since."""
+    i = max(u.rfind("NUDGE: " + _FREEZE), u.rfind("I felt: " + _FREEZE))
+    if i < 0:
+        return False
+    return max(u.rfind("the robot said to me"), u.rfind("ROBOT SAID TO YOU")) < i
+
+
+WANDER_ROLES = ("visitor", "ward_visitor", "ae_patient", "outpatient")  # up and about, going somewhere of their own
+
+
+def _wander(req: LLMRequest, u: str, card: str) -> Optional[dict]:
+    """WARDZERO_TEST_PEOPLE_WANDER=1: after about half a minute in the scene, a visitor or patient on their feet walks
+    to the place their goals name, once, with no help."""
+    if os.environ.get("WARDZERO_TEST_PEOPLE_WANDER") != "1":
+        return None
+    role = re.search(r"^Role: (\w+)", card, re.M)
+    waited = re.search(r"You have been waiting about (\d+) minute", u)
+    if role is None or role.group(1) not in WANDER_ROLES or waited is None or int(waited.group(1)) < 1:
+        return None
+    mine = _my_place(card)
+    dest = next((pid for label, pid in _card_places(card) if mine and label.split(",")[0].strip() == mine.lower()),
+                None)
+    if dest is None or "walk_to" not in (_kinds(req) or ["walk_to"]):
+        return None
+    if f"Current activity: walk_to {dest} (sent)" in u or f"Current activity: walk_to {dest} (running)" in u:
+        return _decision("walk_to", dest)  # on their way
+    if f"I chose walk_to {dest}" in u or f"Current activity: walk_to {dest}" in u:
+        return _idle(req)  # there (or as far as they got): they stay, not back to anyone for help
+    return _decision("walk_to", dest)
+
+
 def _carry_on(u: str) -> Optional[dict]:
     """Keep walking where they were going: a new sound or face is no reason to stop half way."""
     m = re.search(r"Current activity: (walk_to|approach) (\S+) \((sent|running)\)", u)
@@ -288,6 +370,9 @@ def person_policy(req: LLMRequest) -> dict:
     through = _going_on_through(req, u, card)
     if through is not None:
         return through
+    if _frozen(u):  # the freeze ranks above a guide offer: they stand still until someone speaks to them
+        said = FROZEN_LINE in u[u.rfind(_FREEZE):]  # said it once since the freeze: once is enough
+        return _decision("wait_standing", "", "" if said else FROZEN_LINE, "")
     if ("NUDGE: The robot is offering to walk you" in u or re.search(r"Current activity: follow \S+ \((sent|running)\)", u)) \
             and "follow" in (_kinds(req) or ["follow"]):
         return _decision("follow", "g1")  # the natural reply to a guide offer, and keep following
@@ -298,6 +383,9 @@ def person_policy(req: LLMRequest) -> dict:
     asked = _surgeon(req, u)
     if asked is not None:
         return asked
+    wander = _wander(req, u, card)
+    if wander is not None:
+        return wander
     if "ROBOT SAID TO YOU" in u:
         line = u.split("ROBOT SAID TO YOU", 1)[1].split("\n", 1)[0]
         mine = _my_place(card)
@@ -309,7 +397,7 @@ def person_policy(req: LLMRequest) -> dict:
             # they asked before and are still not where they need to be (their first ask went unheard: the robot was
             # a room away): offered help, they say again what they need
             return _decision("wait_standing", "", f"Yes please, I need to get to the {mine}.", "g1")
-        lm = _place(line, card)
+        lm = _place(line, card) if _directs(line, card) else None  # only a direction sends them somewhere
         return _decision("walk_to", lm, "Thank you") if lm else _decision("wait_standing", "", "Thank you")
     if "NUDGE:" in u:
         nudge = u.split("NUDGE:", 1)[1]

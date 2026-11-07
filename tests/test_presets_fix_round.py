@@ -87,14 +87,14 @@ def test_staff_read_a_line_written_to_them_not_the_robot_job(staged, preset_id):
         text = persona_text(loaded, c.id)
         assert job[:60] not in text, c.id
         assert "written to the robot" not in text
-        assert " ".join(p.staff_line.split())[:60] in text, c.id
+        assert " ".join(p.staff_line_for(c.role).split())[:60] in text, c.id
     assert p.staff_line is None or "staff_line" not in p.robot_brief
 
 
 def test_surgeon_is_not_told_the_tray_is_within_her_reach(staged):
     text = persona_text(staged("scrub_nurse"), "S1")
     assert "within reach" not in text and "just behind you" not in text
-    assert "ask" in PRESETS["scrub_nurse"].staff_line.lower()
+    assert "ask" in PRESETS["scrub_nurse"].staff_line_for("surgeon").lower()
 
 
 @pytest.mark.parametrize("preset_id", WARD_NURSE_SCENES)

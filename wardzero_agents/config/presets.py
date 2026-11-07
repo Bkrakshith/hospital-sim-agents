@@ -6,8 +6,9 @@ BASIC_INTENTS: frozenset[str] = frozenset({
     "approach", "wait_standing", "talk", "gesture", "cough", "leave",
 })
 
+# staff can also take or turn down what the robot holds out to them (a bed porter offered the specimen box says no)
 _STAFF_EXTRA = {"attend", "give_item", "take_item", "call_for_help", "escort", "evacuate",
-                "use_extinguisher"}
+                "use_extinguisher", "accept_item", "refuse_item"}
 _BED = {"sit_up_in_bed", "lie_back", "call_bell"}
 
 # A surgeon is limited to the table: no walking, sitting or leaving.
@@ -27,12 +28,15 @@ ROLE_INTENTS: dict[str, frozenset[str]] = {
     "surgeon": frozenset(_SURGEON),
     "porter": frozenset(BASIC_INTENTS | {"take_item", "give_item", "accept_item", "refuse_item",
                                          "call_for_help"}),
+    # a patient up and about for a clinic appointment: like an A&E patient, follows someone who walks them there
+    "outpatient": frozenset(BASIC_INTENTS | {"follow", "accept_item", "refuse_item", "call_for_help"}),
     "custom": frozenset(BASIC_INTENTS),
     **_LEGACY,
 }
 
 
 # ---- Studio presets: roles, moods and scenarios (spec 8 and 9) ------------------------------------
+PATIENT_PERSONA_ROLES = frozenset({"patient", "bed_patient", "ae_patient", "outpatient"})
 import re  # noqa: E402
 import tempfile  # noqa: E402
 from pathlib import Path  # noqa: E402
@@ -83,6 +87,9 @@ class MoodPreset(_P):
     # The same mood for a member of staff at work (None: staff get the prompt above). The public text tells a person
     # to ignore a robot asking for anything; staff must still answer the robot when it calls them to a patient.
     staff_prompt: Optional[str] = None
+    # The same mood for a patient the robot is there to look after (None: patients get the prompt above): hurried, but
+    # still answers the robot checking them in or asking what they need.
+    patient_prompt: Optional[str] = None
 
 
 class CharacterSpec(_P):
@@ -101,7 +108,19 @@ class CharacterSpec(_P):
     bed: Optional[str] = None
     start_seated: bool = False  # on a free A&E waiting seat at the start (the Studio picks the seat)
     start_asleep: bool = False  # a patient asleep from the start (the cast entry's start_asleep, when the sim has it)
+    # a patient preset used for another kind of patient: the person's own persona role instead of the preset's (an
+    # outpatient on his feet uses the patient preset). Used only while the role is a patient one, so a character the
+    # Studio moves to a visitor or staff role gets that role's
+    persona_role: Optional[str] = None
     auto: bool = False  # added by the Studio itself (the receptionist in a reception scene); the user may remove it
+
+
+    @field_validator("persona_role")
+    @classmethod
+    def _known_persona_role(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None and v not in PATIENT_PERSONA_ROLES:
+            raise ValueError(f"persona_role '{v}' is not a patient role ({', '.join(sorted(PATIENT_PERSONA_ROLES))})")
+        return v
 
 
 class Criterion(_P):
@@ -136,6 +155,9 @@ class ScenarioPreset(_P):
     # What the staff in the scene are told about the robot's job, written to them (never shown to the robot). The
     # robot's own job text is written to the robot and must not be quoted to staff as if it were theirs.
     staff_line: Optional[str] = None
+    # ... and a line for staff of one role instead (role preset id -> line): the surgeon the robot serves is told
+    # something the circulating nurse is not
+    staff_lines: dict[str, str] = Field(default_factory=dict)
     robot_start: RobotStart
     characters: list[CharacterSpec]
     objects: list[dict] = Field(default_factory=list)
@@ -154,6 +176,10 @@ class ScenarioPreset(_P):
         if sorted(v) != [0, 1, 2, 3, 4]:
             raise ValueError("ladder needs exactly the stages 0, 1, 2, 3 and 4")
         return v
+
+    def staff_line_for(self, role: str) -> Optional[str]:
+        """What staff of this role preset are told about the robot's job: their own line, else the scene's."""
+        return self.staff_lines.get(role) or self.staff_line
 
 
 def _read(path: Path):
@@ -279,14 +305,17 @@ def _persona_dict(c: CharacterSpec, role: RolePreset, mood: MoodPreset, staff_li
     role_text = (c.role_prompt if c.role_prompt is not None else role.prompt).strip()
     if is_staff and (staff_line or robot_role is not None):
         role_text = robot_duty_line(staff_line, robot_role or "") + "\n" + role_text  # first: among the goals
+    persona_role = c.persona_role if c.persona_role and role.persona_role in PATIENT_PERSONA_ROLES else role.persona_role
     if c.mood_prompt is not None:
         mood_text = c.mood_prompt.strip()
-    else:  # staff at work get the staff variant of a mood written for the public
-        mood_text = ((mood.staff_prompt if is_staff and mood.staff_prompt else None) or mood.prompt).strip()
+    else:  # staff at work get the staff variant of a mood written for the public, patients the patient variant
+        variant = mood.staff_prompt if is_staff else mood.patient_prompt if persona_role in PATIENT_PERSONA_ROLES \
+            else None
+        mood_text = (variant or mood.prompt).strip()
     aid = role.mobility_aid or ("stick" if c.age_band == "71+" and c.bed is None else "none")
     label = role.label if role.id != "custom" else "Character"
     return {
-        "id": c.id, "label": f"{label} ({c.name})", "role": role.persona_role, "age": list(age),
+        "id": c.id, "label": f"{label} ({c.name})", "role": persona_role, "age": list(age),
         "sex": [c.sex], "condition": condition_line(role, mood),
         "symptoms": {"cough_per_hour": [0, 0], "cough_severity": "mild", "breathless": False, "fever": False},
         "mobility": {"aid": aid, "walk_speed": [round(v * mood.walk_speed_x, 3) for v in walk],
@@ -329,7 +358,7 @@ def preset_to_scenario(preset: ScenarioPreset, root: "str | Path", dest: "str | 
     personas, cast = {}, []
     for c in (preset.characters if characters is None else characters):
         brief = preset.robot_brief
-        personas[c.id] = _persona_dict(c, roles[c.role], moods[c.mood], preset.staff_line,
+        personas[c.id] = _persona_dict(c, roles[c.role], moods[c.mood], preset.staff_line_for(c.role),
                                        None if brief is None else str(brief.get("role") or ""))
         entry: dict = {"id": c.id, "persona": c.id, "name": c.name}
         seat = next((s.id for s in site.seats.values() if abs(s.x - c.x) < 0.05 and abs(s.y - c.y) < 0.05), None)
