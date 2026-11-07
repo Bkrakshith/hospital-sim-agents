@@ -5,6 +5,8 @@ import re
 import time
 from typing import Callable, Optional
 
+from .fake_robot import GREET as ROBOT_GREETING  # noqa: F401  (what the scripted robot says to someone new)
+from .fake_robot import robot_policy
 from .gateway import LLMRequest, LLMResult
 
 LANDMARKS = ["entrance", "clinic_corridor", "ward_doors", "toilets", "reception_front", "nurse_call_point"]
@@ -25,53 +27,12 @@ def _landmark(text: str) -> Optional[str]:
         (lm for label, lm in LABELS.items() if label in low), None)
 
 
-ROBOT_GREETING = "Hello, I am the hospital robot. Can I help you?"
-
-
-def _person_in_view(situation: str) -> bool:
-    """The robot's situation lists tracks under 'People your camera sees' and says 'nobody in view' when none."""
-    if "People your camera sees" not in situation:
-        return False
-    block = situation.split("People your camera sees", 1)[1].split("Objects in view", 1)[0]
-    rows = [ln for ln in block.splitlines() if ln.startswith("- ")]
-    return bool(rows) and "nobody in view" not in block
-
-
 def _decision(kind: str, target: str = "", say: str = "", addressee: str = "") -> dict:
     return {"intent": {"kind": kind, "target": target, "text": ""}, "say": say, "addressee": addressee,
             "mood": "calm", "patience_delta": 0.0, "reason": "fake policy"}
 
 
-ROBOT_TELL_SAY = "I will let the receptionist know straight away. Please wait here."
-ROBOT_TELL_MESSAGE = "Excuse me, a visitor here needs a nurse, please."
-ROBOT_GUIDE_SAY = "Of course. Please come with me, I will walk with you."
 STAFF_HELLO = "Hello, I am from reception. A nurse is on the way to you."
-
-
-def _robot_tracks(situation: str) -> list[tuple[float, str]]:
-    """(distance, track) of every track the robot's camera lists, nearest first."""
-    block = situation.split("People your camera sees", 1)[-1].split("Objects in view", 1)[0]
-    return sorted((float(m.group(2)), m.group(1)) for m in re.finditer(r"^- (t\w+): ([0-9.]+) m", block, re.M))
-
-
-def _robot_reacts(req: LLMRequest, props: dict) -> Optional[dict]:
-    """The fake robot reacts to two requests spoken to it, once each: a nurse (tell_staff about the nearest person
-    it has not helped yet) and the ward (guide them to the brief's destination). Otherwise None."""
-    u = req.user
-    asked = " ".join(re.findall(r"someone speaking to you[^:]*: \"([^\"]*)\"", u)).lower()
-    allowed = props.get("action", {}).get("enum", [])
-    done = set(re.findall(r"for track (t\w+)", u))
-    tracks = [t for _, t in _robot_tracks(u) if t not in done]
-    if not asked or not tracks:
-        return None
-    base = {"say": "", "toward_track": tracks[0], "action": "none", "target": tracks[0], "item": "",
-            "destination": "", "place": [], "message": "", "reason": "fake policy"}
-    dest = re.search(r"^Destination: (.+)$", req.persona_card or "", re.M)
-    if "ward" in asked and "guide" in allowed and "You started guide" not in u and dest:
-        return {**base, "say": ROBOT_GUIDE_SAY, "action": "guide", "destination": dest.group(1).strip()}
-    if "nurse" in asked and "tell_staff" in allowed and "You started tell_staff" not in u:
-        return {**base, "say": ROBOT_TELL_SAY, "action": "tell_staff", "message": ROBOT_TELL_MESSAGE}
-    return None
 
 
 def _staff_errand(u: str) -> Optional[dict]:
@@ -353,13 +314,8 @@ def default_policy(req: LLMRequest) -> dict:
         return {"items": []}
     if req.role == "summarise":
         return {"memories": []}
-    if req.role == "robot":  # the built-in robot waits, and greets once when a person is in view
-        acted = _robot_reacts(req, props)
-        if acted is not None:
-            return acted
-        say = ROBOT_GREETING if _person_in_view(req.user) and "you said:" not in req.user else ""
-        return {"say": say, "toward_track": "", "action": "none", "target": "", "item": "",
-                "destination": "", "place": [], "reason": "fake policy"}
+    if req.role == "robot":  # the scripted built-in robot: does the brief's main task (see fake_robot)
+        return robot_policy(req)
     return person_policy(req)
 
 
