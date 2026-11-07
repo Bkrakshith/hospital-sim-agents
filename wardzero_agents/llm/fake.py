@@ -120,8 +120,15 @@ _DIRECTION = re.compile(r"(?:^|[.!?;:,]\s*|\b(?:please|just|now|then|so|and)\s+)
                         r"(?:\s+[\w'-]+){0,6}?\s+(?:to|towards|into|through|via|by|down|along|onto)\b", re.I)
 
 
+# ... or a line that says where a place is ("clinic_corridor is down there", "the toilets are just past the lifts")
+_WHERE = re.compile(r"\b(?:is|are|it's)\s+(?:just\s+|right\s+|straight\s+)?(?:down|through|along|up|past|round|around|"
+                    r"over|ahead|behind|beside|next to|opposite|at the end|on (?:your|the) (?:left|right)|"
+                    r"to (?:your|the) (?:left|right)|that way|this way|by the|there\b)", re.I)
+
+
 def _directs(text: str) -> bool:
-    return _DIRECTION.search(text or "") is not None
+    """The line sends the listener somewhere: a direction to go, or where the place is."""
+    return _DIRECTION.search(text or "") is not None or _WHERE.search(text or "") is not None
 
 
 def _place(text: str, card: str) -> Optional[str]:
@@ -201,7 +208,7 @@ def _wants(item: str, req: LLMRequest, u: str) -> bool:
     return bool(kind) and kind in own
 
 
-_NOT_MINE = re.compile(r"\b(not collecting|not for you|say no|turn it down)\b")
+_NOT_MINE = re.compile(r"\b(not collecting|not for you|say no|turn it down|do not carry it)\b")
 _DUTY = re.compile(r"[^\n]*?leave that work to the robot.*?cannot help them\.")
 
 

@@ -48,13 +48,13 @@ def persona_text(loaded, pid):
 # ---------- Bug 13: bed porters ----------
 
 @pytest.mark.parametrize("pid", ["TR1", "TR2"])
-def test_bed_porters_are_porters_who_can_turn_down_an_offer_and_wheel_a_bed(staged, pid):
+def test_bed_porters_can_turn_down_an_offer_and_still_wheel_a_bed(staged, pid):
+    """Staff roles answer an offer (accept_item, refuse_item). The bed porters keep the staff role that escorts a bed:
+    as porters, the score would take them for the specimen porter (people whose role is porter)."""
     loaded = staged("specimen_run")
-    c = next(c for c in PRESETS["specimen_run"].characters if c.id == pid)
-    assert c.role == "porter"
     role = inst(loaded, pid).role
     assert {"accept_item", "refuse_item", "escort"} <= ROLE_INTENTS[role]
-    assert "Role: porter." in card(loaded, pid)
+    assert "porter" not in role
 
 
 def test_an_offer_to_a_bed_porter_ends_refused_not_no_answer(staged, tmp_path):

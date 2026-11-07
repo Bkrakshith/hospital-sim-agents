@@ -6,8 +6,9 @@ BASIC_INTENTS: frozenset[str] = frozenset({
     "approach", "wait_standing", "talk", "gesture", "cough", "leave",
 })
 
+# staff can also take or turn down what the robot holds out to them (a bed porter offered the specimen box says no)
 _STAFF_EXTRA = {"attend", "give_item", "take_item", "call_for_help", "escort", "evacuate",
-                "use_extinguisher"}
+                "use_extinguisher", "accept_item", "refuse_item"}
 _BED = {"sit_up_in_bed", "lie_back", "call_bell"}
 
 # A surgeon is limited to the table: no walking, sitting or leaving.
@@ -25,9 +26,8 @@ ROLE_INTENTS: dict[str, frozenset[str]] = {
     "ward_visitor": frozenset(BASIC_INTENTS | {"escort", "call_for_help", "follow"}),
     "ae_patient": frozenset(BASIC_INTENTS | {"follow", "accept_item", "refuse_item", "call_for_help"}),
     "surgeon": frozenset(_SURGEON),
-    # a porter takes and hands over what he carries (and can turn down what is not his), and wheels patients (escort)
     "porter": frozenset(BASIC_INTENTS | {"take_item", "give_item", "accept_item", "refuse_item",
-                                         "call_for_help", "escort"}),
+                                         "call_for_help"}),
     # a patient up and about for a clinic appointment: like an A&E patient, follows someone who walks them there
     "outpatient": frozenset(BASIC_INTENTS | {"follow", "accept_item", "refuse_item", "call_for_help"}),
     "custom": frozenset(BASIC_INTENTS),

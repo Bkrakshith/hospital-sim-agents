@@ -273,6 +273,7 @@ def test_a_bed_porter_turns_down_the_specimen_box(staged, pid):
     loaded = staged("specimen_run")
     assert kind(ask(loaded, pid, [SPECIMEN_OFFER])) == "refuse_item"
     assert kind(ask(loaded, "PO1", [SPECIMEN_OFFER])) == "accept_item"
+    assert kind(ask(loaded, "N1", [SPECIMEN_OFFER])) == "refuse_item", "the nurse gave it to the robot to take"
 
 
 def test_a_robot_line_that_names_a_place_but_sends_nobody_there_is_not_a_walk(staged):
@@ -290,6 +291,7 @@ def test_a_robot_line_that_names_a_place_but_sends_nobody_there_is_not_a_walk(st
     "We're nearly there. Please walk on into the Ambulance handover bay and wait there.",
     "The main entrance is blocked by fire. Please walk to the Ambulance handover bay now, away from the fire.",
     "Go to the Ambulance handover bay, please.",
+    "The Ambulance handover bay is down the corridor on the left.",
 ])
 def test_a_direction_from_the_robot_is_still_followed(staged, line):
     loaded = staged("evacuation_guide")
