@@ -152,6 +152,27 @@ def test_live_run_cost_on_one_line_and_bubbles_clear_of_markers(page, studio_url
     assert covered == []
 
 
+def test_bubbles_clear_a_lying_patients_marker(page, studio_url):
+    """A lying patient (a person the project has no character for) sits where the first bubble spot is."""
+    page.goto(studio_url + "#/run")
+    page.wait_for_timeout(1000)
+    st = _live_state(page)
+    sp = st["people"][0]
+    st["people"] = [sp, {"id": "bed_patient_x", "x": sp["x"] + 1.6, "y": sp["y"] + 1.2}] + st["people"][2:]
+    for _ in range(2):
+        page.evaluate("(s) => window.__push(s)", st)
+        page.wait_for_timeout(600)
+    page.wait_for_timeout(800)
+    assert page.evaluate("() => document.querySelectorAll('.run-page svg .bub').length") == 1
+    covered = page.evaluate("""() => {
+      const bubs = [...document.querySelectorAll('.run-page svg .bub')].map((b) => b.getBoundingClientRect());
+      return [...document.querySelectorAll('.run-page svg .static circle')].filter((c) => {
+        const r = c.getBoundingClientRect(), x = r.left + r.width / 2, y = r.top + r.height / 2;
+        return bubs.some((q) => x > q.left && x < q.right && y > q.top && y < q.bottom); }).length; }""")
+    assert page.evaluate("() => document.querySelectorAll('.run-page svg .static circle').length") >= 1
+    assert covered == 0
+
+
 def test_one_step_branches_get_no_extra_in_order_row(page):
     res = page.evaluate("""async () => {
       const pr = await API.post('/api/projects', { name: 'flow rows', scenario_id: 'evacuation_guide' });

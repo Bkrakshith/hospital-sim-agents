@@ -286,7 +286,8 @@
       const seen = new Set(), placed = [];
       const talking = (s.says_tail || []).some((e) => e.text);
       const labels = talking ? S.map.roomLabels.filter((l) => !l.txt.hasAttribute("display")).map((l) => l.txt.getBoundingClientRect()) : [];
-      const marks = talking ? markerBoxes([...list, ...(rp ? [{ ...rp, id: "robot", robot: true }] : [])]) : [];
+      // lying patients too: the bubble layer is drawn above theirs
+      const marks = talking ? markerBoxes([...list, ...extras, ...(rp ? [{ ...rp, id: "robot", robot: true }] : [])]) : [];
       for (const e of [...(s.says_tail || [])].reverse()) {
         if (!e.text || seen.has(e.person) || (s.t || 0) - (e.t || 0) > BUBBLE_S) continue;
         seen.add(e.person);
