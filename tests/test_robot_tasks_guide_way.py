@@ -335,6 +335,7 @@ def test_no_goodbye_when_it_stays_with_them(staged, tmp_path):
     said = robot_lines(outs)
     assert rt.GOODBYE not in said and rt.STAY_SAY in said
     assert "goodbye" not in rt.STAY_SAY.lower() and rt.STAY_SAY.startswith("Here we are")
+    assert "stay with you" not in rt.STAY_SAY.lower()  # it may leave them next (an evacuation fetches the next person)
 
 
 def test_goodbye_when_it_walks_back(staged, tmp_path):
@@ -394,3 +395,79 @@ def test_a_goal_moved_clear_of_the_guided_person_stays_on_the_robots_side_of_the
     gx, gy = start["x"] - q.x, start["y"] - q.y
     assert math.hypot(gx, gy) >= rt.GUIDE_CLEAR_M - 1e-6
     assert gx * (w.robot.x - q.x) + gy * (w.robot.y - q.y) > 0.0, (start, (r.x, r.y))
+
+
+# ---- someone else stands at the place -------------------------------------------------------------------------------
+def _walk_up(s, pid, place, before_m, behind_m=1.5):
+    """The robot before_m short of the place on its way there, pid behind_m behind it on that way."""
+    w = s.world
+    goal = w._resolve_place(place)
+    L = route_m(w, goal)
+    back = along(w, goal, L - before_m - behind_m)
+    w.robot.teleport(*along(w, goal, L - before_m), 0.0)
+    put(w, pid, *back)
+    return goal
+
+
+@pytest.mark.parametrize("preset,place,guidee,bystander", [
+    ("reception_guide", "clinic_corridor", "V1", "V2"),
+    ("evacuation_guide", "AE_Handover", "V2", "V1"),
+])
+@pytest.mark.parametrize("when", ["before", "during"])
+def test_a_bystander_standing_at_the_place_does_not_stop_the_guide(staged, tmp_path, body, preset, place, guidee,
+                                                                   bystander, when):
+    """evacuation_guide (merged e2e): V1 had walked to AE_Handover and stood on the place point; each guide of V2 and
+    P1 there was held 1.2 m short by her and ended blocked_by_person after GIVE_UP_S, though the robot had walked its
+    guidee the whole way. A bystander standing at the place (there when the guide starts, or arriving while it walks)
+    moves the end of its walk clear of them: the guide ends arrived, with no contact."""
+    s = svc(staged(preset), tmp_path)
+    w = s.world
+    alone_with(w, {guidee, bystander})
+    goal = _walk_up(s, guidee, place, 6.0)
+    if when == "before":
+        put(w, bystander, *goal)
+    else:
+        put(w, bystander, goal[0] + 8.0, goal[1] + 8.0)
+    s.step(0.1)
+    s.on_task_action({"id": "gd", "action": "guide_start", "track": w.tracks.track(guidee), "place": place})
+    s.step(0.1)
+    follow_robot(s, guidee)
+    for _ in range(int(60.0 / 0.1)):
+        s.step(0.1)
+        w.people[bystander].plan = []
+        if when == "during" and math.hypot(w.robot.x - goal[0], w.robot.y - goal[1]) < 3.0:
+            put(w, bystander, *goal)  # she walks up and stands on the place point while it comes up to it
+            when = "done"
+        if s.tasks._guide is None:
+            break
+    assert [e["reason"] for e in guide_end(tmp_path)] == ["arrived"], rows(tmp_path)
+    assert not contacts(tmp_path)
+    assert math.hypot(w.robot.x - goal[0], w.robot.y - goal[1]) < rt.NEAR_PLACE_M
+
+
+@pytest.mark.parametrize("gap_m", [2.0, 3.0, 4.0])
+def test_a_guide_whose_person_waits_at_the_place_ahead_of_it_ends_arrived(staged, tmp_path, body, gap_m):
+    """She knows the way, walked on ahead and waits at the place, gap_m ahead of the robot (further than GUIDE_HOLD_M:
+    not "behind" it): the robot walks on to the place and the guide ends arrived, not left_behind after 30 s."""
+    s = svc(staged("reception_guide"), tmp_path)
+    w = s.world
+    alone_with(w, {"V1"})
+    goal = w._resolve_place("clinic_corridor")
+    L = route_m(w, goal)
+    w.robot.teleport(*along(w, goal, L - gap_m - 0.3), 0.0)
+    put(w, "V1", *along(w, goal, gap_m))
+    d0 = math.hypot(w.robot.x - goal[0], w.robot.y - goal[1])
+    s.step(0.1)
+    s.on_task_action({"id": "gd", "action": "guide_start", "track": w.tracks.track("V1"), "place": "clinic_corridor"})
+    t0 = s.t
+    for _ in range(int(40.0 / 0.1)):
+        s.step(0.1)
+        w.people["V1"].plan = []  # she stays where she is
+        if s.tasks._guide is None:
+            break
+    ends = guide_end(tmp_path)
+    assert [e["reason"] for e in ends] == ["arrived"], ends
+    assert ends[0]["t"] - t0 < rt.GIVE_UP_S, ends
+    assert not contacts(tmp_path)
+    if d0 > rt.GUIDE_CLEAR_M + 0.5:  # it walked up to her (it does not stand still and claim the guide)
+        assert math.hypot(w.robot.x - goal[0], w.robot.y - goal[1]) < d0 - 0.5
