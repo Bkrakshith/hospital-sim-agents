@@ -561,3 +561,9 @@ def test_evacuation_credits_only_people_the_robot_got_out():
                              said_at={"V1": [4.8], "V2": [25.0], "P1": [26.0]})
     assert _node_by_label(e.tree(), LOBBY)["state"] == "timed_out"
     assert _node_by_label(e.tree(), P1_OUT)["state"] == "timed_out"
+    # V1 may be sent out with directions after the alarm; V2, who freezes, has to be walked out
+    e = _evacuation_outcomes(moves=lambda t: {k: v for k, v in out.items() if t >= 30},
+                             robot_did_at=lambda t: [x for x in ((21.0, "guide", "V2"), (40.0, "guided", "V2"))
+                                                     if x[0] <= t],
+                             said_at={"V1": [4.8, 25.0], "V2": [25.0]})
+    assert _node_by_label(e.tree(), LOBBY)["state"] == "met"
