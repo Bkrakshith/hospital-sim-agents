@@ -139,17 +139,14 @@ class LeggedBody(RobotBody):
     def step(self, dt: float, grid, people: Optional[Iterable[tuple[str, float, float]]] = None) -> list[str]:
         """No motion here (Isaac moves the body). Measured speed, the follower's command and the contacts."""
         people = list(people or [])
+        before = self._last_xy if self._last_xy is not None else (self.x, self.y)
         if dt > 0:
             self._t += dt
             if self._last_xy is not None:
                 self.vx = math.hypot(self.x - self._last_xy[0], self.y - self._last_xy[1]) / dt
             self._last_xy = (self.x, self.y)
             self._follow(people)
-        new: list[str] = []
-        near = {pid for pid, px, py in people if math.hypot(px - self.x, py - self.y) <= self.radius + CONTACT_MARGIN_M}
-        new = sorted(near - self._touching)
-        self._touching = near
-        return new
+        return self._contacts(people, before)  # only when the robot's own motion closed the gap
 
     def _follow(self, people) -> None:
         f = self.follower

@@ -159,7 +159,7 @@ def press(t, aid, track=None, **res):
 
 def test_press_call_counts_only_with_her_track(tmp_path):
     no_track = bell_run(tmp_path / "none", robot_tasks=press(20, "c1"))
-    assert val(no_track, "nurse_alerted_s") is None
+    assert val(no_track, "nurse_alerted_s") == pytest.approx(10.0)  # no track: about the only patient in need
     named = bell_run(tmp_path / "named", robot_tasks=press(20, "c1", "t1", person="P1"))
     assert val(named, "nurse_alerted_s") == pytest.approx(10.0)
     named_other = bell_run(tmp_path / "named_other", robot_tasks=press(20, "c1", "t2", person="P2"))

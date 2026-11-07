@@ -152,6 +152,9 @@ WARD_STAFF_ROLES = ("ward_nurse", "nurse", "staff")
 SIM_ONLY_KEYS = ("person",)  # result keys for the run log only: the robot addresses people by track, never by id
 
 
+RETURN_SUFFIX = "-return"  # the goal id of a walk back to post after a guide or a tell: "<action id>-return"
+
+
 def wire_result(r: dict) -> dict:
     """A task result as the robot may see it on <ns>/task/result: without the sim-only keys (the receiver's person id
     on a hand_over result is for the run log and the benchmark)."""
@@ -428,7 +431,8 @@ class RobotTasks:
         for sid, q in w.people.items():
             if q.posture == "gone" or q.kind == "static" or q.inst.role not in WARD_STAFF_ROLES + RECEPTION_ROLES:
                 continue
-            if audio.route(ev, Pose(q.x, q.y, q.yaw), sid, q.inst.hearing_loss_db, w.rng) is not None:
+            if audio.route(ev, Pose(q.x, q.y, q.yaw), sid, q.inst.hearing_loss_db, w.rng,
+                           walls_between=w.walls_for(ev)) is not None:
                 heard.append(sid)  # even faintly: a call chime is known when heard
                 self._out.nudges.append(Nudge(person=sid, t=t, card=CALL_CARD, message=text))
         self._result(aid, "press_call", True, "answered" if heard else "unanswered", t)
@@ -888,7 +892,8 @@ class RobotTasks:
         q, p = w.people.get(tl["staff"]), w.people.get(tl["about"])
         heard = False
         if q is not None and q.posture != "gone" and math.hypot(q.x - w.robot.x, q.y - w.robot.y) <= TELL_RANGE_M:
-            h = audio.route(ev, Pose(q.x, q.y, q.yaw), tl["staff"], q.inst.hearing_loss_db, w.rng)
+            h = audio.route(ev, Pose(q.x, q.y, q.yaw), tl["staff"], q.inst.hearing_loss_db, w.rng,
+                            walls_between=w.walls_for(ev))
             heard = h is not None and not h.partial
         if heard and p is not None:
             self._out.nudges.append(Nudge(person=tl["staff"], t=t, card=TELL_CARD,
@@ -1244,6 +1249,10 @@ class RobotTasks:
                         self._tell = None
                     if self._guide is not None and self._guide["id"] == self.goal_id:
                         self._end_guide(t, "no_route")
+        if getattr(w, "alarm_active", False) and str(self.goal_id).endswith(RETURN_SUFFIX) and \
+                w.robot.has_goal and w.robot._had_goal:
+            w.robot.cancel_goal()  # the alarm sounded on its way back to post: it stays put (its post may be by the fire)
+            self._goal(self.goal_id, False, "alarm", t)
         for aid in list(self._to_fire):  # its walk was replaced, cancelled or given up: no spraying
             if self.goal_id != aid or not (w.robot.has_goal and w.robot._had_goal):
                 del self._to_fire[aid]

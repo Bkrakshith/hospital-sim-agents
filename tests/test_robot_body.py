@@ -285,12 +285,12 @@ def test_hand_over_result_only_when_offer_resolves(tmp_path):
     assert rows[-1]["id"] == "a1" and rows[-1]["ok"] is True and rows[-1]["kind"] == "result"
 
 
-def test_hand_over_refused_when_window_expires(tmp_path):
+def test_hand_over_no_answer_when_window_expires(tmp_path):
     s, _ = service(tmp_path)
     track, place = bedside_robot(s)
     s.on_task_action({"id": "a2", "action": "hand_over", "item": "T1", "to": track, "place": place})
     got = results(advance(s, 12.0))
-    assert [(r["id"], r["ok"], r["reason"]) for r in got] == [("a2", False, "refused")]
+    assert [(r["id"], r["ok"], r["reason"]) for r in got] == [("a2", False, "no_answer")]
     assert s.world.objects.items["T1"].holder == "g1"
 
 

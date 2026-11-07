@@ -305,6 +305,8 @@ def test_people_and_doors_slow_the_robot_but_not_the_person_it_guides():
 
 def test_contacts_and_measured_speed_come_from_the_read_back_pose():
     body, sonic, grid = make_body()
+    assert body.step(0.04, grid, [("P", 1.3, 4.0)]) == []  # within reach, but the robot did not close the gap
+    body.x += 0.02  # Isaac moved the body towards her
     assert body.step(0.04, grid, [("P", 1.3, 4.0)]) == ["P"]
     assert body.step(0.04, grid, [("P", 1.3, 4.0)]) == []  # once per touch
     body.x += 0.02

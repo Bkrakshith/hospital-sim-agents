@@ -277,3 +277,15 @@ def test_isaac_bodies_call_the_robot_driver_after_the_poses_are_read_back(tmp_pa
     bodies.step(s.world, 0.6)
     assert seen[0][2] == (-1.0, -0.5, 1.2)  # the driver sees this frame's pose, not last frame's
     assert seen[1][0] == 0.6 and seen[1][1] == pytest.approx(0.1)
+
+
+def test_task_results_on_the_wire_never_name_a_person(tmp_path):
+    """A hand_over result names its receiver for the run log and the benchmark; the robot gets it without the id."""
+    import json as _json
+    s = make(tmp_path)
+    ros = FakeBridge()
+    sr = SimRos(s, ros, msgs=MSGS)
+    r = {"id": "a1", "action": "hand_over", "ok": True, "reason": "ok", "t": 1.0, "person": "P1", "item": "T1"}
+    sr.publish(SimOutputs(clock=1.0, task_results=[r]))
+    sent = [_json.loads(m) for tp, m in ros.sent if tp == sr.rt["task_result"]]
+    assert sent == [{k: v for k, v in r.items() if k != "person"}]

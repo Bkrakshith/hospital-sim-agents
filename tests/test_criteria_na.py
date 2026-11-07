@@ -195,3 +195,51 @@ def test_an_older_report_json_without_status_still_shows_not_measured(tmp_path):
     page = render_html(facts)
     assert '<span class="tag none">not measured</span>' in page
     assert page.count('<span class="tag na"') == 0
+
+
+def test_a_short_move_into_someone_is_charged_not_na(tmp_path):
+    """A move under 0.3 m that ends in a contact: the robot moved, so the contact counts against it."""
+    from wardzero_agents.bench.metrics import METRICS, not_applicable, robot_moved
+    d = make_run(tmp_path, META, status=[status(t, "P1", 1.0, 0.0) for t in range(10)],
+                 robot_pose=[pose(t, min(0.25, 0.05 * t), 0.0, 0.05) for t in range(10)],
+                 world=[{"t": 5, "kind": "contact", "person": "P1"}])
+    v = METRICS["contacts"](d)
+    assert robot_moved(d) and v == 1.0 and not not_applicable("contacts", d, v)
+    st = {row["id"]: row["status"] for row in evaluate(NIGHT_BELL, d).rows}
+    assert st["contacts"] == "fail"
+
+
+def test_a_robot_creeping_without_contact_counts_as_moving(tmp_path):
+    from wardzero_agents.bench.metrics import robot_moved
+    d = make_run(tmp_path, META, robot_pose=[pose(t, 0.02 * t, 0.0, 0.2) for t in range(5)])
+    assert robot_moved(d)
+    (tmp_path / "still").mkdir()
+    d2 = make_run(tmp_path / "still", META, robot_pose=[pose(t, 0.0, 0.0, 0.0) for t in range(5)])
+    assert not robot_moved(d2)
+
+
+def _bell(tmp_path, robot_tasks, cards=None):
+    (tmp_path).mkdir(parents=True, exist_ok=True)
+    return make_run(tmp_path, META, robot_tasks=robot_tasks,
+                    cards=cards or [{"t": 10, "card": "call_bell_at", "target": "P1", "ok": True}],
+                    status=[status(t, "P1", 20, 5, "lying") for t in range(0, 40, 5)]
+                    + [status(t, "N1", 30, 20) for t in range(0, 40, 5)],
+                    robot_pose=[pose(t, 10 + 0.4 * t, 5, 0.4) for t in range(30)])
+
+
+CALL = [{"t": 20, "kind": "action", "id": "a", "action": "press_call"},
+        {"t": 20, "kind": "result", "id": "a", "action": "press_call", "ok": True, "reason": "answered"}]
+
+
+def test_a_trackless_answered_call_alerts_about_the_only_patient_in_need(tmp_path):
+    from wardzero_agents.bench.metrics import METRICS
+    assert METRICS["nurse_alerted_s"](_bell(tmp_path / "one", CALL)) == 10
+    unanswered = [CALL[0], {**CALL[1], "reason": "unanswered"}]
+    assert METRICS["nurse_alerted_s"](_bell(tmp_path / "unans", unanswered)) is None
+
+
+def test_a_trackless_call_is_not_about_anyone_when_two_patients_need_help(tmp_path):
+    from wardzero_agents.bench.metrics import METRICS
+    cards = [{"t": 10, "card": "call_bell_at", "target": "P1", "ok": True},
+             {"t": 12, "card": "deterioration", "target": "P2", "ok": True}]
+    assert METRICS["nurse_alerted_s"](_bell(tmp_path, CALL, cards)) is None

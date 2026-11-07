@@ -544,6 +544,7 @@ def _detection_of(w, pid):
 def test_the_asleep_card_puts_her_to_sleep_and_the_robot_sees_it_within_4_m(staged, tmp_path):
     s = svc(staged("meal_round"), tmp_path)
     w = s.world
+    w.people["M2"].asleep = False  # the preset starts him asleep (start_asleep); this test is about the card
     _beside_bed(s, "M2")
     assert not [st for st in w.statuses() if st.person == "M2" and st.asleep]
     assert not _track_of(w, "M2").get("asleep")
@@ -616,6 +617,7 @@ def test_her_own_waking_intent_wakes_her_and_an_idle_one_does_not(staged, tmp_pa
 def test_an_asleep_world_event_puts_her_to_sleep_in_a_run(staged, tmp_path):
     """The asleep card reaches the sim as a world event (the director sends one with the card's nudge)."""
     s = svc(staged("meal_round"), tmp_path)
+    s.world.people["M2"].asleep = False  # the preset starts him asleep (start_asleep); this test is about the card
     s.on_world_event(WorldEvent(id="b1", t=0.0, kind="asleep", person="M2"))
     advance(s, 0.2)
     assert s.world.people["M2"].asleep and not s.world.people["M1"].asleep
@@ -785,3 +787,25 @@ def test_an_unanswered_press_call_is_not_credited(staged, tmp_path):
     assert [(r["ok"], r["reason"]) for r in results(outs, "pc", "action")] == [(True, "answered")]
     assert [x for x in _director_reading(loaded, tmp_path / "b", tmp_path / "b" / "run").robot_did
             if x[1] == "press_call"]
+
+
+def test_a_walk_back_to_post_under_way_stops_when_the_fire_alarm_sounds(staged, tmp_path):
+    """Contract item 3: while a fire alarm sounds the robot never returns to its post, also when the walk back had
+    already started before the alarm (its post may be by the fire)."""
+    s = svc(staged("reception_guide", auto=True), tmp_path)
+    w = s.world
+    put(w, "V2", 1.6, 0.0)
+    _guide_to_arrival(s, "V2", "ward_entrance")
+    for _ in range(300):
+        if s.tasks.goal_id == "gd-return" and w.robot.has_goal:
+            break
+        s.step(0.1)
+    assert s.tasks.goal_id == "gd-return" and w.robot.has_goal
+    advance(s, 0.5)
+    at = (w.robot.x, w.robot.y)
+    s.on_world_event(WorldEvent(id="al", t=0.0, kind="alarm", text="Fire alarm"))
+    advance(s, 5.0)
+    assert not w.robot.has_goal
+    assert math.hypot(w.robot.x - at[0], w.robot.y - at[1]) < 1.0
+    ends = [r for r in _robot_rows(tmp_path, "goal") if r["id"] == "gd-return"]
+    assert ends and ends[-1]["ok"] is False and ends[-1]["reason"] == "alarm"

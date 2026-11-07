@@ -76,6 +76,7 @@ class CastEntry(_Model):
     seed: Optional[int] = None
     name: Optional[str] = None  # overrides the sampled display name
     memory_key: Optional[str] = None  # overrides persona#seed (Studio keys memory per project character)
+    start_asleep: bool = False  # a patient asleep from the start, until spoken to by address or their mind acts
 
 
 class ModelRoles(_Model):

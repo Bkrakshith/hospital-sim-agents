@@ -347,6 +347,18 @@ class StubWorld:
         p = self._get(person)
         return self._event(t, "cough", person, p.x, p.y, PERSON_Z, audio.COUGH_DB[severity])
 
+    def walls_between(self, a, b) -> int:
+        """Walls between two points (doorways are gaps): what sound loses on its way, see ``audio.route``."""
+        return audio.count_walls(self._sight, self.site.grid, a, b)
+
+    def walls_for(self, ev: AudioEvent):
+        """The walls_between callback for ``audio.route`` on this event. The call system's own chimes (a bell repeated
+        at a nurse base, the robot's staff call) sound through the ward's call-system speakers, so walls cost them
+        nothing, like the PA; every other sound loses WALL_LOSS_DB per wall."""
+        if ev.source_id == "bell_robot" or ev.id in self._repeaters:
+            return None
+        return self.walls_between
+
     def robot_heard(self, ev: AudioEvent) -> Optional[Heard]:
         """What the robot's microphone hears. A microphone cannot tell who spoke, so the source
         id (P1, N2, ...) is replaced by "unknown"; the kind of sound is kept. A person's voice or cough also
@@ -354,7 +366,7 @@ class StubWorld:
         BEARING_NOISE_DEG, so the robot can tell which of the people it sees made it."""
         self.hear_robot_line(ev)  # every sound in the world passes here: a line to someone asleep wakes them
         r = self.robot_pose
-        h = audio.route(ev, r, ROBOT_ID, 0.0, self.rng)
+        h = audio.route(ev, r, ROBOT_ID, 0.0, self.rng, walls_between=self.walls_for(ev))
         if h is None:
             return None
         upd: dict = {"source_id": "unknown"}
@@ -394,7 +406,8 @@ class StubWorld:
         p = self.people.get(ev.addressee)
         if p is None or not p.asleep or p.posture == "gone":
             return
-        if audio.route(ev, Pose(p.x, p.y, p.yaw), ev.addressee, p.inst.hearing_loss_db, self._sleep_rng) is not None:
+        if audio.route(ev, Pose(p.x, p.y, p.yaw), ev.addressee, p.inst.hearing_loss_db, self._sleep_rng,
+                       walls_between=self.walls_for(ev)) is not None:
             self._wake(ev.addressee, ev.t, "spoken_to")
 
     # ---- intents -------------------------------------------------------------------------
@@ -1085,7 +1098,7 @@ class StubWorld:
         objs = self._seen_objects(me, person)
         heard = []
         for ev in recent_audio:
-            h = audio.route(ev, me, person, p.inst.hearing_loss_db, self.rng)
+            h = audio.route(ev, me, person, p.inst.hearing_loss_db, self.rng, walls_between=self.walls_for(ev))
             if h is not None:
                 heard.append(h)
         return Observation(person=person, t=t, visible=seen, objects=objs, heard=heard)

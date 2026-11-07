@@ -35,7 +35,7 @@ from ..world import audio
 from ..world.bodies import Bodies, StubBodies
 from ..world.oracle import Pose
 from ..world.perception import _in_view, bbox_3d, perceive_objects
-from ..world.robot_tasks import RECEPTION_ROLES, RobotTasks
+from ..world.robot_tasks import RECEPTION_ROLES, RobotTasks, wire_result
 from ..world.stub_world import ROBOT_ID as ROBOT_ADDRESSEE, StubWorld
 from . import topics
 
@@ -181,10 +181,10 @@ class SimService:
         elif ctl.action == "reset":
             log.warning("reset is not supported during a run; stop it and start a new one")
 
-    def _walls_between(self, a, b) -> int:
-        """Walls between two points (doorways are gaps): what sound loses on its way, see ``audio.route``."""
-        sight = getattr(self.world, "_sight", None)
-        return 0 if sight is None else audio.count_walls(sight, self.world.site.grid, a, b)
+    def _walls_for(self, ev):
+        """The world's walls_between for this event (None: walls cost it nothing), see ``StubWorld.walls_for``."""
+        fn = getattr(self.world, "walls_for", None)
+        return None if fn is None else fn(ev)
 
     def _emit(self, events: Iterable[AudioEvent], to_room: bool = False) -> None:
         """Route each event to everyone who can hear it and log it. A robot line's row also carries ``heard_by``
@@ -195,7 +195,7 @@ class SimService:
                 if p.posture == "gone" or p.kind == "static":
                     continue  # patients lying in beds hear nothing
                 h = audio.route(ev, Pose(p.x, p.y, p.yaw), pid, p.inst.hearing_loss_db, self.world.rng,
-                                walls_between=self._walls_between)
+                                walls_between=self._walls_for(ev))
                 if h is not None:
                     heard[pid] = h
             self._recent.append((self.t, ev, heard))
@@ -597,7 +597,7 @@ class SimRos:
                 self.robot_ros.publish_text(rt["bbox_3d"], self._json.dumps(out.detections))
             self.robot_ros.publish_text(rt["objects"], self._json.dumps(out.objects))
         for r in out.task_results:
-            self.robot_ros.publish_text(rt["task_result"], self._json.dumps(r))
+            self.robot_ros.publish_text(rt["task_result"], self._json.dumps(wire_result(r)))
         for n in out.nudges:
             ros.publish_json(topics.nudge(n.person), n)
 

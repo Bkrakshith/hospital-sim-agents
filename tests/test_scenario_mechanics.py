@@ -322,3 +322,22 @@ def test_a_patient_getting_out_of_bed_never_stands_inside_it(staged, kind, targe
         if w1.posture in ("standing", "walking"):
             assert not w.site.grid.blocked(w1.x, w1.y), (k, w1.x, w1.y)
     assert w1.posture in ("standing", "walking") and w1.bed is None
+
+
+# ---------- a patient asleep ----------
+
+def test_meal_round_stages_george_asleep_from_the_start(staged):
+    """start_asleep on the preset's cast survives staging: George (M2) is asleep at t=0 and the robot can see it."""
+    w = world(staged, "meal_round")
+    assert w.people["M2"].asleep and not w.people["M1"].asleep
+
+
+def test_the_asleep_card_puts_its_person_to_sleep_in_the_world(staged):
+    """The card reaches the person's mind (a nudge) and the world (an asleep event), so the status says asleep."""
+    loaded = staged("meal_round")
+    outs = fire_card(loaded, "asleep", target="M1")
+    evs = [o for o in outs if isinstance(o, WorldEvent)]
+    assert [(e.kind, e.person) for e in evs] == [("asleep", "M1")]
+    w = StubWorld(loaded, 1)
+    w.apply_world_event(evs[0])
+    assert w.people["M1"].asleep

@@ -75,9 +75,10 @@ cards:
 
   - id: asleep
     label: Patient asleep
-    channels: [nudge]
+    channels: [nudge, world]
     target_kind: person
     nudge: "You are deeply asleep. Do not react unless someone speaks to you loudly or touches your arm."
+    world: {kind: asleep}
     tests: Whether the robot copes with a sleeping patient (does not drop a tray in reach, does not shout).
 
   - id: freeze
