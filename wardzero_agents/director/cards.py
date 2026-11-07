@@ -24,7 +24,7 @@ _EVENT_KINDS = set(typing.get_args(WorldEvent.model_fields["kind"].annotation))
 
 
 # who can walk in mid-run: visitors and patients, never staff, porters or companions (who come with someone)
-ARRIVAL_ROLES = ("patient", "ae_patient", "bed_patient", "visitor", "ward_visitor")
+ARRIVAL_ROLES = ("patient", "ae_patient", "bed_patient", "visitor", "ward_visitor", "outpatient")
 
 
 def arrival_persona(personas: dict[str, Persona], seed: int, firing_id: str,

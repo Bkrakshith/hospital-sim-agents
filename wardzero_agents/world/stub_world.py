@@ -1620,6 +1620,11 @@ class StubWorld:
         if kind in ("give_item", "take_item"):
             return self._item_transfer(p, intent)
         if kind == "take_instrument_self":
+            if self.loaded.scenario.robot.enabled and getattr(self.loaded.scenario, "robot_brief", None):
+                # a robot with a job here is the scrub nurse: the trolley is outside her sterile field, and it passes
+                # her what she asks for (a scene with no robot, or the original robot with no brief, keeps her reach)
+                self._fail(p, intent, "the robot passes the instruments: ask it for one by name")
+                return []
             near = [i for i in self.objects.items.values()
                     if i.kind == "instrument" and i.holder is None
                     and math.hypot(i.x - p.x, i.y - p.y) <= TAKE_RANGE_M

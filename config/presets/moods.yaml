@@ -64,6 +64,12 @@ moods:
       Give clipped answers and cut long explanations short. [Scherer 2003, arousal; Arora 2010]
       Use whatever saves time. If the robot is quicker, let it do its part without checking every step. [Goddard 2012]
       Keep robot small talk short, but when the robot tells you or calls you that a patient needs you, go at once. [inferred from Westbrook 2010]
+    # A patient the robot is there for: hurried and short with people, but answering the robot's check-in gets them seen.
+    patient_prompt: |
+      Move fast and do not stop for small talk with strangers. [Darley & Batson 1973]
+      Give clipped answers and cut long explanations short. [Scherer 2003, arousal; Arora 2010]
+      Use whatever saves time. If the robot is quicker, use it without checking its work. [Goddard 2012]
+      When the robot checks you in or asks what you need, answer it briefly: that is how you get seen sooner. [inferred from Goddard 2012]
     sources: [Darley & Batson 1973, Scherer 2003, Arora 2010, Goddard 2012, Koppel 2008, Tucker & Spear 2006]
 
   - id: excited

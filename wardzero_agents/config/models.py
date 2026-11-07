@@ -38,7 +38,7 @@ class Persona(_Model):
     id: str
     label: str
     role: Literal["patient", "companion", "visitor", "staff", "ward_nurse", "receptionist", "surgeon", "porter", "custom", "bed_patient", "ward_visitor",
-                  "ae_patient"]
+                  "ae_patient", "outpatient"]
     age: Range
     sex: list[str]
     condition: str
@@ -222,7 +222,7 @@ class PersonInstance(_Model):
     backstory: str
     condition: str
     role: Literal["patient", "companion", "visitor", "staff", "ward_nurse", "receptionist", "surgeon", "porter", "custom", "bed_patient", "ward_visitor",
-                  "ae_patient"]
+                  "ae_patient", "outpatient"]
     seat: Optional[str]
     companion_of: Optional[str]
     arrive_at_s: float
