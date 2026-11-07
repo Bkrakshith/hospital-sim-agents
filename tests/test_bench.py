@@ -263,7 +263,7 @@ def test_evaluate_weighted_score(tmp_path):
     ])
     d = make_run(
         tmp_path,
-        status=[status(0, "P1", 1.0, 0.0)], robot_pose=[pose(0, 0.7, 0.0)],
+        status=[status(0, "P1", 1.0, 0.0)], robot_pose=[pose(0, 0.0, 0.0), pose(0.5, 0.7, 0.0)],
         audio=[{"t": 1, "source_kind": "person", "source_id": "P1", "text": "Hi", "addressee": "g1"},
                {"t": 9, "source_kind": "robot", "source_id": "g1", "text": "Hello", "addressee": "P1"}],
     )
@@ -275,24 +275,28 @@ def test_evaluate_weighted_score(tmp_path):
     assert r.passed is False  # b has weight 1 and failed
 
 
-def test_low_weight_failure_does_not_fail_the_run(tmp_path):  # a None on a weight-0.5 criterion
+def test_low_weight_failure_does_not_fail_the_run(tmp_path):  # a miss on a weight-0.5 criterion
     preset = _preset([
         {"id": "a", "label": "A", "metric": "contacts", "op": "==", "threshold": 0, "weight": 2},
         {"id": "b", "label": "B", "metric": "mean_response_s", "op": "<=", "threshold": 1, "weight": 0.5},
     ])
-    d = make_run(tmp_path, status=[status(0, "P1", 5, 5)], robot_pose=[pose(0, 0, 0)])
+    d = make_run(tmp_path, status=[status(0, "P1", 5, 5)], robot_pose=[pose(0, 0, 0), pose(5, 2, 0)],
+                 audio=[{"t": 1, "source_kind": "person", "source_id": "P1", "text": "Hi", "addressee": "g1"},
+                        {"t": 4, "source_kind": "robot", "source_id": "g1", "text": "Hello", "addressee": "P1"}])
     r = evaluate(preset, d)
-    assert [x["passed"] for x in r.rows] == [True, None] and r.passed is True  # nobody asked: None
+    assert [(x["passed"], x["status"]) for x in r.rows] == [(True, "pass"), (False, "fail")] and r.passed is True
     assert r.score == pytest.approx(100 * 2 / 2.5)
 
 
-def test_metric_none_counts_failed(tmp_path):
+def test_metric_none_counts_failed(tmp_path):  # a fire still burning at the end: fire_out_s None is a failure
     preset = _preset([
         {"id": "a", "label": "A", "metric": "fire_out_s", "op": "<=", "threshold": 120, "weight": 4},
         {"id": "b", "label": "B", "metric": "contacts", "op": "==", "threshold": 0, "weight": 1},
     ])
-    r = evaluate(preset, make_run(tmp_path, status=[status(0, "P1", 5, 5)]))
-    assert r.rows[0]["value"] is None and r.rows[0]["passed"] is None
+    fire = {"id": "fire_1", "kind": "fire", "x": 3.0, "y": 3.0, "size": 0.5, "active": True}
+    r = evaluate(preset, make_run(tmp_path, status=[status(0, "P1", 5, 5)], objects=[{"t": 0, "objects": [fire]}],
+                                  robot_pose=[pose(0, 0, 0), pose(5, 2, 0)]))
+    assert r.rows[0]["value"] is None and r.rows[0]["passed"] is None and r.rows[0]["status"] == "fail"
     assert r.score == pytest.approx(20.0) and r.passed is False
 
 

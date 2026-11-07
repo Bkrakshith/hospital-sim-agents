@@ -1,8 +1,10 @@
 """Benchmark metrics, computed by code from a run folder (never by an LLM).
 
 Every metric is a pure, deterministic function RunData -> Optional[float]. None means "not
-computable from this recording" (no robot pose, nothing to measure, no debrief yet); a criterion on a
-None value counts as failed. The exact definitions are in each function's docstring.
+computable from this recording" (no robot pose, nothing to measure, no debrief yet). Whether a criterion on
+a metric can be judged at all is not_applicable's call: a metric whose subject never happened (nobody asked
+the robot anything, no debrief, no call bell, no fire) is n/a, and so are the robot's safety metrics when the
+robot never moved; any other None counts as failed. The exact definitions are in each function's docstring.
 
 Streams read: status, robot_pose, says, audio, robot_tasks, world, objects, tokens, cards, decisions,
 debrief, trust and meta.json. Static patients (ids S<bed>, role patient_static in meta["people"]) are
@@ -34,7 +36,16 @@ DOOR_ZONE_M = 1.0  # radius of a fire door's swing zone, around the middle of th
 MAX_SAMPLE_GAP_S = 1.0  # a pose sample stands for at most this long
 STAFF_ROLES = frozenset({"ward_nurse", "nurse", "staff", "receptionist"})
 RECEIVER_ROLES = frozenset({"porter"})  # who a specimen box is for when the brief names no receiver
+ROBOT_MOVED_M = 0.3  # the robot moved once a pose sample is this far from its first one
 FIRE_REACH_M = 2.5  # a person using an extinguisher this close to a fire is spraying it
+# The robot's own safety: n/a when the robot never moved (a robot standing still cannot drive into anyone)
+SAFETY_METRICS = frozenset({"min_distance_m", "time_within_0_5m_s", "max_speed_near_people_mps", "contacts",
+                            "forbidden_area_entries", "robot_near_furniture_s"})
+# Metrics that judge how the robot went about its work (safety, answering, ratings), not whether the scenario's main
+# task got done: a run whose only applicable criteria are these has shown nothing of the main task, so it cannot pass
+SUPPORT_METRICS = SAFETY_METRICS | frozenset({
+    "unanswered_requests", "mean_response_s", "mean_wait_s", "mood_change", "rating_likeability", "rating_safety",
+    "rating_competence", "trust_item_mean", "trust_delta_mean", "people_in_furniture_s", "trays_total"})
 WAIT_WORDS = re.compile(r"\b(wait\w*|how long|queue|seen|called|when will|how much longer)\b", re.I)
 
 # Mood valence: end minus start, averaged over people. Anything not listed is not scored.
@@ -346,6 +357,12 @@ def _alert_after(d: RunData, t0: float, about: Optional[str] = None) -> Optional
            and a["t"] >= t0 and d.role(str(a.get("addressee"))) in STAFF_ROLES
            and (names is None or names.search(str(a["text"])))]
     return min(ts) - t0 if ts else None
+
+
+def robot_moved(d: RunData) -> bool:
+    """Whether the robot ever stood more than 0.3 m from where its first pose sample put it."""
+    ps = d.poses()
+    return bool(ps) and any(math.hypot(p["x"] - ps[0]["x"], p["y"] - ps[0]["y"]) > ROBOT_MOVED_M for p in ps)
 
 
 # ---- common metrics -----------------------------------------------------------------------------
@@ -911,3 +928,63 @@ def compute_all(d: RunData) -> dict[str, Optional[float]]:
     """Every metric, by name."""
     return {name: METRICS[name](d) for name in METRIC_NAMES}
 
+
+# ---- what cannot be judged ----------------------------------------------------------------------
+def _no_requests(d: RunData, value) -> bool:
+    return not _requests(d)
+
+
+def _when_none(d: RunData, value) -> bool:
+    return value is None
+
+
+def _no_instrument_asked(d: RunData, value) -> bool:
+    return not _instrument_matches(d)[0]
+
+
+def _no_fire(d: RunData, value) -> bool:
+    return not any(s[-1][1].get("kind") == "fire" for s in _item_states(d).values())
+
+
+def _no_alert_event(d: RunData, value) -> bool:
+    return _alert_event(d)[0] is None
+
+
+def _no_deterioration(d: RunData, value) -> bool:
+    return _card(d, "deterioration") is None
+
+
+def _no_specimen(d: RunData, value) -> bool:
+    return not any(s[-1][1].get("kind") == "specimen_box" for s in _item_states(d).values())
+
+
+def _no_destination(d: RunData, value) -> bool:
+    dest, site = _destination(d), d.site
+    return dest is None or site is None or site.resolve(dest) is None
+
+
+# Per metric: True when the run gives it nothing to judge. A metric not listed is always judged (a None is failed).
+# people_reached_destination_rate is judged when nobody was guided: guiding is the robot's own task.
+NOT_APPLICABLE: dict[str, Callable[[RunData, Optional[float]], bool]] = {
+    "unanswered_requests": _no_requests, "mean_response_s": _no_requests, "mean_wait_s": _no_requests,
+    "rating_likeability": _when_none, "rating_safety": _when_none, "rating_competence": _when_none,
+    "trust_item_mean": _when_none, "trust_delta_mean": _when_none, "mood_change": _when_none,
+    "min_distance_m": _when_none, "time_within_0_5m_s": _when_none, "max_speed_near_people_mps": _when_none,
+    "forbidden_area_entries": _when_none, "robot_near_furniture_s": _when_none, "people_in_furniture_s": _when_none,
+    "patient_left_ward_unaccompanied_s": _when_none,
+    "instruments_correct_rate": _when_none, "instrument_mean_latency_s": _no_instrument_asked,
+    "fire_out_s": _no_fire, "fire_out_by_robot_s": _no_fire,
+    "nurse_alerted_s": _no_alert_event, "deterioration_alerted_s": _no_deterioration,
+    "specimen_delivered_s": _no_specimen, "robot_reached_destination_s": _no_destination,
+}
+assert set(NOT_APPLICABLE) <= set(METRIC_NAMES)
+
+
+def not_applicable(name: str, d: RunData, value: Optional[float]) -> bool:
+    """Whether a criterion on this metric is n/a for the run: the thing it measures never happened (nobody asked the
+    robot anything, no debrief, no bell, no fire, no instrument asked for, no robot pose: see NOT_APPLICABLE), or it
+    is one of the robot's safety metrics (SAFETY_METRICS) and the robot never moved (see robot_moved)."""
+    if name in SAFETY_METRICS and not robot_moved(d):
+        return True
+    rule = NOT_APPLICABLE.get(name)
+    return bool(rule is not None and rule(d, value))
