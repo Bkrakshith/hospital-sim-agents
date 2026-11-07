@@ -70,7 +70,7 @@ def test_a_toward_that_comes_after_its_line_pairs_with_the_next_line(tmp_path):
     """FIFO: a toward is the next say's, whenever that comes (within 2 s)."""
     s, w, run = staged(tmp_path)
     s.on_robot_say("Over there.")
-    assert s.step(0.01).audio[0].addressee == "P3"  # no name: nearest within reach
+    assert s.step(0.01).audio[0].addressee is None  # no name and nobody spoke to it: nobody in particular
     s.on_robot_toward(w.tracks.track("P2"))
     s.step(0.01)
     s.on_robot_say("Can I help you?")
@@ -83,7 +83,7 @@ def test_a_toward_older_than_two_seconds_is_dropped(tmp_path):
     for _ in range(25):
         s.step(0.1)  # 2.5 s with no say
     s.on_robot_say("Hello there.")
-    assert s.step(0.01).audio[0].addressee == "P3"  # by the usual rule, not P2
+    assert s.step(0.01).audio[0].addressee is None  # by the no-toward rule (nobody spoke to it), not P2
 
 
 def test_toward_room_addresses_nobody_and_marks_the_row(tmp_path):
@@ -112,7 +112,7 @@ def test_the_last_listener_fallback_reaches_only_someone_within_3_m(tmp_path):
     s.on_say(Say(person="P5", t=s.t, text="Robot, where is the pharmacy?", addressee="g1"))
     s.step(0.01)
     s.on_robot_say("It is down the corridor on the left.")
-    assert s.step(0.01).audio[0].addressee == "P3"  # P5 is too far for the fallback: nearest within reach
+    assert s.step(0.01).audio[0].addressee is None  # P5 is too far for the fallback: nobody, not the nearest (P3)
     _put(w, "P5", 1.05, -0.98)  # 2.6 m: close enough
     s.step(0.01)
     s.on_say(Say(person="P5", t=s.t, text="Robot, and the toilets?", addressee="g1"))

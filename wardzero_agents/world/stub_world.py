@@ -378,6 +378,7 @@ class StubWorld:
         if ev.source_kind == "person" and not ev.text and ev.source_id.startswith("bell_"):
             # a chime: the robot can tell what it is (a bed's call bell, or the staff call it pressed itself)
             bed = ev.source_id[len("bell_"):]
+            upd["source_kind"] = "bell"  # the call system, not a person speaking
             upd["text"] = "staff call chime" if bed == "robot" else f"call bell, bed {bed}"
         if ev.source_kind in ("person", "cough") and ev.source_id != "bell_robot" and ev.id not in self._repeaters:
             # not its own call chime, nor a bell's repeater at the nurse base (that points away from the bed)

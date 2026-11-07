@@ -61,7 +61,7 @@ _RULES_HEAD = """You are the robot described under YOUR BODY, working in a UK ho
 How you work
 - YOUR JOB is your main task and you do it yourself, not the staff. Start it as soon as it calls for action (if it says to wait for a request, a call or an alarm, be ready and act the moment it comes) and carry it through to the end. On the way a short polite word is fine, but do not stop to offer help unless someone is in an emergency or speaks to you.
 - Each turn you are shown what you can perceive right now: your position, who your camera sees (as anonymous tracks such as t1, t2 with a distance, a direction and a posture), objects in view, what your microphone heard, the results of your recent actions and your own last events. You know nothing else about the people. Never guess a name, an age or how someone feels; you can only see what the camera shows and hear what is said.
-- A box that is low and long means a person lying down. A box about 1.2 m tall means someone seated. About 1.7 m tall means standing. Someone lying on the floor, away from a bed, may need urgent help. A track marked asleep is a person asleep: do not wake them for small things; an item held out to them is not taken (no_answer).
+- A box that is low and long means a person lying down. A box about 1.2 m tall means someone seated. About 1.7 m tall means standing. Someone lying on the floor, away from a bed, may need urgent help. A track marked asleep is a person asleep: do not wake them for small things; an item held out to them is not taken (no_answer). A track marked looks unwell (slumped) is someone who may be getting worse.
 - Speak in short, plain, warm sentences, the way a good receptionist or ward helper would. Use the place names as given in the lists (for example "Main entrance"), never codes, identifiers or words joined by underscores.
 - Be truthful. Do not claim to have done something you have not done, and do not promise what your body cannot do. Your abilities are listed in your briefing; stay inside them.
 """
@@ -408,12 +408,40 @@ class _Track:
     t: float
     moving: bool = False
     asleep: bool = False
+    unwell: bool = False
+
+
+def _flag(d: dict, key: str) -> bool:
+    """A detection marked with key (the sim's perception sets asleep: true or unwell: true on the track; tolerated in
+    the box or the result too)."""
+    return any(bool(x.get(key)) for x in (d, d.get("bbox") or {}, *(d.get("results") or [])) if isinstance(x, dict))
 
 
 def _asleep(d: dict) -> bool:
-    """A detection marked asleep (the sim's perception sets asleep: true on the track; tolerated in the box or the
-    result too)."""
-    return any(bool(x.get("asleep")) for x in (d, d.get("bbox") or {}, *(d.get("results") or [])) if isinstance(x, dict))
+    return _flag(d, "asleep")
+
+
+_BELL_TEXT = re.compile(r"call bell, bed (\w+)", re.I)
+
+
+def chime_words(h: dict) -> Optional[str]:
+    """What a call-system sound is, in words, or None for any other sound: a bed's call bell ("a call bell (bed B3)"),
+    the robot's own staff call ("your staff call chime"), or a chime the microphone could not name (an old run's
+    bell: a person sound with no words). An old run's bell also came as a person sound with the chime's words: only
+    those exact words, not said to the robot, count as a chime (a person who mentions their call bell is speaking)."""
+    kind, text = h.get("source_kind"), h.get("text") or ""
+    text = text.strip() if isinstance(text, str) else ""
+    m = _BELL_TEXT.search(text) if kind == "bell" else _BELL_TEXT.fullmatch(text)
+    old_bell = kind == "person" and not h.get("addressed_to_me") and (m or text == "staff call chime")
+    if kind == "bell" or old_bell:
+        if m:
+            return f"a call bell (bed {m.group(1)})"
+        if "staff call" in text:
+            return "your staff call chime"
+        return "a chime, like a patient's call bell"
+    if kind == "person" and not text and not h.get("addressed_to_me"):
+        return "a chime, like a patient's call bell"
+    return None
 
 
 class RobotMind:
@@ -506,7 +534,8 @@ class RobotMind:
                     continue
                 c, size = d["bbox"]["center"], d["bbox"]["size"]
                 tid = str(d["id"])
-                tr = _Track(float(c["x"]), float(c["y"]), posture_from_box(size), t, asleep=_asleep(d))
+                tr = _Track(float(c["x"]), float(c["y"]), posture_from_box(size), t, asleep=_asleep(d),
+                            unwell=_flag(d, "unwell"))
             except (KeyError, TypeError, ValueError):
                 continue
             prev = self._tracks.get(tid)
@@ -581,21 +610,21 @@ class RobotMind:
         self._heard.append((t, h, self.pose[2]))
         if h.get("addressed_to_me"):
             self._addressed = True
+        elif chime_words(h) is not None:
+            self._speech = True  # a call bell (or a chime): worth a look at once, wherever it comes from
         elif h.get("source_kind") in ("alarm", "pa"):
             self._speech = True  # an alarm or an announcement: worth a thought at once
             if h.get("source_kind") == "alarm" and self._alarm_t is None:
                 self._alarm_t = t
         elif h.get("source_kind") == "person" and h.get("text") and self._min_person_dist() <= NEAR_SPEECH_M:
             self._speech = True
-        elif h.get("source_kind") == "person" and not h.get("text"):
-            self._speech = True  # a chime (a call bell): worth a look at once, wherever it comes from
 
     # ---- prompt --------------------------------------------------------------------------
     def card(self) -> str:
         """The cached block: the site, the way to each place, the job and the robot's body."""
         if self._card is None:
             b = self.brief or {}
-            rooms = self.site.summary_for_prompt(self.known_places)
+            rooms = self._places_known()
             lines = ["THE HOSPITAL"] + ([rooms, ""] if not rooms.startswith("You do not know") else [])
             from ..site.areas import areas_from_brief
             areas = areas_from_brief(self.brief)
@@ -672,6 +701,16 @@ class RobotMind:
                 best = (d, pid)
         return f", at {place_label(self.site, best[1])}" if best else ""
 
+    def _places_known(self) -> str:
+        """The rooms the robot knows, by the names it may say (never an id with underscores): "- Ward entrance: Ward
+        entrance, reception + nurse base (ward entrance)"."""
+        lines = []
+        for rid in self.known_places:
+            r = self.site.rooms.get(rid) if isinstance(getattr(self.site, "rooms", None), dict) else None
+            if r:
+                lines.append(f"- {place_label(self.site, rid)}: {r.label} ({str(r.use).replace('_', ' ')})")
+        return "Places you know:\n" + "\n".join(lines) if lines else "You do not know any named places."
+
     def _brief_words(self, v) -> str:
         """A value in a brief list in words: a place id or label becomes the place's label."""
         if isinstance(v, str):
@@ -713,12 +752,11 @@ class RobotMind:
         L.append("Heard recently, newest last:")
         recent = [(ht, h, hy) for ht, h, hy in self._heard if t - ht <= HEARD_KEPT_S][-8:]
         for ht, h, hy in recent or []:
-            who = "someone speaking to you" if h.get("addressed_to_me") else {
+            chime = chime_words(h)
+            who = chime or ("someone speaking to you" if h.get("addressed_to_me") else {
                 "person": "someone nearby", "cough": "a cough", "alarm": "an alarm", "pa": "an announcement",
-                "robot": "your own voice"}.get(h.get("source_kind"), "a sound")
-            if h.get("source_kind") == "person" and not h.get("text") and not h.get("addressed_to_me"):
-                who = "a chime, like a patient's call bell"  # the only sound without words from that source
-            text = f': "{h["text"]}"' if h.get("text") else ""
+                "robot": "your own voice"}.get(h.get("source_kind"), "a sound"))
+            text = f': "{h["text"]}"' if h.get("text") and chime is None else ""  # a bell's words are in who
             part = " (only part heard)" if h.get("partial") else ""
             L.append(f"- {t - ht:.0f} s ago, {who}, {float(h.get('received_db', 0)):.0f} dB{part}"
                      f"{self._where_heard(h, hy, t - ht)}{text}")
@@ -729,7 +767,8 @@ class RobotMind:
             d = math.hypot(tr.x - x, tr.y - y)
             new = ", not spoken to yet" if self.first_contact and tid not in self._spoken and d <= GREET_M else ""
             L.append(f"- {tid}: {d:.1f} m, {_direction_words(_rel_deg(self.pose, tr.x, tr.y))}, {tr.posture}"
-                     f"{', asleep' if tr.asleep else ''}, {'moving' if tr.moving else 'still'}, "
+                     f"{', asleep' if tr.asleep else ''}{', looks unwell, slumped' if tr.unwell else ''}, "
+                     f"{'moving' if tr.moving else 'still'}, "
                      f"at (x={tr.x:.2f}, y={tr.y:.2f}){self._at_place(tr.x, tr.y)}{new}")
         if not self._tracks:
             L.append("- nobody in view")

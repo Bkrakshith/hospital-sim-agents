@@ -32,16 +32,18 @@ class Track:
     new: bool  # "not spoken to yet"
     line: str
     asleep: bool = False  # the camera marks someone asleep this close
+    unwell: bool = False  # the camera marks someone who looks unwell (slumped) this close
 
 
 @dataclass
 class Heard:
     age: float
-    who: str  # to_me, nearby, cough, alarm, pa, own, chime, sound
+    who: str  # to_me, nearby, cough, alarm, pa, own, bell, own_chime, chime, sound
     text: str
     track: Optional[str]  # the track it came from, when the microphone could tell
     line: str
     db: Optional[float] = None  # how loud it reached the robot
+    bed: Optional[str] = None  # a call bell: the bed it names
 
 
 @dataclass
@@ -103,20 +105,22 @@ def parse_situation(u: str) -> Situation:
         if not m:
             continue
         what = m.group(2)
+        bell = re.match(r"a call bell \(bed (\w+)\)", what)
         who = ("to_me" if "speaking to you" in what else "nearby" if "someone nearby" in what else
+               "own_chime" if "your staff call chime" in what else "bell" if bell else
                "cough" if "cough" in what else "alarm" if "alarm" in what else "pa" if "announcement" in what else
                "own" if "your own voice" in what else "chime" if "chime" in what else "sound")
         tm = re.search(r"from the direction of (t\w+)", ln)
         txt = re.search(r': "(.*)"$', ln)
         s.heard.append(Heard(float(m.group(1)), who, txt.group(1) if txt else "", tm.group(1) if tm else None, ln,
-                             float(m.group(3))))
+                             float(m.group(3)), bell.group(1) if bell else None))
     for ln in _section(u, "People your camera sees", "Objects in view").splitlines():
-        m = re.match(r"- (t\w+): ([0-9.]+) m, .*?, (lying down|seated|standing|[a-z ]+?)(, asleep)?, (moving|still), "
-                     r"at \(x=(-?[0-9.]+), y=(-?[0-9.]+)\)", ln)
+        m = re.match(r"- (t\w+): ([0-9.]+) m, .*?, (lying down|seated|standing|[a-z ]+?)(, asleep)?"
+                     r"(, looks unwell, slumped)?, (moving|still), at \(x=(-?[0-9.]+), y=(-?[0-9.]+)\)", ln)
         if m:
-            s.tracks.append(Track(m.group(1), float(m.group(2)), m.group(3), m.group(5) == "moving",
-                                  float(m.group(6)), float(m.group(7)), "not spoken to yet" in ln, ln,
-                                  asleep=bool(m.group(4))))
+            s.tracks.append(Track(m.group(1), float(m.group(2)), m.group(3), m.group(6) == "moving",
+                                  float(m.group(7)), float(m.group(8)), "not spoken to yet" in ln, ln,
+                                  asleep=bool(m.group(4)), unwell=bool(m.group(5))))
     for ln in _section(u, "Objects in view:", "Getting there from ", "Results of your recent actions",
                        "Your last events").splitlines():
         if (m := re.match(r"- item (\w+): (.+), ([0-9.]+) m", ln)):
@@ -155,7 +159,8 @@ class Card:
     brief: dict = field(default_factory=dict)  # "Destination" -> "Ward nurse base", ...
     lists: dict = field(default_factory=dict)  # "Meals" -> ["patient bed: ...; tray label: ...", ...]
     places: dict = field(default_factory=dict)  # label (lower) -> label, every place the robot can name
-    rooms: dict = field(default_factory=dict)  # room id -> label
+    rooms: dict = field(default_factory=dict)  # room name (or id, on an older card) -> label
+    uses: dict = field(default_factory=dict)  # room name -> what the room is for ("bedroom")
     route_dirs: dict = field(default_factory=dict)  # label -> the way the route from the post sets off
 
     @property
@@ -166,9 +171,16 @@ class Card:
 def parse_card(card: str) -> Card:
     c = Card()
     hosp = _section(card, "THE HOSPITAL", "YOUR JOB")
-    for m in re.finditer(r"^- (\S+): (.+?) \((\w+)\)$", hosp, re.M):
+    # "- Ward bedroom B3: Ward bedroom B3 (bedroom)": the room's name, its label and its use (an older card names the
+    # room by its id: "- B3: Ward bedroom B3 (bedroom)")
+    for m in re.finditer(r"^- (.+?): (.+?) \(([\w ]+)\)$", hosp, re.M):
+        if re.match(r"about [0-9]+ m|right beside you|the way there", m.group(2)):
+            continue  # a route line
         c.rooms[m.group(1)] = m.group(2)
+        c.uses[m.group(1)] = m.group(3).replace("_", " ")
         c.places[m.group(2).lower()] = m.group(2)
+        if "_" not in m.group(1):
+            c.places.setdefault(m.group(1).lower(), m.group(1))
     for m in re.finditer(r"^- (.+?): (?:about [0-9]+ m|right beside you)(.*)$", hosp, re.M):
         c.places.setdefault(m.group(1).lower(), m.group(1))
         way = re.search(r"setting off (.+?)(?:, through |\.$)", m.group(2))
@@ -222,6 +234,9 @@ UNWELL_WORDS = ("dizzy", "pass out", "faint", "breath", "chest", "worse", "unwel
                 "help me")
 STAFF_WORDS = ("nurse", "doctor", "member of staff", "a person", "someone who can help", "real person")
 REPEAT_WORDS = ("again", "repeat", "pardon", "sorry?", "didn't catch", "did not catch", "what did you say")
+# a person who has lost their nerve: lost, frightened, cannot go on ("I don't know where to go!")
+DISTRESS = re.compile(r"\b(?:don't know|do not know|dont know|can't|cannot|scared|afraid|frightened|panic|"
+                      r"what do i do|where do i go|where should i go|help)\b", re.I)
 PLACE_ASKS = ("where", "find", "help", "lost", "looking for", "need to get", "way to", "take me", "show me", "go to",
               "get to")
 
@@ -287,17 +302,30 @@ class ScriptedRobot:
                 p.aid = m.group(3)
                 return
 
-    def _finished(self, new: list[Result]) -> Optional[Result]:
-        """The result that ends the pending action, if it came."""
+    # A guide that stays at the place waits up to 20 s there for the person, then ends. The wire reports only the
+    # goal's arrival, not the guide's end, so the robot holds this long after it (doing nothing else, even when the
+    # person came at once) before its next move, which would otherwise end the guide superseded instead of arrived.
+    GUIDE_STAY_S = 21.0
+
+    def _finished(self, new: list[Result], t: float = 0.0) -> Optional[Result]:
+        """The result that ends the pending action, if it came. A guide that stays at the place (return_to_post false)
+        is over only once it has had time to wait there for the person: a walk started before then replaces it, and it
+        ends superseded instead of arrived."""
         p = self.pending
         if p is None:
             return None
+        held = p.extra.get("at_place")
+        if held is not None:
+            return held[1] if t - held[0] >= self.GUIDE_STAY_S else None
         for r in new:
             if p.action == "go_to" and r.what == "walking to a goal" and not r.id.startswith("rb"):
                 return r
             if p.aid is None or r.id != p.aid:
                 continue
             if p.action in ("guide", "approach", "follow"):
+                if p.action == "guide" and p.extra.get("back") is False and r.ok and r.reason == "arrived":
+                    p.extra["at_place"] = (t, r)  # at the place: the guide waits there for the person
+                    return None
                 if r.what == "walking to a goal" or not r.ok or r.reason in ("already_there", "arrived"):
                     return r
             elif r.reason not in ("started", "following"):
@@ -464,7 +492,7 @@ class ScriptedRobot:
         self._ids(s)
         before = self.pending
         new = self._new_results(s)
-        done = self._finished(new)
+        done = self._finished(new, s.t)
         if self.pending is not None and (done is not None or s.t - self.pending.t > self.MAX_BUSY_S):
             self.mem.setdefault("finished", []).append((self.pending, done))
             self.on_finished(s, c, self.pending, done)
@@ -512,8 +540,18 @@ class ScriptedRobot:
             self.mem["take_then_offer"] = (p.extra["item"], p.track)  # this body takes first, then holds it out
         if p.action == "take" and (r is None or not r.ok):
             self.mem.pop("take_then_offer", None)
+        if p.action == "guide" and r is not None and p.track:
+            # the wire shows a guide given up (they never came within reach: staff at their post) as its goal ending
+            # "cancelled" (this robot never stops a guide itself)
+            self.mem[("guide_end", p.track)] = "left_behind" if r.reason == "cancelled" else r.reason
         if p.action == "guide" and r is not None and not r.ok and p.track:
-            self.mem.setdefault("walk_on", []).append(p.track)  # held up short of the place: send them on
+            tries = self.mem.get(("reguided", p.track), 0)
+            if r.reason == "blocked_by_person" and tries < self.REGUIDE_TRIES and self.mem.get(("guide_to", p.track)):
+                # someone stood in the way: a new guide plans its route round people standing still, so try again
+                self.mem[("reguided", p.track)] = tries + 1
+                self.mem["reguide"] = (p.track, self.mem[("guide_to", p.track)], p.extra.get("back", True), p.t)
+            else:
+                self.mem.setdefault("walk_on", []).append(p.track)  # held up short of the place: send them on
         post = self.mem.get("post")
         if (p.aid and r is not None and r.ok and post is not None and p.extra.get("back", True)
                 and p.action in ("guide", "tell_staff") and math.hypot(s.x - post[0], s.y - post[1]) > self.POST_M):
@@ -531,6 +569,25 @@ class ScriptedRobot:
     # ---- shared skills ------------------------------------------------------------------------------------------------
     def busy(self) -> bool:
         return self.pending is not None
+
+    REGUIDE_TRIES = 1  # a guide held up by someone in the way is started again this many times
+
+    def reguide(self, s: Situation) -> Optional[dict]:
+        """Start again a guide that someone standing in the way held up, when the person is still beside the robot;
+        else send them on (walk_on)."""
+        if not self.mem.get("reguide") or not self.free() or "guide" not in self.allowed:
+            return None
+        tid, place, back, t_start = self.mem.pop("reguide")
+        # they follow behind the robot, out of the camera's view: a guide that was not given up (it waits for someone
+        # who drops back) had them with it; else they must be in view near it now
+        tr = s.track(tid)
+        _, _, _, t_seen, _ = self.last_seen.get(tid, (0.0, 0.0, False, -1e9, ""))
+        if (tr is None and t_seen < t_start - 1.0) or (tr is not None and tr.dist > self.SPEAK_M):
+            self.mem.setdefault("walk_on", []).append(tid)
+            return None
+        return self._start(s, _decision("guide", f"Someone is in the way. Let's go round them, please stay with me "
+                                        f"to {place}.", tid, tid, destination=place, return_to_post=back,
+                                        reason="the walk was held up: trying again"))
 
     def reply(self, s: Situation, c: Card, h: Heard, *, walk_with: bool = True) -> dict:
         """An answer to a line spoken to the robot: walk them where they need to go, fetch staff, the wait, or a
@@ -622,6 +679,12 @@ class ScriptedRobot:
         if bed in c.rooms:
             return c.rooms[bed]
         return next((lab for rid, lab in c.rooms.items() if lab.endswith(f" {bed}")), None)
+
+    @staticmethod
+    def bed_of_room(name: str) -> str:
+        """The bed id a room's name ends with ("Ward bedroom B3" -> "B3"; an id "B3" stays), else the name."""
+        m = re.search(r"\b([A-Z]+[0-9]+)$", name or "")
+        return m.group(1) if m else name
 
     def default(self, s: Situation, c: Card) -> dict:
         req = self._requests(s)
@@ -883,15 +946,20 @@ class ScriptedRobot:
             if pt is not None and pt.dist <= 2.5:
                 self.mem.setdefault("patients", {})[s.room] = (pt.x, pt.y)
         done = self.mem.setdefault("bells_done", set())
+        done_t = self.mem.setdefault("bells_done_t", {})
         for bed in s.lights:  # a light seen beats a guess from the chime's bearing
             if bed not in done and (not self.mem.get("bell") or self.mem.get("bell_guess")):
                 self.mem["bell"], self.mem["bell_guess"] = bed, False
-        chimes = [h for h in s.heard if h.who == "chime" and h.age <= 4]
+        for h in s.heard:  # a call bell names its bed: no guess needed (a ring after the last answer is a new one)
+            if h.who == "bell" and h.bed and h.age <= 4 and (not self.mem.get("bell") or self.mem.get("bell_guess")) \
+                    and s.t - h.age > done_t.get(h.bed, -1e9) + 1.0:
+                self.mem["bell"], self.mem["bell_guess"] = h.bed, False
+        chimes = [h for h in s.heard if h.who == "chime" and h.age <= 4]  # an older chime with no words
         if chimes and not self.mem.get("bell") and self.mem.get("chime_t", -99.0) < s.t - 60:
             self.mem["chime_t"] = s.t
             room = self._room_by_bearing(s, c, chimes)
             if room:
-                bed = next((rid for rid, lab in c.rooms.items() if lab == room), room)
+                bed = next((self.bed_of_room(rid) for rid, lab in c.rooms.items() if lab == room), room)
                 self.mem["bell"], self.mem["bell_guess"] = bed, True
 
     def _room_by_bearing(self, s: Situation, c: Card, chimes: list) -> Optional[str]:
@@ -937,6 +1005,7 @@ class ScriptedRobot:
                                             f"{bed} rang the call bell and needs a nurse, please.",
                                             reason="the call was not answered"))
         self.mem["bells_done"].add(bed)
+        self.mem.setdefault("bells_done_t", {})[bed] = s.t
         self.mem["bell"] = None
         return None
 
@@ -960,7 +1029,9 @@ class ScriptedRobot:
         """A patient up and leaving: go to her, speak calmly, call a nurse, then walk her back to bed (staying with her
         when she will not come)."""
         req = self._requests(s)
-        bed_room = next((lab for rid, lab in c.rooms.items() if re.search(rf"\b{re.escape(rid)}\b", c.job)), None)
+        bed_room = next((lab for rid, lab in c.rooms.items()  # the bedroom the job names ("bed in B4")
+                         if any(re.search(rf"\b{re.escape(k)}\b", c.job) for k in {rid, self.bed_of_room(rid)})
+                         and (c.uses.get(rid) == "bedroom" or rid == self.bed_of_room(rid))), None)
         up = [tr for tr in s.tracks if tr.posture in ("standing", "walking") or tr.moving]
         tid = self.mem.get("patient")
         if tid is None and up:
@@ -1001,27 +1072,39 @@ class ScriptedRobot:
             return self._start(s, _decision("approach", "", "", tid, reason="staying beside her"))
         return _decision(reason="staying beside her")
 
-    NOT_MOVING_S = 12.0  # someone told the way out who has not set off after this long is walked out
-    WATCH_S = 4.0  # someone just told the way out is watched this long before the robot turns to the next person
+    EVAC_NEAR_M = 8.0  # someone in view this close (and not at the exit yet) is walked out next
 
     def evacuate(self, s: Situation, c: Card) -> dict:
-        """On the alarm: tell the room the way out (not the blocked one), walk anyone who does not go, then check the
-        other room the job names, walk anyone there out, and stay at the exit."""
+        """On the alarm: tell the room the way out (not the blocked one) and that the robot walks everyone out, then
+        walk each person out in turn, nearest first, and stay with them only as long as a guide waits at the place;
+        calm the person it walks out when they lose their nerve on the way; go back for anyone it saw and left behind,
+        check the other room the job names, walk anyone there out, and stay at the exit."""
         alarm = self.mem.get("alarm") or any(h.who == "alarm" or (h.who == "pa" and "fire" in h.text.lower())
                                              for h in s.heard) or "fire alarm has been sounding" in self.raw
         if not alarm:
             g = self.greet(s)
             return g or self.default(s, c)
-        self.mem["alarm"] = True
+        if not self.mem.get("alarm"):
+            self.mem["alarm"], self.mem["alarm_t"] = True, s.t
         exit_ = self.destination(c) or "the nearest safe exit"
-        told, guided = self.mem.setdefault("told", {}), self.mem.setdefault("guided", set())
+        guided = self.mem.setdefault("guided", set())
         if not self.mem.get("announced"):
             self.mem["announced"] = True
-            return self._said(_decision(say=f"Fire alarm. The main entrance is blocked. Everyone, please walk to the "
-                                        f"{exit_} now.", toward="room", reason="the alarm"))
+            return self._said(_decision(say=f"Fire alarm. The main entrance is blocked, do not go that way. The safe "
+                                        f"way out is the {exit_}. Please stay calm, I will walk each of you out.",
+                                        toward="room", reason="the alarm"))
         p = self.pending
+        if p is not None and p.action == "guide" and not p.extra.get("minor"):
+            calm = self._calm_guidee(s, p, exit_)
+            if calm is not None:
+                return calm
         if p is not None and p.action in ("guide", "approach") and not p.extra.get("minor"):
             return _decision(reason="guiding")
+        again = self.reguide(s)
+        if again is not None:
+            return again
+        while self.mem.get("walk_on") and self.mem.get(("guide_end", self.mem["walk_on"][0])) == "left_behind":
+            self.mem["walk_on"].pop(0)  # they never came along (staff at their post): not sent on alone either
         if self.mem.get("walk_on") and (p is None or p.extra.get("minor")):
             tid = self.mem["walk_on"][0]
             tr = s.track(tid)
@@ -1041,49 +1124,25 @@ class ScriptedRobot:
         at_exit = s.room.lower() == exit_.lower() or exit_.lower() in s.room.lower()
         checking = other is not None and s.room == other
         near = [] if at_exit else [tr for tr in sorted(s.tracks, key=lambda tr: tr.dist)  # (not those already out)
-                                   if tr.id not in guided and tr.dist <= 8.0 and exit_.lower() not in tr.line.lower()]
-        if checking and near:  # the room it came to check: walk them out
+                                   if tr.id not in guided and tr.dist <= self.EVAC_NEAR_M
+                                   and exit_.lower() not in tr.line.lower()]
+        free = p is None or p.extra.get("minor")
+        if free and near:  # walk out the nearest person not out yet (a word alone may send them the wrong way)
             tr = near[0]
             guided.add(tr.id)
+            if checking:  # walking someone out of the room it was to check: that room has been checked
+                self.mem["checked_other"] = True
             return self._start(s, _decision("guide", f"There is a fire. Please come with me, I'll walk with you to "
                                             f"the {exit_}.", tr.id, tr.id, destination=exit_, return_to_post=False,
                                             reason="walking them out"))
-        free = p is None or p.extra.get("minor")
-        untold = [tr for tr in near if tr.id not in told]
-        if free and untold:  # first tell everyone in view the way out, one by one, watching each set off
-            if any(s.t - told[o.id] < self.WATCH_S for o in s.tracks if o.id in told and o.id not in guided):
-                return _decision(reason="watching that they set off")
-            tr = untold[0]
-            d = self.speak_to(s, tr, f"The main entrance is blocked by fire. Please walk to the {exit_} now, away from "
-                              "the fire.", "sending them out", urgent=True)
-            if d is not None:
-                told[tr.id] = s.t
-                return d
-        for tr in near if free else []:  # then walk out anyone told who has not set off
-            if tr.id in told and s.t - told[tr.id] >= self.NOT_MOVING_S and not tr.moving:
-                guided.add(tr.id)
-                return self._start(s, _decision("guide", f"It's all right, come with me. I'll walk with you to the "
-                                                f"{exit_}.", tr.id, tr.id, destination=exit_, return_to_post=False,
-                                                reason="walking them out"))
         if p is not None:
             return _decision(reason="on my way")
-        if not at_exit and not self.mem.get("checked_other"):  # someone told the way out who was standing still
-            # when last seen, before the robot moves on to the other room: turn back to them
-            for tid, t_told in told.items():
-                if tid in guided or s.track(tid) is not None or tid in self.mem.setdefault("looked_for", set()):
-                    continue
-                x, y, moving, t_seen, line = self.last_seen.get(tid, (0.0, 0.0, True, -1e9, ""))
-                set_off = moving and t_seen - t_told >= self.WATCH_S
-                if set_off or s.t - t_seen > 90.0 or exit_.lower() in line.lower():
-                    continue  # seen on their way, long gone, or already out
-                self.mem["looked_for"].add(tid)
-                if "approach" in self.allowed:  # back to them by the track it saw (it ends facing them)
-                    return self._start(s, _decision("approach", "", "", tid, reason="back to someone told the way "
-                                                    "out who had not set off"), minor=True)
+        if not checking:  # someone it saw standing still on the way, not walked out yet: back for them first
+            tid = self._still_inside(s, guided, exit_)
+            if tid is not None and "approach" in self.allowed:
+                self.mem.setdefault("looked_for", set()).add(tid)
+                return self._start(s, _decision("approach", "", "", tid, reason="back for someone still inside"))
         if other and not self.mem.get("checked_other"):
-            if any(tr.id not in guided and s.t - told.get(tr.id, s.t) < self.NOT_MOVING_S for tr in s.tracks
-                   if not at_exit):
-                return _decision(reason="making sure they are on their way")
             self.mem["checked_other"] = True
             return self.go(s, other, why=f"checking {other} for anyone still there")
         if checking and p is None:  # nobody in view in the room it checks: first anyone it saw standing still here
@@ -1108,6 +1167,48 @@ class ScriptedRobot:
             self.mem["to_exit"] = True
             return self.go(s, exit_, why="leaving by the safe exit")
         return self.default(s, c)
+
+    CALM_TRIES = 2  # the person being walked out is calmed (and the walk offered again) at most this many times
+
+    def _calm_guidee(self, s: Situation, p: _Pending, exit_: str) -> Optional[dict]:
+        """The person it is walking out says they are lost or frightened (someone frozen by the alarm stops following):
+        a calm word to them and the walk offered again (a new guide), at once. A line it cannot put down to anyone in
+        view is taken for theirs: they follow behind the robot, out of the camera's view."""
+        if "guide" not in self.allowed or not p.track or self.mem.get(("calmed", p.track), 0) >= self.CALM_TRIES:
+            return None
+        for h in reversed(s.heard):
+            if h.who not in ("to_me", "nearby") or not h.text or h.age > 6 or s.t - h.age < p.t - 0.01:
+                continue
+            if not DISTRESS.search(h.text) or any(abs((s.t - h.age) - at) <= 2.5 and txt == h.text
+                                                  for at, txt in self.answered):
+                continue
+            who = self._who(s, h)
+            if who is not None and who != p.track:
+                continue
+            self._answered(s, h)
+            self.mem[("calmed", p.track)] = self.mem.get(("calmed", p.track), 0) + 1
+            return self._start(s, _decision("guide", f"It's all right, I'm right here with you. Stay close to me and "
+                                            f"we'll go out to the {exit_} together.", p.track, p.track,
+                                            destination=exit_, return_to_post=p.extra.get("back", True),
+                                            reason="calming the person it walks out"))
+        return None
+
+    def _still_inside(self, s: Situation, guided: set, exit_: str) -> Optional[str]:
+        """Someone left inside: a track the camera saw standing still since the alarm (not at the exit, not out of
+        view for long), not walked out yet and not gone back for already. The one it saw first (the people round it
+        when the alarm sounded before those it passed on the way), then the nearest."""
+        looked, t_alarm = self.mem.get("looked_for", set()), self.mem.get("alarm_t", 0.0)
+        best = None
+        for tid, (x, y, moving, t_seen, line) in self.last_seen.items():
+            if tid in guided or tid in looked or moving or s.track(tid) is not None or t_seen < t_alarm \
+                    or s.t - t_seen > self.STILL_INSIDE_S or exit_.lower() in line.lower():
+                continue
+            key = (self.first_seen.get(tid, t_seen), math.hypot(x - s.x, y - s.y))
+            if best is None or key < best[0]:
+                best = (key, tid)
+        return best[1] if best else None
+
+    STILL_INSIDE_S = 240.0  # someone last seen longer ago than this is not gone back for
 
     LEFT_BEHIND_M = 6.0  # someone last seen standing still this near where the robot now checks may still be there
 
@@ -1172,8 +1273,11 @@ class ScriptedRobot:
         return _decision(reason="watching the room")
 
     def _worse(self, s: Situation) -> Optional[str]:
-        """A track that is getting worse: coughing or saying they feel unwell, from their direction, or lying down
-        away from a bed."""
+        """A track that is getting worse: the camera sees them looking unwell (the nearest first); else coughing or
+        saying they feel unwell, from their direction, or lying down away from a bed."""
+        unwell = sorted((tr for tr in s.tracks if tr.unwell), key=lambda tr: tr.dist)
+        if unwell:
+            return unwell[0].id
         for h in s.heard:
             if h.age > 10 or h.track is None:
                 continue
@@ -1191,7 +1295,7 @@ class ScriptedRobot:
             return self.reply(s, c, req[0])
         if req:
             return self.defer(s, req[0])  # busy, or the speaker is out of view: a word now, help once found
-        back = self.walk_on(s) if self.free() else None
+        back = (self.reguide(s) or self.walk_on(s)) if self.free() else None
         back = back or (self.deferred(s, c) if self.free() or self._walked_up_to_asker(s) else None)
         back = back or (self.then_say(s) if not self.busy() else None) or self.look_toward(s)
         if back is not None:

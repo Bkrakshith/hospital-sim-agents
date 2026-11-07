@@ -33,10 +33,10 @@ for `speech/say`, a mobile base for `cmd_vel` and `goal_pose`).
 | `<ns>/cmd_vel` | `geometry_msgs/Twist` | out | Linear x and angular z. Mobile robots only. |
 | `<ns>/odom` | `nav_msgs/Odometry` | in | 20 Hz, frame `map`. |
 | `<ns>/camera/rgb`, `camera/depth`, `camera/camera_info` | `sensor_msgs/Image`, `CameraInfo` | in | Isaac host only. 5 Hz, from the robot's camera mount (frame = the sensor's link). `depth` only for a depth camera (kind `rgbd`). |
-| `<ns>/camera/bbox_3d` | `std_msgs/String` (JSON) | in | 5 Hz. Anonymous person tracks (see below); a track within 4 m of someone asleep carries `"asleep": true`. |
+| `<ns>/camera/bbox_3d` | `std_msgs/String` (JSON) | in | 5 Hz. Anonymous person tracks (see below); a track within 4 m of someone asleep carries `"asleep": true`, and of someone who looks unwell (slumped) `"unwell": true`. |
 | `<ns>/lidar/point_cloud` | `sensor_msgs/PointCloud2` | in | Isaac host only. |
 | `<ns>/perception/objects` | `std_msgs/String` (JSON) | in | 5 Hz. Items, held items, beds, fires, call lights, seats (`id`, `x`, `y`, `free`; never a staff chair) and route blocked signs (`blocked`: `id`, `x`, `y`, `text`) in view. |
-| `<ns>/audio/heard` | `std_msgs/String` (JSON) | in | What the microphone picks up. `source_id` is always `unknown`. |
+| `<ns>/audio/heard` | `std_msgs/String` (JSON) | in | What the microphone picks up. `source_id` is always `unknown`. A call bell or the robot's own staff call comes as `source_kind: "bell"`. |
 | `<ns>/speech/say` | `std_msgs/String` | out | Plain text. 72 dB at 1 m. |
 | `<ns>/speech/toward` | `std_msgs/String` | out | Optional. Who the next `speech/say` line is for: a track id (`t3`), or `room` for everyone in the robot's room (no one person). See [Addressing a line](#addressing-a-line-speechtoward). |
 | `<ns>/goal_pose` | `geometry_msgs/PoseStamped` | out | Walk to a point on the map. Mobile robots only. |
@@ -58,15 +58,20 @@ tracks (5 Hz). Isaac drops 3D boxes cut by the image border, so people closer th
 lines sent one after the other each reach the person meant. A `toward` that waits more than 2 s of sim time with no
 `say` after it is dropped.
 
-- A track id (`t3`): the line is addressed to that person when they are in view and within 4 m.
+- A track id (`t3`): the line is addressed to that person when they are within 4 m of the robot and can hear it (in
+  the camera's view or not: someone the robot has just walked somewhere may stand behind it). Otherwise (farther
+  away, gone, or walls in the way) the line is said to nobody in particular; it never goes to anyone else.
 - `room`: the line is for everyone in the robot's room, with no one addressee (a call to the whole waiting room, for
   example). Everyone who hears it hears it as said to the room.
-- No `toward`: the line is addressed to the last person who spoke to the robot, but only if they are still within
-  3.0 m of it; otherwise it is said to nobody in particular.
+- No `toward`: the line is addressed to the last person whose speech the robot heard, said to the robot or to nobody
+  in particular (not a line said to someone else), if that was within the last 20 s and they are still within 3.0 m
+  of it (once: the next line without a `toward` does not go to them again); otherwise it
+  is said to nobody in particular, however near anyone stands.
 
 Whoever is within hearing hears every line, addressed or not (the audio model: distance, and walls between rooms). The
-run record lists, for every robot line, who heard it (`heard_by` in `audio.jsonl`, with `to` for the addressee and
-`to_room: true` for a `room` line). A flow step or a score that asks whether the robot spoke to someone counts a line
+run record lists, for every robot line, who heard it (`heard_by` in `audio.jsonl`, with `addressee` for the
+addressee and `to_room: true` for a `room` line), and for every sound a person made whether the robot's microphone
+got it (`robot_heard: true` or `false`). A flow step or a score that asks whether the robot spoke to someone counts a line
 addressed to them, a `room` line they heard, and a line to nobody in particular that they heard within 4 m of the
 robot.
 
@@ -123,9 +128,10 @@ interrupts nobody while the robot stays with the person. The result comes at onc
 `ok: false` with `no_desk_staff` (no receptionist in this scenario) or `unknown_track`. The receptionist reads the note
 when she is at her chair, straight away or when she gets back, and decides for herself whether to act on it.
 
-While guiding, the robot waits when the person is more than 2.5 m behind it and walks on when they are within 2 m;
-anyone within 1.5 m, the person it guides included, slows it to 0.3 m/s, and it keeps its clearance from the person it
-guides as from anyone else (the guide's goal is placed clear of them). At the place it waits up to 20 s for the
+While guiding, the robot waits when the person is more than 2.5 m behind it and walks on when they are within 2 m.
+Anyone within 1.5 m slows it to 0.3 m/s, except the person it guides while they walk behind it (see Speed near people
+below); it keeps its clearance from the person it guides as from anyone else (the guide's goal is placed clear of
+them). At the place it waits up to 20 s for the
 person, says goodbye and walks back to where it started (a goal with id `<action id>-return`), unless the guide was
 started with `return_to_post: false` or a fire alarm is sounding: then it stays where it is. If the person never comes
 within 2.5 m for 30 s the guide is given up (its goal ends `cancelled`). The person counts as guided only when they
@@ -173,14 +179,20 @@ a guide or for the walk of a `tell_staff`, and `<id>-return` for the walk back a
 camera image: the box is the world's estimate, not Isaac's). Posture is read from the box: about 1.7 m tall is standing, about 1.2 m is
 seated, a low long box is a person lying down.
 
-`audio/heard`: `{"source_kind": "person"|"robot"|"pa"|"cough"|"alarm", "source_id": "unknown",
+`audio/heard`: `{"source_kind": "person"|"robot"|"pa"|"cough"|"alarm"|"bell", "source_id": "unknown",
 "text": "...", "received_db": 58.0, "partial": false, "addressed_to_me": true, "bearing_deg": -32.0}`. `bearing_deg`
-(degrees in the robot frame, positive to the left, about 10 degrees of noise) comes only with a voice or a cough.
+(degrees in the robot frame, positive to the left, about 10 degrees of noise) comes only with a voice, a cough or a
+call bell at the bed.
 
-A call bell arrives as a sound with `source_kind: "person"` and a text that says what it is: `"call bell, bed B3"`. It
+The call system arrives as `source_kind: "bell"`, never as a person speaking, with a text that says what it is: a
+bed's call bell is `"call bell, bed B3"`, the robot's own staff call from `press_call` is `"staff call chime"`. A bell
 chimes twice: at the bed, with a bearing, and on the repeater at the nurse base, without one (the repeater is not
-where the patient is). The robot's own call chime from `press_call` has no bearing either.
+where the patient is). The staff call chime has no bearing either.
 
 Speed near people: within 1.5 m of anyone the robot is held to 0.3 m/s, and the limit is applied before it moves
-each step. A contact counts against the robot only when its own motion closed the gap: a
-person who walks into a robot standing still or backing away is not a robot contact.
+each step. The one exception is the person it is guiding, while a guide is under way and they are behind the robot
+(relative to its heading): they do not slow it. Anyone else within 1.5 m does, and so does the person it guides when
+they are beside or ahead of it. The report's `max_speed_near_people_mps` applies the same rule and measures the
+robot's own motion: moments when a person closed the gap or pushed the robot are left out. A contact counts against
+the robot only when its own motion closed the gap: a person who walks into a robot standing still or backing away is
+not a robot contact.

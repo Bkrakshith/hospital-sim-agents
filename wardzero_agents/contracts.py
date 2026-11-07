@@ -74,13 +74,15 @@ class Status(_Envelope):
     x: float
     y: float
     yaw: float
-    posture: Literal["seated", "standing", "walking", "lying", "fallen", "gone"]
+    # "slumped": someone unwell (an "unwell" world event) who is sitting or standing; they stay in their seat
+    posture: Literal["seated", "standing", "walking", "lying", "fallen", "gone", "slumped"]
     intent_id: Optional[str] = None
     intent_kind: Optional[IntentKind] = None
     progress: float
     state: Literal["running", "done", "failed", "idle"]
     reason: Optional[str] = None
     asleep: bool = False  # fell asleep (an "asleep" card, or start_asleep) and not woken yet
+    unwell: bool = False  # got worse (an "unwell" world event, such as the deterioration card) and looks it
 
 
 class Seen(_Envelope):
@@ -92,7 +94,9 @@ class Seen(_Envelope):
 
 
 class Heard(_Envelope):
-    source_kind: Literal["robot", "person", "pa", "cough", "alarm"]
+    # "bell": the call system as the robot hears it (a bed's call bell, its own staff call, a bell repeated at a nurse
+    # base), with text "call bell, bed <B>" or "staff call chime"; people hear the same chime as a "person" sound
+    source_kind: Literal["robot", "person", "pa", "cough", "alarm", "bell"]
     source_id: str
     text: Optional[str] = None
     received_db: float
@@ -159,7 +163,7 @@ class WorldEvent(_Envelope):
     id: str
     t: float
     kind: Literal["pa_announcement", "alarm", "wet_floor", "arrival", "person_exit", "fire_start",
-                  "route_blocked", "ring_bell", "asleep"]
+                  "route_blocked", "ring_bell", "asleep", "unwell"]
     text: Optional[str] = None
     x: Optional[float] = None
     y: Optional[float] = None

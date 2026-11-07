@@ -272,7 +272,7 @@ The robot fairness rule: the robot sees the world only through its own senses.
 
 - The robot hears people only on `/g1/audio/heard`.
 - It speaks by publishing plain text on `/g1/speech/say`.
-- Robot speech is 72 dB at 1 m. It is addressed to the person whose speech the robot last heard (within 20 s, once); otherwise to the nearest person within 2.5 m. The robot itself never sees who spoke.
+- Robot speech is 72 dB at 1 m. Who a line is addressed to (the track named on `speech/toward`, the room, or the last person the robot heard speaking to it or to nobody in particular) is described exactly in [docs/robot-topics.md](docs/robot-topics.md#addressing-a-line-speechtoward). The robot itself never sees who spoke.
 - In the stub the robot gets anonymous person boxes on `camera/bbox_3d` and the objects in view
   on `perception/objects`, but no camera images or lidar. Those come with Isaac.
 
@@ -281,7 +281,7 @@ To test a real G1 stack, point its speech output at `/g1/speech/say` and its spe
 a small placeholder that shows the pattern. It is not the real robot's behaviour.
 
 The robot's microphone cannot tell who spoke, so on `/g1/audio/heard` the `source_id` is
-always `unknown`. `source_kind` still says whether it was a person, the PA, a cough or an alarm.
+always `unknown`. `source_kind` still says whether it was a person, the PA, a cough, an alarm or a call bell.
 
 The audit `hhumans audit` checks the live ROS graph once. It flags any node whose name does
 not start with `wardzero_` that is subscribed to `/humans/`, `/scenario/`,
