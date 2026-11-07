@@ -92,7 +92,9 @@ class Seen(_Envelope):
 
 
 class Heard(_Envelope):
-    source_kind: Literal["robot", "person", "pa", "cough", "alarm"]
+    # "bell": the call system as the robot hears it (a bed's call bell, its own staff call, a bell repeated at a nurse
+    # base), with text "call bell, bed <B>" or "staff call chime"; people hear the same chime as a "person" sound
+    source_kind: Literal["robot", "person", "pa", "cough", "alarm", "bell"]
     source_id: str
     text: Optional[str] = None
     received_db: float

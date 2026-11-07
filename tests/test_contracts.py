@@ -362,3 +362,9 @@ def test_topics_module_has_no_rclpy_import():
         elif isinstance(node, ast.ImportFrom) and node.module:
             imported.add(node.module.split(".")[0])
     assert "rclpy" not in imported
+
+
+def test_heard_takes_the_bell_kind_for_the_call_system():
+    bell = Heard(source_kind="bell", source_id="unknown", text="call bell, bed B3", received_db=47.0, partial=False,
+                 addressed_to_me=False, bearing_deg=12.0)
+    assert from_json(Heard, to_json(bell)) == bell
