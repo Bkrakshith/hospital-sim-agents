@@ -522,3 +522,23 @@ def test_a_person_already_at_the_place_far_from_the_robot_is_not_guided_there(st
         if s.tasks._guide is None:
             break
     assert [e["reason"] for e in guide_end(tmp_path)] != ["arrived"]
+
+
+def test_the_guided_person_ahead_with_a_bystander_beside_does_not_stop_the_guide(staged, tmp_path):
+    """Third QA (inproc_front2): H1 stands 1.0 m east of the reception post, on the robot's way to the clinic
+    corridor, and V2 stands at her start just south. No route clears both of them by AVOID_R_M, so the replan fell back
+    to the plain route through H1 and the guide ended blocked_by_person after 30 s. The robot must find its way round
+    H1 (the person actually in its way) and the guide must arrive, with no contact."""
+    s = svc(staged("reception_guide"), tmp_path)
+    w = s.world
+    put(w, "H1", 2.05, 1.55, math.pi)
+    s.step(0.1)
+    s.on_task_action({"id": "gd", "action": "guide_start", "track": w.tracks.track("H1"), "place": "clinic_corridor"})
+    s.step(0.1)
+    s.on_intent(Intent(id="f-H1", person="H1", t=s.t, kind="follow", target="g1"))
+    for _ in range(int(80 / 0.1)):
+        s.step(0.1)
+        if s.tasks._guide is None:
+            break
+    assert [e["reason"] for e in guide_end(tmp_path)] == ["arrived"], guide_end(tmp_path)
+    assert not contacts(tmp_path)

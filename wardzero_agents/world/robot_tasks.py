@@ -150,6 +150,7 @@ GUIDE_CLEAR_M = 1.2  # the guide's walk ends at least this far from the person i
 NEAR_PERSON_M = 1.5  # another person this close slows the robot ...
 NEAR_PERSON_SPEED = 0.3  # ... to this (m/s)
 CAP_MARGIN_M = 0.02  # coming up to NEAR_PERSON_M of someone, the robot keeps this short of it at full speed
+THROUGH_M = 0.5  # a new way round that passes this close to the person in the way goes through them
 PERSON_AVOID_M = 0.7  # the robot's routes keep this far from people standing in the way, when they can
 TELL_RANGE_M = 5.0  # a staff member further than this from the robot is "not at the desk"
 TELL_NEAR_M = 1.5  # walking to tell a staff member, it stops and speaks once she is this close and in sight
@@ -190,6 +191,15 @@ class TaskOutputs:
     results: list[dict] = field(default_factory=list)
     audio: list[AudioEvent] = field(default_factory=list)
     nudges: list[Nudge] = field(default_factory=list)
+
+
+def _seg_dist(px: float, py: float, a: tuple, b: tuple) -> float:
+    """The distance from point (px, py) to the segment a-b."""
+    ax, ay, bx, by = a[0], a[1], b[0], b[1]
+    dx, dy = bx - ax, by - ay
+    L = dx * dx + dy * dy
+    k = 0.0 if L < 1e-12 else max(0.0, min(1.0, ((px - ax) * dx + (py - ay) * dy) / L))
+    return math.hypot(px - (ax + k * dx), py - (ay + k * dy))
 
 
 class RobotTasks:
@@ -1094,6 +1104,34 @@ class RobotTasks:
         x, y, yaw = self.post
         self._set_goal(ra[0], x, y, yaw, t)
 
+    def _round_discs(self, x: float, y: float, blockers: list) -> list:
+        """The discs a new way round the people holding the robot keeps out of: everyone within 4 m by AVOID_R_M if a
+        route clears them all; else only the people in its way (blockers) by AVOID_R_M, then by PERSON_AVOID_M, if
+        that route goes through nobody near. With no route round them all, the router falls back to the plain route,
+        which leads through the person in the way (a bystander beside the guided person in a narrow spot): the robot
+        then waited there until it gave up. When every way leads through someone, it keeps everyone's discs and waits
+        as before (two people side by side across a corridor)."""
+        w, r = self.world, self.world.robot
+        near = [(q.x, q.y, AVOID_R_M) for _, q in self._others() if math.hypot(q.x - r.x, q.y - r.y) < 4.0]
+        ahead = [w.people[b] for b in blockers if b in w.people]
+        if not ahead:
+            return near
+        tries = [near, [(q.x, q.y, AVOID_R_M) for q in ahead], [(q.x, q.y, PERSON_AVOID_M) for q in ahead]]
+        close = [q for _, q in self._others() if math.hypot(q.x - r.x, q.y - r.y) < 4.0]
+
+        def through(pts) -> bool:  # the route runs through someone near (closer than they stand now, and closer
+            # than THROUGH_M): the router's fallback to the plain route when no way round them all exists, or a way
+            # round the person in the way that leads into the person beside them
+            legs = list(zip([(r.x, r.y)] + list(pts), pts))
+            return any(_seg_dist(q.x, q.y, a, b) < min(THROUGH_M, math.hypot(q.x - r.x, q.y - r.y) - 0.05)
+                       for q in close for a, b in legs)
+
+        for discs in tries:
+            pts = r.router.route((r.x, r.y), (x, y), discs)
+            if pts and not through(pts):
+                return discs
+        return near
+
     def _others(self) -> list:
         w = self.world
         return [(pid, q) for pid, q in w.people.items() if q.posture != "gone" and q.kind != "static"]
@@ -1264,7 +1302,7 @@ class RobotTasks:
                 return
             if self._held_s >= REPLAN_S and t - self._replanned_at >= REPLAN_S and self._goal_xy is not None:
                 x, y, yaw, exempt = self._goal_xy
-                discs = [(q.x, q.y, AVOID_R_M) for _, q in self._others() if math.hypot(q.x - r.x, q.y - r.y) < 4.0]
+                discs = self._round_discs(x, y, blockers)
                 self._replanned_at, self._held_s = t, 0.0
                 r.set_goal(x, y, yaw, discs)  # the same goal (and goal id), a new way round
         else:
