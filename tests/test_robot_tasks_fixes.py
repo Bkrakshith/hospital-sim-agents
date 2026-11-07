@@ -583,3 +583,17 @@ def test_route_blocked_reaches_the_robots_guide_router(staged, tmp_path):
             for bx, by in ENTRANCE_BLOCKS:
                 assert math.hypot(x - bx, y - by) >= sw.ROUTE_BLOCK_RADIUS_M - 0.15
             assert math.hypot(x + 1.24, y + 2.3) >= sw.FIRE_KEEP_M - 0.1
+
+
+# ---- what the robot sees within reach ----------------------------------------------------------------------------------
+def test_the_instrument_tray_behind_the_scrub_robot_is_in_its_view(staged, tmp_path):
+    """scrub_nurse: the tray is on the trolley just behind the robot, within reach; its situation said "Objects in
+    view: nothing notable"."""
+    from wardzero_agents.world.perception import perceive_objects
+    s = svc(staged("scrub_nurse"), tmp_path)
+    w = s.world
+    ids = {i["id"] for i in perceive_objects(w, w.robot)["items"]}
+    assert {"scalpel", "forceps", "retractor", "suture_scissors", "needle_holder"} <= ids
+    # an item behind it out of reach is still out of view
+    w.robot.teleport(w.robot.x, w.robot.y + 1.5, w.robot.yaw)
+    assert not {i["id"] for i in perceive_objects(w, w.robot)["items"]} & {"scalpel"}

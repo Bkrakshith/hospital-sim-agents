@@ -18,6 +18,9 @@ BOX_SEATED = (0.6, 0.6, 1.2)
 BOX_LYING = (1.8, 0.6, 0.5)
 DOOR_LIGHT_OUT_M = 0.3  # a call light over a door shows this far outside the room
 BLOCKED_SIGN = "route_blocked"  # the id prefix of the sign a route_blocked event puts up
+# an item this close to the robot is seen whichever way it faces (a glance down or over its shoulder at what is within
+# its arms' reach, like the instrument tray on the trolley just behind it)
+REACH_VIEW_M = 1.0
 ASLEEP_SEEN_M = 4.0  # the camera can tell someone is asleep (eyes shut, still) this close
 
 
@@ -47,6 +50,10 @@ def _in_view(world, body: RobotBody, x: float, y: float) -> bool:
     if d > 1e-6 and abs(bearing_deg(Pose(*body.pose), x, y)) > cfg.fov_deg / 2:
         return False
     return world._los((body.x, body.y), (x, y))
+
+
+def _in_reach(world, body: RobotBody, x: float, y: float) -> bool:
+    return math.hypot(x - body.x, y - body.y) <= REACH_VIEW_M and world._los((body.x, body.y), (x, y))
 
 
 def call_light_points(site, bed_id: str) -> list[tuple[float, float]]:
@@ -113,7 +120,7 @@ def perceive_objects(world, body: RobotBody) -> dict:
     items = [{"id": it.id, "kind": it.kind, "label": it.label, "x": round(it.x, 3), "y": round(it.y, 3),
               "z": round(it.z, 3)}
              for it in world.objects.items.values()
-             if it.holder is None and _in_view(world, body, it.x, it.y)]
+             if it.holder is None and (_in_view(world, body, it.x, it.y) or _in_reach(world, body, it.x, it.y))]
     held = [{"id": it.id, "kind": it.kind, "label": it.label}
             for it in world.objects.items.values() if it.holder == world_robot_id(world)]
     occupied = {p.bed for p in world.people.values() if p.bed and p.posture == "lying"}
