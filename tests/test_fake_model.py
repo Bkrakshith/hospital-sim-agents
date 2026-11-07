@@ -261,3 +261,98 @@ def test_the_goodbye_ends_the_follow_and_she_goes_on_through(staged):
     d = ask(loaded, "V1", ["Current activity: follow g1 (running).",
                            "ROBOT SAID TO YOU: Here we are. Goodbye, and take care."])
     assert kind(d) == "leave" and d["intent"]["target"] == "ward_entrance"
+
+
+# ---- second fix round: people who do not take over, wait for directions, freeze, and (opt-in) find their own way ----
+SPECIMEN_OFFER = ("NUDGE: The robot is holding out the specimen box (blood specimens, ward bay 2) to you. If you want "
+                  "it, take it (accept_item); if not, refuse it (refuse_item).")
+
+
+@pytest.mark.parametrize("pid", ["TR1", "TR2"])
+def test_a_bed_porter_turns_down_the_specimen_box(staged, pid):
+    loaded = staged("specimen_run")
+    assert kind(ask(loaded, pid, [SPECIMEN_OFFER])) == "refuse_item"
+    assert kind(ask(loaded, "PO1", [SPECIMEN_OFFER])) == "accept_item"
+
+
+def test_a_robot_line_that_names_a_place_but_sends_nobody_there_is_not_a_walk(staged):
+    """Isaac ae_waiting: told a triage nurse was coming, George got up and walked to Triage. Only a direction moves."""
+    loaded = staged("ae_waiting")
+    d = ask(loaded, "P1", ["ROBOT SAID TO YOU: I've called the triage nurse for you, they're coming now. Please stay "
+                           "seated, help is on the way."])
+    assert kind(d) != "walk_to"
+    d = ask(loaded, "P1", ["ROBOT SAID TO YOU: A nurse from AE_Triage will come to you here."])
+    assert kind(d) != "walk_to"
+
+
+@pytest.mark.parametrize("line", [
+    "Fire alarm. Please walk to the Ambulance handover bay now.",
+    "We're nearly there. Please walk on into the Ambulance handover bay and wait there.",
+    "The main entrance is blocked by fire. Please walk to the Ambulance handover bay now, away from the fire.",
+    "Go to the Ambulance handover bay, please.",
+])
+def test_a_direction_from_the_robot_is_still_followed(staged, line):
+    loaded = staged("evacuation_guide")
+    d = ask(loaded, "V1", [f"ROBOT SAID TO YOU: {line}"])
+    assert kind(d) == "walk_to" and d["intent"]["target"] == "AE_Handover"
+
+
+FREEZE = ("NUDGE: The alarm has frozen you with fear. You cannot decide which way to go. Stand still and say you do "
+          "not know where to go until someone calmly tells you.")
+GUIDE_OFFER = ("NUDGE: The robot is offering to walk you to Ambulance handover bay. If you want to go there, follow it "
+               "(follow g1).")
+
+
+def test_a_frozen_person_stands_still_and_says_so_even_when_offered_a_guide(staged):
+    loaded = staged("evacuation_guide")
+    d = ask(loaded, "V2", [FREEZE])
+    assert kind(d) == "wait_standing" and "where to go" in d["say"].lower() and d["addressee"] == ""
+    frozen = ['t=100s; I felt: ' + FREEZE[len("NUDGE: "):] + '; I chose wait_standing and said "I don\'t know where '
+              'to go!" (mood anxious)']
+    d = ask(loaded, "V2", ["Current activity: wait_standing (done).", GUIDE_OFFER.replace("NUDGE: ", "NUDGE: ")],
+            history=frozen)
+    assert kind(d) == "wait_standing"
+    assert not d["say"], "said once is enough"
+
+
+def test_a_frozen_person_moves_once_the_robot_speaks_to_them(staged):
+    loaded = staged("evacuation_guide")
+    frozen = ['t=100s; I felt: ' + FREEZE[len("NUDGE: "):] + '; I chose wait_standing (mood anxious)']
+    d = ask(loaded, "V2", ["ROBOT SAID TO YOU: It's all right, come with me. I'll walk with you to the Ambulance "
+                           "handover bay.", GUIDE_OFFER], history=frozen)
+    assert kind(d) == "follow"
+    d = ask(loaded, "V2", ["ROBOT SAID TO YOU: Please walk to the Ambulance handover bay now, away from the fire."],
+            history=frozen)
+    assert kind(d) == "walk_to" and d["intent"]["target"] == "AE_Handover"
+
+
+WAITED = "You have been waiting about {m} minutes."
+
+
+def test_people_find_their_own_way_only_when_asked_to_wander(staged, monkeypatch):
+    loaded = staged("reception_guide")
+    monkeypatch.delenv("WARDZERO_TEST_PEOPLE_WANDER", raising=False)
+    assert kind(ask(loaded, "V1", [WAITED.format(m=2), "Current activity: sit_idle (done)."])) != "walk_to"
+    monkeypatch.setenv("WARDZERO_TEST_PEOPLE_WANDER", "1")
+    early = ask(loaded, "V1", ["You have been waiting about 0 minutes.", "Current activity: none."])
+    assert kind(early) != "walk_to", "not in the first half minute"
+    for pid, place in (("V1", "ward_entrance"), ("H1", "clinic_corridor")):
+        d = ask(loaded, pid, [WAITED.format(m=1), "Current activity: wait_standing (done)."])
+        assert kind(d) == "walk_to" and d["intent"]["target"] == place, pid
+        again = ask(loaded, pid, [WAITED.format(m=3), "Current activity: walk_to " + place + " (done)."],
+                    history=[f"t=40s; I chose walk_to {place} (mood calm)"])
+        assert kind(again) != "walk_to", "once there, they stay"
+        later = ask(loaded, pid, [WAITED.format(m=4), "Current activity: sit_idle (done).",
+                                  "NUDGE: You can't work out from the signs how to get where you are going. Find "
+                                  "someone who can help."], history=[f"t=40s; I chose walk_to {place} (mood calm)"])
+        assert kind(later) not in ("walk_to", "approach"), "and do not go back to the robot for help"
+        on_way = ask(loaded, pid, [WAITED.format(m=1), f"Current activity: walk_to {place} (running)."],
+                     history=[f"t=40s; I chose walk_to {place} (mood calm)"])
+        assert kind(on_way) == "walk_to"
+
+
+def test_wandering_leaves_staff_and_bed_patients_where_they_are(staged, monkeypatch):
+    monkeypatch.setenv("WARDZERO_TEST_PEOPLE_WANDER", "1")
+    meal = staged("meal_round")
+    assert kind(ask(meal, "M1", [WAITED.format(m=2)])) != "walk_to"
+    assert kind(ask(meal, "N1", [WAITED.format(m=2)])) != "walk_to"
