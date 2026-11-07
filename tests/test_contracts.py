@@ -368,3 +368,20 @@ def test_heard_takes_the_bell_kind_for_the_call_system():
     bell = Heard(source_kind="bell", source_id="unknown", text="call bell, bed B3", received_db=47.0, partial=False,
                  addressed_to_me=False, bearing_deg=12.0)
     assert from_json(Heard, to_json(bell)) == bell
+
+
+def test_world_event_takes_the_unwell_kind_for_a_person_getting_worse():
+    w = WorldEvent(id="w2", t=33.7, kind="unwell", person="P4")
+    assert from_json(WorldEvent, to_json(w)) == w
+
+
+def test_status_carries_unwell_and_the_slumped_posture():
+    s = Status(person="P4", t=40.0, x=1.0, y=2.0, yaw=0.0, posture="slumped", progress=0.0, state="idle", unwell=True)
+    back = from_json(Status, to_json(s))
+    assert back == s and back.unwell is True and back.posture == "slumped"
+
+
+def test_status_unwell_defaults_to_false_for_older_senders():
+    payload = {"schema": "wz.v1", "person": "P2", "t": 0.0, "x": 0.0, "y": 0.0, "yaw": 0.0, "posture": "seated",
+               "intent_id": None, "intent_kind": None, "progress": 0.0, "state": "idle"}
+    assert from_json(Status, json.dumps(payload)).unwell is False
