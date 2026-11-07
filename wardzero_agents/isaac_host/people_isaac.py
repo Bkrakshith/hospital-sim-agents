@@ -181,6 +181,11 @@ class IraAgent:
             return "running"
         return "failed"
 
+    def teleport(self, x, y, yaw):
+        """Put the character at (x, y) on the floor at once, facing along yaw (a step out of a seat row it stood up
+        in). ``facing`` is a point to face, as for a patient getting up beside the bed."""
+        self.a.teleport(target=self._f3(x, y, 0.0), facing=self._f3(x + math.cos(yaw), y + math.sin(yaw), 0.0))
+
     def pose(self):
         t = self.a.get_world_translation()
         f = self.a.get_facing_direction()
