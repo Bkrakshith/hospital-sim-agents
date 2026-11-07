@@ -256,10 +256,17 @@ def build_graph(deps: "MindDeps", checkpointer: Any = None):
         i = d["intent"]
         intent = Intent(id=uuid.uuid4().hex, person=person, t=t, kind=i["kind"], target=i["target"],
                         text=i["text"], addressee=d["addressee"])
-        deps.effects.publish_intent(intent)
+        in_effect = deps.effects.publish_intent(intent)
         if d["say"]:
             deps.effects.publish_say(Say(person=person, t=t, text=d["say"], addressee=d["addressee"]))
         current = {"id": intent.id, "kind": intent.kind, "target": intent.target, "t": t, "state": "sent"}
+        if isinstance(in_effect, str) and in_effect != intent.id:
+            # Not sent: it repeats the intent still running, which stays the current one. Recording the unsent id
+            # would read "(sent)" for ever and hide that intent's end.
+            prev = state.get("current_intent") or {}
+            status = state["frame"]["status"]
+            current = (prev if prev.get("id") == in_effect
+                       else {**current, "id": in_effect, "t": status.get("t", t), "state": status.get("state")})
         return {"current_intent": current, "mood": d["mood"],
                 "patience_left": _clamp01(state["patience_left"] + d["patience_delta"])}
 

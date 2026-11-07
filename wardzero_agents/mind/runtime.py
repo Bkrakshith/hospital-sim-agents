@@ -34,7 +34,9 @@ def _held_while_pending(h: Heard) -> bool:
 
 
 class Effects(Protocol):
-    def publish_intent(self, intent: Intent) -> None: ...
+    # Returns the id of the intent in effect (this one, or the running one it repeats and that was kept), or None
+    # when the intent was simply sent.
+    def publish_intent(self, intent: Intent) -> Optional[str]: ...
     def publish_say(self, say: Say) -> None: ...
 
 

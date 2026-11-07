@@ -238,7 +238,9 @@ class AgentService:
         await p.mind.on_tick(t, obs, st, nudges)
 
     # ---- effects -------------------------------------------------------------------------
-    def publish_intent(self, intent: Intent) -> None:
+    def publish_intent(self, intent: Intent) -> str:
+        """Send the intent, unless it repeats the one still running. Returns the id of the intent in effect: this
+        one, or the running one it repeats (the mind records that one as its current intent, not one never sent)."""
         p = self.people.get(intent.person)
         if not intent.overlay and p is not None:
             key = (intent.kind, intent.target, intent.text)
@@ -251,10 +253,11 @@ class AgentService:
                 # durable ones, end in another "intent done" and another decision, forever.
                 log.debug("%s: %s %s is already running; not sent again", intent.person, intent.kind,
                           intent.target)
-                return
+                return p.last_base[0]
             p.last_base = (intent.id, key)
         self.out.publish_intent(intent)
         self.runlog.write("intents", intent.model_dump(mode="json", by_alias=True))
+        return intent.id
 
     def publish_say(self, say: Say) -> None:
         self.out.publish_say(say)
