@@ -15,7 +15,7 @@ from wardzero_agents.runlog import RunLog
 from wardzero_agents.studio import auto_staff
 from wardzero_agents.world import robot_tasks as rt
 from wardzero_agents.world import stub_world as sw
-from wardzero_agents.world.perception import perceive_people
+from wardzero_agents.world.perception import bbox_3d, perceive_people
 
 CONFIG = Path(__file__).resolve().parents[1] / "config"
 PRESETS = load_scenario_presets(CONFIG)
@@ -446,6 +446,11 @@ def _track_of(w, pid):
     return next((d for d in perceive_people(w, w.robot) if d["track"] == w.tracks.track(pid)), None)
 
 
+def _detection_of(w, pid):
+    """The person's detection on the robot's wire (camera/bbox_3d), or None when the camera does not have them."""
+    return next((d for d in bbox_3d(w, w.robot, 0.0)["detections"] if d["id"] == w.tracks.track(pid)), None)
+
+
 def test_the_asleep_card_puts_her_to_sleep_and_the_robot_sees_it_within_4_m(staged, tmp_path):
     s = svc(staged("meal_round"), tmp_path)
     w = s.world
@@ -456,6 +461,8 @@ def test_the_asleep_card_puts_her_to_sleep_and_the_robot_sees_it_within_4_m(stag
     assert [st.asleep for st in w.statuses() if st.person == "M2"] == [True]
     assert [st.asleep for st in w.statuses() if st.person == "M1"] == [False]
     assert _track_of(w, "M2")["asleep"] is True
+    assert _detection_of(w, "M2")["asleep"] is True  # on the robot's wire, not only in the sim's own view
+    assert not _detection_of(w, "M1") or not _detection_of(w, "M1").get("asleep")
     # from further than 4 m the camera cannot tell
     q = w.people["M2"]
     for d in (4.6, 5.0, 5.5):
@@ -467,6 +474,7 @@ def test_the_asleep_card_puts_her_to_sleep_and_the_robot_sees_it_within_4_m(stag
                 seen = _track_of(w, "M2")
                 if seen is not None:
                     assert not seen.get("asleep")
+                    assert not _detection_of(w, "M2").get("asleep")
                     return
     pytest.fail("no spot 4.6-5.5 m from M2 that can see her")
 
@@ -513,6 +521,26 @@ def test_her_own_waking_intent_wakes_her_and_an_idle_one_does_not(staged, tmp_pa
     s.on_intent(Intent(id="i3", person="M2", t=s.t, kind="sit_up_in_bed"))
     advance(s, 0.2)
     assert not w.people["M2"].asleep
+
+
+def test_an_asleep_world_event_puts_her_to_sleep_in_a_run(staged, tmp_path):
+    """The asleep card reaches the sim as a world event (the director sends one with the card's nudge)."""
+    s = svc(staged("meal_round"), tmp_path)
+    s.on_world_event(WorldEvent(id="b1", t=0.0, kind="asleep", person="M2"))
+    advance(s, 0.2)
+    assert s.world.people["M2"].asleep and not s.world.people["M1"].asleep
+    assert [(r["kind"], r["event"], r["person"]) for r in rows(tmp_path / "run", "world")
+            if r.get("kind") == "asleep"] == [("asleep", "start", "M2")]
+
+
+def test_close_range_detections_carry_asleep(staged, tmp_path):
+    from wardzero_agents.isaac_host.robot import close_range_detections
+    s = svc(staged("meal_round"), tmp_path)
+    w = s.world
+    _beside_bed(s, "M2")
+    _fall_asleep(s, "M2")
+    got = [d for d in close_range_detections(w, 0.0, ()) if d["id"] == w.tracks.track("M2")]
+    assert [d.get("asleep") for d in got] == [True]
 
 
 def test_start_asleep_on_the_cast_entry(staged, tmp_path):

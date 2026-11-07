@@ -105,12 +105,16 @@ def _moving(p) -> bool:
     return bool(p.plan) and p.plan[0].kind == "walk"
 
 
+def _seen_asleep(p, body: RobotBody) -> bool:
+    return bool(getattr(p, "asleep", False)) and math.hypot(p.x - body.x, p.y - body.y) <= ASLEEP_SEEN_M
+
+
 def perceive_people(world, body: RobotBody) -> list[dict]:
     out = []
     for pid, p in _visible(world, body):
         d = {"track": world.tracks.track(pid), "x": round(p.x, 3), "y": round(p.y, 3),
              "posture": p.posture, "moving": _moving(p), "holding": _holding(world, pid), "bed": p.bed}
-        if getattr(p, "asleep", False) and math.hypot(p.x - body.x, p.y - body.y) <= ASLEEP_SEEN_M:
+        if _seen_asleep(p, body):
             d["asleep"] = True
         out.append(d)
     return out
@@ -163,4 +167,6 @@ def bbox_3d(world, body: RobotBody, t: float) -> dict:
                                 "yaw": round(p.yaw, 3)},
                      "size": {"x": size[0], "y": size[1], "z": size[2]}},
         })
+        if _seen_asleep(p, body):
+            dets[-1]["asleep"] = True  # eyes shut and still, close enough for the camera to tell
     return {"header": {"stamp": t, "frame_id": "map"}, "detections": dets}

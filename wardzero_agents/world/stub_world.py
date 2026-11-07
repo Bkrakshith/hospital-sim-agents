@@ -1202,6 +1202,10 @@ class StubWorld:
             except ValueError:
                 log.warning("arrival ignored: unknown persona '%s'", persona)
             return []
+        if ev.kind == "asleep":
+            # the asleep card as the sim gets it (the card's nudge only reaches the person's mind)
+            self.apply_nudge(Nudge(person=ev.person or "", t=ev.t, card=ASLEEP_CARD, message=ev.text or ""))
+            return []
         if ev.kind == "ring_bell":
             # the scenario rings the bell itself, so it does not hang on the patient's model choosing to ring
             q = self.people.get(ev.person or "")
