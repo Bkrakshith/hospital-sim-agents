@@ -290,3 +290,20 @@ def test_scrub_job_passes_an_instrument_in_one_decision():
     job = PRESETS["scrub_nurse"].robot_brief["job"]
     assert "one action" in job and "hand_over" in job
     assert "(take," not in job
+
+
+def test_evacuation_safe_exit_does_not_keep_the_robot_from_the_a_and_e_waiting_area():
+    # The job (and the flow's last step) has the robot walk P1 out of A&E waiting after the lobby people; the safe-exit
+    # line must not tell it to stay at the bay while someone is still inside.
+    b = PRESETS["evacuation_guide"].robot_brief
+    exit_line = b["safe_exit"].lower()
+    assert "rather than walking back into the building" not in exit_line
+    assert "still inside" in exit_line and "go back" in exit_line
+    assert "a&e waiting area" in b["job"].lower()
+
+
+def test_scrub_job_does_not_say_the_tray_is_out_of_view():
+    # Items within the robot's reach are listed among the objects it sees whichever way it faces.
+    job = PRESETS["scrub_nurse"].robot_brief["job"]
+    assert "camera" not in job and "out of" not in job
+    assert "within reach" in job

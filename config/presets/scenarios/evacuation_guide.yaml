@@ -14,7 +14,8 @@ robot_brief:
     waiting area and walk anyone still there out. Stay calm and give short instructions.
   safe_exit: >-
     With a fire at the main entrance, the safe way out is the Ambulance handover bay in A&E (the ambulance doors). Take
-    people there, and once they are through, stay there with them rather than walking back into the building.
+    people there. While anyone is still inside (the A&E waiting area), go back for them by the same safe way; once the
+    last person is out, stay there with them rather than going back to your post.
   destination: AE_Handover  # read by the score (people reach the right exit); the robot is told the safe exit above
 staff_line: >-
   When the fire alarm sounds, the robot guides the visitors and patients in the lobby and the A&E waiting room out by
