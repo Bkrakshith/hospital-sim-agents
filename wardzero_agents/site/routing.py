@@ -14,6 +14,7 @@ from .model import OccGrid
 CLEARANCE = 0.3
 NEAR_PENALTY = 3.0  # extra cost per step inside the clearance band
 TIGHT_M = 0.35  # a robot's narrower berth: its radius (0.3 m) and a little; the robot_near_furniture_s distance
+# (default only for a router whose clearance is no wider: a wider clearance is a wider body, such as the walking G1)
 DETOUR_RATIO = 1.25  # the hard band's route is kept unless it is this much longer than the tight band's ...
 DETOUR_M = 2.0  # ... plus this
 _SQ2 = math.sqrt(2.0)
@@ -30,13 +31,19 @@ class Router:
     exist, or is a long detour (more than DETOUR_RATIO x the other + DETOUR_M: a 1 m link the wide berth cannot pass,
     such as the corridor-to-ambulance-bay link), the route keeps out of the ``tight`` band instead (TIGHT_M: the body's
     radius and a little, so the body still clears every wall and piece of furniture). Only where neither exists (a
-    doorway narrower than the tight band) does it fall back to the soft band."""
+    doorway narrower than the tight band) does it fall back to the soft band.
+
+    tight (metres): None (default) is TIGHT_M when ``clearance`` is no wider than TIGHT_M, else no tight band: a router
+    built with a wider clearance is for a wider body (the walking G1, 0.6 m), whose berth must not narrow to 0.35 m.
+    0 turns the tier off; any other value is used as given (below ``hard``)."""
 
     def __init__(self, grid: OccGrid, clearance: float = CLEARANCE, cache_size: int = 4096, hard: float = 0.0,
-                 tight: float = TIGHT_M):
+                 tight: Optional[float] = None):
         self.grid = grid
         self.clearance = float(clearance)  # kept: block() and with_rects_blocked() rebuild the band with it
         self.hard = float(hard)
+        if tight is None:
+            tight = TIGHT_M if self.clearance <= TIGHT_M else 0.0
         self.tight = float(tight) if 0.0 < float(tight) < self.hard else 0.0  # a middle tier only below the hard one
         occ = grid.occ.astype(bool)
         near = self._inflate(occ, clearance)

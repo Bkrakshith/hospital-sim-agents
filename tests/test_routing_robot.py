@@ -83,19 +83,56 @@ def test_where_the_hard_band_has_no_route_the_tight_band_comes_before_the_soft_o
 
 
 def test_a_route_blocked_seal_keeps_the_robot_out_of_the_blocked_way(evac):
-    """evacuation_guide's three seals across the main entrance (and the fire there): no robot route to the bay passes
-    within the sealed radius of a block or through the fire."""
+    """evacuation_guide's three seals across the main entrance (and the fire there) reach the robot's router: a route
+    from outside the entrance to the bay that went through the Lobby before the seals no longer passes within the
+    sealed radius of a block or through the fire, and the guide from A&E to the bay stays out of the Lobby."""
     w = StubWorld(evac, 7)
     blocks = [(-4.2, -2.6), (-1.2, -2.6), (1.8, -2.6)]
     fire = (-1.24, -2.3)
+    outside = (0.0, -6.0)  # in front of the main entrance: its unsealed route to the bay crosses the Lobby
+
+    def near_a_block(route):
+        return min(math.dist(p, b) for p in samples(route) for b in blocks)
+
+    before = w.robot.router.route(outside, BAY)
+    assert before is not None and near_a_block(before) < 1.0  # the check below is not met by chance
     w.apply_world_event(WorldEvent(id="f", t=60.0, kind="fire_start", x=fire[0], y=fire[1]))
     for i, (x, y) in enumerate(blocks):
         w.apply_world_event(WorldEvent(id=f"b{i}", t=60.0, kind="route_blocked", x=x, y=y, text="x"))
     w.step(60.1)
-    for a in [(1.0, -0.9), (2.5, -0.5), (-2.0, 1.0)]:
-        route = w.robot.router.route(a, BAY)
+    rr = w.robot.router
+    g = rr.grid
+    for b in blocks:  # the seal is in the robot's own router, not only the people's
+        iy, ix = g.to_cell(*b)
+        assert rr._raw[iy][ix], b
+    after = rr.route(outside, BAY)
+    assert after != before
+    starts = [(-10.2, 2.7), (1.0, -0.9), (2.5, -0.5), (-2.0, 1.0)] + ([outside] if after is not None else [])
+    for a in starts:
+        route = rr.route(a, BAY)
         assert route is not None, a
         for x, y in samples(route):
             for bx, by in blocks:
                 assert math.dist((x, y), (bx, by)) > 1.5 - 0.15, (a, (x, y))
             assert math.dist((x, y), fire) > 1.5, (a, (x, y))
+    guide = rr.route((-10.2, 2.7), BAY)  # the A&E-to-bay guide QA flagged
+    assert all(w.site.room_at(x, y) != "Lobby" for x, y in samples(guide))
+
+
+def test_a_wider_berth_router_gets_no_tight_band_unless_asked(evac):
+    """The tight band (0.35 m) is for the stub robot's body (radius 0.3 m, clearance 0.3 m). A router built with a
+    wider clearance (the walking G1's 0.6 m: its half-width with arms is about 0.35 m) keeps its wider berth: no tight
+    band, so it does not take the 1 m corridor-to-bay link a few centimetres off the walls."""
+    w = StubWorld(evac, 7)
+    g = w.site.grid
+    g1 = Router(g, clearance=0.6, hard=0.5)
+    assert g1._tight is None
+    route = g1.route((-10.2, 2.7), BAY)
+    assert route is not None
+    for x, y in samples(route):
+        if math.dist((x, y), route[0]) < 1.0 or math.dist((x, y), route[-1]) < 1.0:
+            continue
+        assert not _near_blocked(g, x, y, 0.45), (x, y)
+    asked = Router(g, clearance=0.6, hard=0.5, tight=0.35)  # still there for a caller that wants it
+    assert asked._tight is not None
+    assert w.robot.router._tight is not None  # the stub robot's router keeps it by default
