@@ -517,9 +517,16 @@ class RobotTasks:
             spot = self._aside(c, q, fx, fy, px, py, free)
             if spot is not None:
                 return spot
-        # nowhere beside it: back off along the line from the seat through the robot, past the seat's front
+        # nowhere beside it: back off along the line from the seat through the robot, past the seat's front, to a spot
+        # its body is clear at; else it shows the seat from where it stands
         d = max(math.hypot(w.robot.x - c.x, w.robot.y - c.y), 1e-6)
-        return c.x + (w.robot.x - c.x) / d * (SEAT_BESIDE_M + 1.0), c.y + (w.robot.y - c.y) / d * (SEAT_BESIDE_M + 1.0)
+        for free in (getattr(r_, "is_clear", None), getattr(r_, "is_free", None)):
+            for k in (1.0, 1.5, 0.5, 2.0):
+                x = c.x + (w.robot.x - c.x) / d * (SEAT_BESIDE_M + k)
+                y = c.y + (w.robot.y - c.y) / d * (SEAT_BESIDE_M + k)
+                if not w.site.grid.blocked(x, y) and (free is None or free(x, y)):
+                    return x, y
+        return w.robot.x, w.robot.y
 
     def _aside(self, c, q, fx, fy, px, py, free) -> Optional[tuple[float, float]]:
         w = self.world
