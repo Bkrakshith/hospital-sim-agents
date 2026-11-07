@@ -7,8 +7,8 @@ the robot anything, no debrief, no call bell, no fire) is n/a, and so are the ro
 robot never moved; any other None counts as failed. The exact definitions are in each function's docstring.
 
 Streams read: status, robot_pose, says, audio, robot_tasks, world, objects, tokens, cards, decisions,
-debrief, trust, robot_walk (Isaac: what the walker was told to do) and meta.json. Static patients (ids S<bed>, role patient_static in meta["people"]) are
-left out of every people metric.
+debrief, trust, robot_walk (an Isaac run: what the walker was told to do) and meta.json. Static patients (ids
+S<bed>, role patient_static in meta["people"]) are left out of every people metric.
 """
 from __future__ import annotations
 
@@ -477,9 +477,8 @@ def _commanded(d: RunData) -> Optional[Callable[[Optional[float], float], Option
     """From the robot_walk stream (an Isaac run: the walker's commanded speed each half second), the highest speed the
     robot was told to walk at between two pose samples (the command in force at the earlier one, and any given up to
     the later one). None for a run without that stream (the stub's pose speed is the robot's own)."""
-    rows = sorted(((t, sp) for r in d.robot_walk
-                   if (t := _num(r.get("t_phys", r.get("t")))) is not None and (sp := _num(r.get("speed"))) is not None),
-                  key=lambda r: r[0])
+    rows = sorted(((t, sp) for r in d.robot_walk if (t := _num(r.get("t_phys", r.get("t")))) is not None
+                   and (sp := _num(r.get("speed"))) is not None), key=lambda r: r[0])
     if not rows:
         return None
     times = [t for t, _ in rows]
