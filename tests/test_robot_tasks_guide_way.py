@@ -285,6 +285,33 @@ def test_goodbye_when_it_walks_back(staged, tmp_path):
     assert rt.GOODBYE in robot_lines(outs)
 
 
+# ---- the near-person speed cap during a guide ------------------------------------------------------------------------
+def test_the_speed_cap_exempts_only_the_guided_person_behind_the_robot(staged, tmp_path):
+    s = svc(staged("reception_guide"), tmp_path)
+    w = s.world
+    alone_with(w, {"V1", "V2"})
+    r = w.robot
+    r.teleport(5.0, 5.0, 0.0)
+    put(w, "V2", -3.0, -3.0)
+    put(w, "V1", 3.8, 5.0)  # 1.2 m behind it
+    s.on_task_action({"id": "gd", "action": "guide_start", "track": w.tracks.track("V1"), "place": "ward_entrance"})
+    s.step(0.1)
+    assert s.tasks._guide is not None
+    r.teleport(5.0, 5.0, 0.0)
+    put(w, "V1", 3.8, 5.0)
+    assert s.tasks._near_cap() is None  # the person it guides, following behind it: no cap
+    put(w, "V2", 6.2, 5.0)  # a bystander 1.2 m ahead
+    assert s.tasks._near_cap() == rt.NEAR_PERSON_SPEED
+    put(w, "V2", 5.0, 3.8)  # ... or beside it
+    assert s.tasks._near_cap() == rt.NEAR_PERSON_SPEED
+    put(w, "V2", -3.0, -3.0)
+    put(w, "V1", 6.2, 5.0)  # the person it guides, ahead of it: capped like anyone
+    assert s.tasks._near_cap() == rt.NEAR_PERSON_SPEED
+    s.tasks._end_guide(s.t, "stopped")
+    put(w, "V1", 3.8, 5.0)  # no guide: behind it or not, she caps it
+    assert s.tasks._near_cap() == rt.NEAR_PERSON_SPEED
+
+
 # ---- where the guide's walk ends, when the person stands at the place ------------------------------------------------
 @pytest.mark.parametrize("side", [1.0, -1.0])
 def test_a_goal_moved_clear_of_the_guided_person_stays_on_the_robots_side_of_them(staged, tmp_path, side):
