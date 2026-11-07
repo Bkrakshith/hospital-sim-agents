@@ -32,16 +32,18 @@ class Track:
     new: bool  # "not spoken to yet"
     line: str
     asleep: bool = False  # the camera marks someone asleep this close
+    unwell: bool = False  # the camera marks someone who looks unwell (slumped) this close
 
 
 @dataclass
 class Heard:
     age: float
-    who: str  # to_me, nearby, cough, alarm, pa, own, chime, sound
+    who: str  # to_me, nearby, cough, alarm, pa, own, bell, own_chime, chime, sound
     text: str
     track: Optional[str]  # the track it came from, when the microphone could tell
     line: str
     db: Optional[float] = None  # how loud it reached the robot
+    bed: Optional[str] = None  # a call bell: the bed it names
 
 
 @dataclass
@@ -103,20 +105,22 @@ def parse_situation(u: str) -> Situation:
         if not m:
             continue
         what = m.group(2)
+        bell = re.match(r"a call bell \(bed (\w+)\)", what)
         who = ("to_me" if "speaking to you" in what else "nearby" if "someone nearby" in what else
+               "own_chime" if "your staff call chime" in what else "bell" if bell else
                "cough" if "cough" in what else "alarm" if "alarm" in what else "pa" if "announcement" in what else
                "own" if "your own voice" in what else "chime" if "chime" in what else "sound")
         tm = re.search(r"from the direction of (t\w+)", ln)
         txt = re.search(r': "(.*)"$', ln)
         s.heard.append(Heard(float(m.group(1)), who, txt.group(1) if txt else "", tm.group(1) if tm else None, ln,
-                             float(m.group(3))))
+                             float(m.group(3)), bell.group(1) if bell else None))
     for ln in _section(u, "People your camera sees", "Objects in view").splitlines():
-        m = re.match(r"- (t\w+): ([0-9.]+) m, .*?, (lying down|seated|standing|[a-z ]+?)(, asleep)?, (moving|still), "
-                     r"at \(x=(-?[0-9.]+), y=(-?[0-9.]+)\)", ln)
+        m = re.match(r"- (t\w+): ([0-9.]+) m, .*?, (lying down|seated|standing|[a-z ]+?)(, asleep)?"
+                     r"(, looks unwell, slumped)?, (moving|still), at \(x=(-?[0-9.]+), y=(-?[0-9.]+)\)", ln)
         if m:
-            s.tracks.append(Track(m.group(1), float(m.group(2)), m.group(3), m.group(5) == "moving",
-                                  float(m.group(6)), float(m.group(7)), "not spoken to yet" in ln, ln,
-                                  asleep=bool(m.group(4))))
+            s.tracks.append(Track(m.group(1), float(m.group(2)), m.group(3), m.group(6) == "moving",
+                                  float(m.group(7)), float(m.group(8)), "not spoken to yet" in ln, ln,
+                                  asleep=bool(m.group(4)), unwell=bool(m.group(5))))
     for ln in _section(u, "Objects in view:", "Getting there from ", "Results of your recent actions",
                        "Your last events").splitlines():
         if (m := re.match(r"- item (\w+): (.+), ([0-9.]+) m", ln)):
@@ -155,7 +159,8 @@ class Card:
     brief: dict = field(default_factory=dict)  # "Destination" -> "Ward nurse base", ...
     lists: dict = field(default_factory=dict)  # "Meals" -> ["patient bed: ...; tray label: ...", ...]
     places: dict = field(default_factory=dict)  # label (lower) -> label, every place the robot can name
-    rooms: dict = field(default_factory=dict)  # room id -> label
+    rooms: dict = field(default_factory=dict)  # room name (or id, on an older card) -> label
+    uses: dict = field(default_factory=dict)  # room name -> what the room is for ("bedroom")
     route_dirs: dict = field(default_factory=dict)  # label -> the way the route from the post sets off
 
     @property
@@ -166,9 +171,16 @@ class Card:
 def parse_card(card: str) -> Card:
     c = Card()
     hosp = _section(card, "THE HOSPITAL", "YOUR JOB")
-    for m in re.finditer(r"^- (\S+): (.+?) \((\w+)\)$", hosp, re.M):
+    # "- Ward bedroom B3: Ward bedroom B3 (bedroom)": the room's name, its label and its use (an older card names the
+    # room by its id: "- B3: Ward bedroom B3 (bedroom)")
+    for m in re.finditer(r"^- (.+?): (.+?) \(([\w ]+)\)$", hosp, re.M):
+        if re.match(r"about [0-9]+ m|right beside you|the way there", m.group(2)):
+            continue  # a route line
         c.rooms[m.group(1)] = m.group(2)
+        c.uses[m.group(1)] = m.group(3).replace("_", " ")
         c.places[m.group(2).lower()] = m.group(2)
+        if "_" not in m.group(1):
+            c.places.setdefault(m.group(1).lower(), m.group(1))
     for m in re.finditer(r"^- (.+?): (?:about [0-9]+ m|right beside you)(.*)$", hosp, re.M):
         c.places.setdefault(m.group(1).lower(), m.group(1))
         way = re.search(r"setting off (.+?)(?:, through |\.$)", m.group(2))
@@ -623,6 +635,12 @@ class ScriptedRobot:
             return c.rooms[bed]
         return next((lab for rid, lab in c.rooms.items() if lab.endswith(f" {bed}")), None)
 
+    @staticmethod
+    def bed_of_room(name: str) -> str:
+        """The bed id a room's name ends with ("Ward bedroom B3" -> "B3"; an id "B3" stays), else the name."""
+        m = re.search(r"\b([A-Z]+[0-9]+)$", name or "")
+        return m.group(1) if m else name
+
     def default(self, s: Situation, c: Card) -> dict:
         req = self._requests(s)
         if req:
@@ -883,15 +901,20 @@ class ScriptedRobot:
             if pt is not None and pt.dist <= 2.5:
                 self.mem.setdefault("patients", {})[s.room] = (pt.x, pt.y)
         done = self.mem.setdefault("bells_done", set())
+        done_t = self.mem.setdefault("bells_done_t", {})
         for bed in s.lights:  # a light seen beats a guess from the chime's bearing
             if bed not in done and (not self.mem.get("bell") or self.mem.get("bell_guess")):
                 self.mem["bell"], self.mem["bell_guess"] = bed, False
-        chimes = [h for h in s.heard if h.who == "chime" and h.age <= 4]
+        for h in s.heard:  # a call bell names its bed: no guess needed (a ring after the last answer is a new one)
+            if h.who == "bell" and h.bed and h.age <= 4 and (not self.mem.get("bell") or self.mem.get("bell_guess")) \
+                    and s.t - h.age > done_t.get(h.bed, -1e9) + 1.0:
+                self.mem["bell"], self.mem["bell_guess"] = h.bed, False
+        chimes = [h for h in s.heard if h.who == "chime" and h.age <= 4]  # an older chime with no words
         if chimes and not self.mem.get("bell") and self.mem.get("chime_t", -99.0) < s.t - 60:
             self.mem["chime_t"] = s.t
             room = self._room_by_bearing(s, c, chimes)
             if room:
-                bed = next((rid for rid, lab in c.rooms.items() if lab == room), room)
+                bed = next((self.bed_of_room(rid) for rid, lab in c.rooms.items() if lab == room), room)
                 self.mem["bell"], self.mem["bell_guess"] = bed, True
 
     def _room_by_bearing(self, s: Situation, c: Card, chimes: list) -> Optional[str]:
@@ -937,6 +960,7 @@ class ScriptedRobot:
                                             f"{bed} rang the call bell and needs a nurse, please.",
                                             reason="the call was not answered"))
         self.mem["bells_done"].add(bed)
+        self.mem.setdefault("bells_done_t", {})[bed] = s.t
         self.mem["bell"] = None
         return None
 
@@ -960,7 +984,9 @@ class ScriptedRobot:
         """A patient up and leaving: go to her, speak calmly, call a nurse, then walk her back to bed (staying with her
         when she will not come)."""
         req = self._requests(s)
-        bed_room = next((lab for rid, lab in c.rooms.items() if re.search(rf"\b{re.escape(rid)}\b", c.job)), None)
+        bed_room = next((lab for rid, lab in c.rooms.items()  # the bedroom the job names ("bed in B4")
+                         if any(re.search(rf"\b{re.escape(k)}\b", c.job) for k in {rid, self.bed_of_room(rid)})
+                         and (c.uses.get(rid) == "bedroom" or rid == self.bed_of_room(rid))), None)
         up = [tr for tr in s.tracks if tr.posture in ("standing", "walking") or tr.moving]
         tid = self.mem.get("patient")
         if tid is None and up:
@@ -1172,8 +1198,11 @@ class ScriptedRobot:
         return _decision(reason="watching the room")
 
     def _worse(self, s: Situation) -> Optional[str]:
-        """A track that is getting worse: coughing or saying they feel unwell, from their direction, or lying down
-        away from a bed."""
+        """A track that is getting worse: the camera sees them looking unwell (the nearest first); else coughing or
+        saying they feel unwell, from their direction, or lying down away from a bed."""
+        unwell = sorted((tr for tr in s.tracks if tr.unwell), key=lambda tr: tr.dist)
+        if unwell:
+            return unwell[0].id
         for h in s.heard:
             if h.age > 10 or h.track is None:
                 continue
