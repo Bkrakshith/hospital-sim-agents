@@ -191,3 +191,30 @@ def test_a_robot_that_drives_on_into_a_person_who_walked_up_is_a_contact():
     assert b.step(0.1, Grid(), [("P1", 0.5, 0.0)]) == []  # P1 stepped in close: not the robot's doing
     b.set_cmd_vel(0.5, 0.0)
     assert b.step(0.1, Grid(), [("P1", 0.5, 0.0)]) == ["P1"]  # the robot closes in on her: its contact
+
+
+def test_a_replan_keeps_the_avoid_discs_the_goal_was_given():
+    """Blocked on its route for REPLAN_S, the body plans again from where it stands round the same people (avoid
+    discs) its goal was set with, not straight through them."""
+    from wardzero_agents.world.robot_body import REPLAN_S
+
+    class Grid:
+        def blocked(self, x, y):
+            return x > 0.5  # a wall ahead: the body cannot move along its first leg
+
+    class Router:
+        def __init__(self):
+            self.calls = []
+
+        def route(self, a, b, avoid=()):
+            self.calls.append(tuple(avoid))
+            return [a, (2.0, 0.0), b]
+
+    r = Router()
+    b = RobotBody(0.4, 0.0, 0.0, router=r)
+    disc = (3.0, 1.0, 0.6)
+    assert b.set_goal(4.0, 0.0, avoid=[disc])
+    for _ in range(int(REPLAN_S / 0.1) + 2):
+        b.step(0.1, Grid())
+    assert len(r.calls) >= 2  # it planned again
+    assert all(c == (disc,) for c in r.calls), r.calls

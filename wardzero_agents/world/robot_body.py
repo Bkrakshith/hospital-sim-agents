@@ -49,6 +49,7 @@ class RobotBody:
         self._anchor = (self.x, self.y)
         self._anchor_t = 0.0
         self._goal_xy: Optional[tuple[float, float]] = None  # where the route goes, to plan again when blocked
+        self._avoid: tuple = ()  # the avoid discs the goal was set with: a new plan keeps out of them too
         self._blocked_t = 0.0
         # set by the task layer each step while a route is followed: 0 holds the robot (waiting for the person it
         # guides; the stuck timer does not run), a cap slows it (near a person)
@@ -99,6 +100,7 @@ class RobotBody:
         self.goal_event = None
         self._anchor, self._anchor_t = (self.x, self.y), 0.0
         self._goal_xy, self._blocked_t = (float(x), float(y)), 0.0
+        self._avoid = tuple(avoid or ())
         return True
 
     def turn_to(self, yaw: float) -> None:
@@ -114,6 +116,7 @@ class RobotBody:
         self._final_yaw = None
         self._had_goal = False
         self._goal_xy = None
+        self._avoid = ()
 
     # ---- motion --------------------------------------------------------------------------
     def _move(self, dist: float, grid, slide: bool = False) -> float:
@@ -174,10 +177,12 @@ class RobotBody:
         return 0.0, 0.0
 
     def _replan(self) -> None:
-        """Blocked on the route (no slide either): a new route from where the body stands, if there is one."""
+        """Blocked on the route (no slide either): a new route from where the body stands, if there is one, round the
+        same avoid discs the goal was set with."""
         if self.router is None or self._goal_xy is None:
             return
-        route = self.router.route((self.x, self.y), self._goal_xy)
+        a = (self.x, self.y)
+        route = self.router.route(a, self._goal_xy, self._avoid) if self._avoid else self.router.route(a, self._goal_xy)
         if route is not None:
             self._path = [tuple(p) for p in route[1:]] or [self._goal_xy]
 
