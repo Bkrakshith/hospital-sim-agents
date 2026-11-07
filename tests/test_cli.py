@@ -52,12 +52,14 @@ def memkeyring(monkeypatch):
 @pytest.fixture(autouse=True)
 def isolated(tmp_path, monkeypatch):
     """Never touch the real data or runs folders, and never start ROS."""
+    # whatever a QA or smoke shell exports (the sim, the embedder, the test switches, the key file) changes what a
+    # run picks: none of it here, only the stub world (as conftest sets when nothing is exported) and the data and
+    # runs folders below
+    for var in [v for v in os.environ if v.startswith("WARDZERO_")]:
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("WARDZERO_SIM", "stub")
     monkeypatch.setenv("WARDZERO_DATA_DIR", str(tmp_path / "data"))
     monkeypatch.setenv("WARDZERO_RUNS_DIR", str(tmp_path / "runs"))
-    monkeypatch.delenv("WARDZERO_TEST_FAKE_LLM", raising=False)
-    # the switches a QA or smoke shell may export change which bot a run picks and what it injects: not here
-    for var in ("WARDZERO_TEST_CLAUDE_BOT", "WARDZERO_TEST_SCRIPTED_SAY", "WARDZERO_E2E"):
-        monkeypatch.delenv(var, raising=False)
     monkeypatch.setattr(cli, "ros_available", lambda: True)
 
 
