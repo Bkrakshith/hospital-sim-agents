@@ -427,3 +427,13 @@ def test_ae_waiting_credits_a_late_read_check_in_without_holding_the_room():
     ann = next(t for t, c, _ in fired if c == "waits_announcement")
     assert ann <= 2.0 + 120.0 + 15.0 + 1.0  # the waits are not held back for the late note
     assert _node(e.tree(), AE_GEORGE)["state"] == "met"
+
+
+def test_night_call_bell_fetching_the_nurse_means_telling_staff_about_p1():
+    # a tell about someone else (Noah in B5) after the bell is not fetching the nurse for P1
+    e, _ = _run("night_call_bell", view_kw=lambda t: {"robot_did": [(30.0, "tell", "P2", None)] if t >= 30 else []},
+                until=200)
+    assert _node(e.tree(), "The robot fetches the nurse")["state"] == "timed_out"
+    e, _ = _run("night_call_bell", view_kw=lambda t: {"robot_did": [(30.0, "tell", "P1", None)] if t >= 30 else []},
+                until=200)
+    assert _node(e.tree(), "The robot fetches the nurse")["state"] == "met"

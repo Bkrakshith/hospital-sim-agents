@@ -18,7 +18,8 @@ steps:
           timeout_s: 90
     - - expect:
           label: The robot fetches the nurse
-          when: {any: [{robot_did: {action: tell, since_step: true}}, {robot_did: {action: press_call, since_step: true}}]}
+          when: {any: [{robot_did: {action: tell, about: P1, since_step: true}},
+                       {robot_did: {action: press_call, since_step: true}}]}
           timeout_s: 120
     - - unless:
           label: The nurse reaches P1
