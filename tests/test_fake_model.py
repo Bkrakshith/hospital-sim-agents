@@ -180,3 +180,31 @@ def test_the_scripted_adapter_changes_the_flow_visibly():
     assert flow.steps == base.steps  # still the preset's steps, so the run plays the same scenario
     assert flow.summary != base.summary and prompt in flow.summary
     assert "kept" in notes and flow.prompt_sha == G.prompt_sha(prompt)
+
+
+# ---- saying where they are going ----------------------------------------------------------------------------------------
+def test_a_lost_visitor_names_where_she_is_going_and_answers_the_robots_question(staged):
+    loaded = staged("reception_guide")
+    d = ask(loaded, "V1", ["NUDGE: You can't work out from the signs how to get where you are going. Find someone who "
+                           "can help."])
+    assert kind(d) == "approach" and d["addressee"] == "g1" and "ward entrance" in d["say"].lower()
+    a = ask(loaded, "V1", ["ROBOT SAID TO YOU: Of course. Where would you like to go?"])
+    assert a["addressee"] == "g1" and "ward entrance" in a["say"].lower()
+
+
+def test_someone_who_does_not_know_the_way_asks_the_robot_on_a_nudge_once(staged):
+    loaded = staged("reception_guide")
+    nudge = "NUDGE: Everything sounds muffled today. Lean in and ask people to repeat themselves."
+    d = ask(loaded, "H1", [nudge])
+    assert kind(d) == "approach" and d["addressee"] == "g1" and "outpatient clinics" in d["say"].lower()
+    asked = [f't=20s; I felt: x; I chose approach g1 and said "{d["say"]}" (mood calm)']
+    assert kind(ask(loaded, "H1", [nudge], asked)) != "approach"
+
+
+def test_someone_told_a_nurse_is_coming_waits_for_them(staged):
+    loaded = staged("reception_guide")
+    told = ['t=9s; the robot said to me "I will let the staff know straight away. Please wait here."; I chose '
+            'wait_standing (mood calm)']
+    d = ask(loaded, "V1", ["NUDGE: You can't work out from the signs how to get where you are going. Find someone who "
+                           "can help."], told)
+    assert kind(d) == "wait_standing"

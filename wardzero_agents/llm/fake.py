@@ -244,10 +244,55 @@ def _surgeon(req: LLMRequest, u: str) -> Optional[dict]:
     return None
 
 
-def _help_line(nudge: str) -> str:
+_SKIP_PLACES = ("where the g1 stands", "in front of the reception desk", "where a nurse is called from", "where you are")
+_LOST = ("do not know the way", "don't know the way", "go and ask it", "ask the robot", "cannot find", "can't find")
+
+
+def _goal_text(card: str) -> str:
+    """The person's own reasons and goals (their background and goal lines), without the robot's job quoted to them."""
+    keep = [ln for ln in card.splitlines() if ln.startswith(("Background:", "Role:", "- ")) and
+            "written to the robot" not in ln and not re.match(r"- \w+: ", ln)]
+    return "\n".join(keep).lower()
+
+
+def _my_place(card: str) -> Optional[str]:
+    """Where this person is going, in words: the place on their card their goals name, else the one their role
+    names (a ward visitor: the ward entrance). None when nothing says."""
+    places = [(label, pid) for label, pid in _card_places(card) if not any(k in label for k in _SKIP_PLACES)]
+    goals = _goal_text(card)
+    words = lambda t: {w for w in re.findall(r"[a-z]+", t) if len(w) > 4}  # noqa: E731
+    gw = words(goals)
+    scored = sorted(((len(words(label) & gw), -len(label), label) for label, _ in places), reverse=True)
+    if scored and scored[0][0] >= 2:
+        return scored[0][2].split(",")[0].strip()
+    role = re.search(r"^Role: (\w+)", card, re.M)
+    for w in (role.group(1).split("_") if role else []):
+        hit = next((label for label, _ in places if label.startswith(w)), None)
+        if hit and len(w) >= 4:
+            return hit.split(",")[0].strip()
+    return None
+
+
+def _lost(card: str) -> bool:
+    return any(k in _goal_text(card) for k in _LOST)
+
+
+def _help_line(nudge: str, card: str = "") -> str:
     m = re.search(r"where (.+?) is\b", nudge)
-    what = f" I can't find {m.group(1)}." if m else ""
+    place = _my_place(card)
+    what = f" I need to get to the {place}." if place else f" I can't find {m.group(1)}." if m else ""
     return f"Excuse me, can you help us?{what}"
+
+
+def _promised_staff(u: str) -> bool:
+    """They were told a nurse or staff are coming to them (by the robot, or by staff on their way): they wait for
+    them rather than set off somewhere."""
+    said = [m.group(1).lower() for m in re.finditer(r"(?:the robot said to me|ROBOT SAID TO YOU:) \"?([^\"\n]*)", u)]
+    return any(("staff" in t or "nurse" in t) and "wait" in t for t in said) or STAFF_HELLO in u
+
+
+def _asked_the_way(u: str) -> bool:
+    return bool(re.search(r"I chose approach g1 and said \"Excuse me", u))
 
 
 def _carry_on(u: str) -> Optional[dict]:
@@ -274,13 +319,21 @@ def person_policy(req: LLMRequest) -> dict:
     if asked is not None:
         return asked
     if "ROBOT SAID TO YOU" in u:
-        lm = _place(u.split("ROBOT SAID TO YOU", 1)[1].split("\n", 1)[0], card)
+        line = u.split("ROBOT SAID TO YOU", 1)[1].split("\n", 1)[0]
+        mine = _my_place(card)
+        if "where would you like to go" in line.lower() or ("where" in line.lower() and "?" in line):
+            if mine:  # asked where they are going: they say
+                return _decision("wait_standing", "", f"I need to get to the {mine}, please.", "g1")
+        lm = _place(line, card)
         return _decision("walk_to", lm, "Thank you") if lm else _decision("wait_standing", "", "Thank you")
     if "NUDGE:" in u:
         nudge = u.split("NUDGE:", 1)[1]
         lm = _place(nudge, card)
-        if "help" in nudge:  # someone who wants help asks the robot for it, in so many words
-            return _decision("approach", "g1", _help_line(nudge), "g1")
+        if "help" in nudge or (_lost(card) and not _asked_the_way(u)):
+            if _promised_staff(u):  # the robot already sent for staff: wait for them
+                return _decision("wait_standing")
+            # someone who wants help, or does not know their way, asks the robot in so many words
+            return _decision("approach", "g1", _help_line(nudge, card), "g1")
         if lm:
             return _decision("walk_to", lm)
         return _decision("wait_standing") if "wait_standing" in (_kinds(req) or ["wait_standing"]) else _idle(req)
