@@ -242,7 +242,9 @@ The scenarios you can start from:
 - and more to come.
 
 Each scenario has success criteria (for example "fire out within 2 minutes" or "no contact with
-people"). A run is scored against them and the report says which passed.
+people"). A run is scored against them and the report says which passed. A criterion that a run gives nothing to
+measure shows as n/a, for example a response time when nobody asked the robot anything, or a safety criterion when the
+robot never moved: it neither passes nor fails, and it is left out of the score.
 
 ### Your own robot
 
