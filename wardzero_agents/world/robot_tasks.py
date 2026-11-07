@@ -37,10 +37,11 @@ on the robot's side of the wire: people are addressed by track.
 
 Guiding: the robot holds while the person it guides is more than 2.5 m behind (and walks on once they are within
 2 m); that person, following behind it, does not slow it, but it keeps clear of them like anyone else, and its walk
-ends at least GUIDE_CLEAR_M from them. Other people within 1.5 m slow it to 0.3 m/s. At the place it waits up to 20 s
-for them to arrive, says goodbye and walks back to its post (goal id "<id>-return"), unless return_to_post is false or
-a fire alarm has sounded. It gives up if they never come within 2.5 m for 30 s. Once a guide is over, the person does
-not take up following the robot again unless it guides them again.
+ends at least GUIDE_CLEAR_M from them (on its own side of them when they stand at the place). Other people within
+1.5 m slow it to 0.3 m/s. At the place it waits up to 20 s for them to arrive, says goodbye and walks back to its post
+(goal id "<id>-return"), unless return_to_post is false or a fire alarm has sounded. It gives up if they never
+come within 2.5 m for 30 s. Once a guide is over, the person does not take up following the robot again unless it
+guides them again.
 
 A guide to a seat: when the robot reaches the place it picks the free seat nearest to it, among those its camera could
 see by turning its head (within its range, in line of sight; never a staff chair). It walks to a spot beside that seat,
@@ -541,28 +542,32 @@ class RobotTasks:
     def _clear_of_person(self, xy, q, room: Optional[str]) -> tuple[float, float]:
         """Where a guide's walk ends: the place itself, or when the person it guides stands within GUIDE_CLEAR_M of it,
         the nearest free floor (clear for the robot's body, in the place's room when it names one) that far from
-        them. The place unchanged when there is none."""
+        them, on the robot's side of them if there is any (beyond them it would have to walk past them, and they would
+        hold it), the spot nearest the robot first. The place unchanged when there is none."""
         w = self.world
         if math.hypot(xy[0] - q.x, xy[1] - q.y) >= GUIDE_CLEAR_M:
             return xy
-        clear = getattr(w.robot.router, "is_clear", None) or getattr(w.robot.router, "is_free", None)
+        r = w.robot
+        clear = getattr(r.router, "is_clear", None) or getattr(r.router, "is_free", None)
         others = [(p.x, p.y) for p in w.people.values() if p is not q and p.posture not in ("gone",) and
                   p.kind != "static"]
-        best, bd = None, math.inf
-        for k in range(1, 9):
-            dist = 0.25 * k
-            for j in range(16):
-                a = 2 * math.pi * j / 16
-                x, y = xy[0] + dist * math.cos(a), xy[1] + dist * math.sin(a)
-                if math.hypot(x - q.x, y - q.y) < GUIDE_CLEAR_M or w.site.grid.blocked(x, y) \
-                        or (clear is not None and not clear(x, y)) \
-                        or any(math.hypot(x - ox, y - oy) < PERSON_KEEP_M for ox, oy in others) \
-                        or (room is not None and w.site.room_at(x, y) != room):
-                    continue
-                if dist < bd:
-                    best, bd = (x, y), dist
-            if best is not None:
-                return best
+        for near_side in (True, False):
+            for k in range(1, 9):
+                dist = 0.25 * k
+                ring = []
+                for j in range(16):
+                    a = 2 * math.pi * j / 16
+                    x, y = xy[0] + dist * math.cos(a), xy[1] + dist * math.sin(a)
+                    if math.hypot(x - q.x, y - q.y) < GUIDE_CLEAR_M or w.site.grid.blocked(x, y) \
+                            or (near_side and (x - q.x) * (r.x - q.x) + (y - q.y) * (r.y - q.y) <= 0.0) \
+                            or (clear is not None and not clear(x, y)) \
+                            or any(math.hypot(x - ox, y - oy) < PERSON_KEEP_M for ox, oy in others) \
+                            or (room is not None and w.site.room_at(x, y) != room):
+                        continue
+                    ring.append((math.hypot(x - r.x, y - r.y), x, y))
+                if ring:
+                    _, x, y = min(ring)
+                    return x, y
         return xy
 
     def _end_guide(self, t, reason: str) -> None:
