@@ -19,6 +19,7 @@ from .spec import Flow
 
 PENDING, RUNNING, MET, TIMED_OUT, FIRED, SKIPPED, NOT_NEEDED, DONE = (
     "pending", "running", "met", "timed_out", "fired", "skipped", "not_needed", "done")
+TARGET_GRACE_S = 10.0  # a card aimed at someone in the cast whose first status has not arrived yet waits this long
 
 
 @dataclass
@@ -29,7 +30,8 @@ class FlowView(WorldView):
     robot_said_to: set[str] = field(default_factory=set)
     robot_said_at: dict[str, list[float]] = field(default_factory=dict)  # person -> when the robot spoke to them
     said_to_robot: set[str] = field(default_factory=set)
-    robot_did: list[tuple] = field(default_factory=list)  # (t, action, person or None); (action, person): time unknown
+    # (t, action, person or None, item or None); older callers give (t, action, person) or (action, person)
+    robot_did: list[tuple] = field(default_factory=list)
     fires: dict[str, bool] = field(default_factory=dict)  # fire id -> out
     room_at: Callable[[float, float], Optional[str]] = lambda x, y: None
 
@@ -41,9 +43,14 @@ def _since(a, t0: Optional[float]) -> Optional[float]:
 
 
 def _did(v: FlowView):
-    """The robot's actions as (t, action, person); t is None for an entry without a time (an old caller)."""
+    """The robot's actions as (t, action, person, item); t is None for an entry without a time (an old caller)."""
     for r in v.robot_did:
-        yield (r[0], r[1], r[2]) if len(r) == 3 else (None, r[0], r[1])
+        if len(r) >= 4:
+            yield r[0], r[1], r[2], r[3]
+        elif len(r) == 3:
+            yield r[0], r[1], r[2], None
+        else:
+            yield None, r[0], r[1], None
 
 
 def holds(c: dict, v: FlowView, t0: Optional[float] = None) -> bool:
@@ -85,7 +92,9 @@ def holds(c: dict, v: FlowView, t0: Optional[float] = None) -> bool:
         return inside if k == "in_room" else (s is not None and not inside)
     if k == "robot_did":
         since = _since(a, t0)
-        n = sum(1 for t, act, who in _did(v) if act == a["action"] and (a.get("about") is None or who == a["about"])
+        n = sum(1 for t, act, who, item in _did(v)
+                if act == a["action"] and (a.get("about") is None or who == a["about"])
+                and (a.get("item") is None or item == a["item"])
                 and (since is None or (t is not None and t >= since)))
         return n >= int(a.get("at_least", 1))
     if k == "robot_moved":
@@ -162,6 +171,8 @@ class _Fire(_Step):
         if self.state != FIRED:
             target = self.body.get("target")
             if target is not None and target not in v.present:
+                if target in v.cast and target not in v.statuses and v.t - self.t0 < TARGET_GRACE_S:
+                    return S.RUNNING  # in the cast, but their first status has not arrived yet (the first ticks)
                 self.state, self.reason = SKIPPED, f"target {target} is not in the scene"
                 return S.SUCCESS
             self.ctx.n += 1
@@ -294,8 +305,14 @@ class FlowEngine:
         return rows
 
     def tree(self) -> dict:
-        """The tree with each step's state: {label, kind, state, t, reason, children}."""
+        """The tree with each step's state: {label, kind, state, t, reason, children}. A parallel branch of one step
+        is shown as that step (no "in order" row around it)."""
         def walk(node) -> dict:
+            if isinstance(node, py_trees.composites.Parallel):
+                kids = [c.children[0] if isinstance(c, py_trees.composites.Sequence) and len(c.children) == 1 else c
+                        for c in node.children]
+                return {"label": node.name, "kind": "parallel", "children": [walk(c) for c in kids],
+                        "state": getattr(node, "state", None), "t": getattr(node, "t", None), "reason": None}
             if isinstance(node, _Step):
                 return {"label": node.label, "kind": node.kind, "state": node.state, "t": node.t,
                         "reason": node.reason, "children": []}

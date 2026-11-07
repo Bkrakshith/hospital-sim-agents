@@ -21,12 +21,17 @@ Conditions (``when``, a one-key mapping):
   posture:        {person, is}                        standing | walking | seated | lying | gone
   in_room:        {person, room}
   not_in_room:    {person, room}
-  robot_did:      {action, about?, at_least?, since_step?}
-                                                       guide | guided | seat | tell | note | press_call | hand_over |
-                                                       take | extinguish | approach   (about: person id, where it is
-                                                       known; at_least: how many times, default 1; guided: a person
-                                                       the robot walked somewhere arrived; press_call: a call that
-                                                       reached a member of staff)
+  robot_did:      {action, about?, item?, at_least?, since_step?}
+                                                       guide | guided | guide_ended | seat | tell | note | press_call |
+                                                       hand_over | take | extinguish | approach | follow
+                                                       (about: person id, where it is known: the person guided, told
+                                                       about, followed, or the receiver of a hand_over; item: the item
+                                                       id of a hand_over or take; at_least: how many times, default 1;
+                                                       guided: a person the robot walked somewhere arrived;
+                                                       guide_ended: a walk the robot led ended, arrived or not;
+                                                       hand_over: the person took the item; press_call: a call that
+                                                       reached a member of staff; follow: the robot set off to stay
+                                                       with a person)
   robot_moved:    <metres from where it started>
   fire_out:       true                                 every fire in the scene is out
   elapsed:        <seconds since the run started>
@@ -35,6 +40,10 @@ Conditions (``when``, a one-key mapping):
 ``since_step: true`` (robot_spoke_to and robot_did only) counts only what the robot did at or after the step that
 holds the condition began, so earlier words or actions (a greeting before the event) do not meet it. Without it they
 count everything since the run started.
+
+The robot "spoke to" a person when its line was addressed to them, or, for a line with no addressee, when they heard it
+and stood within 4 m of the robot (or anywhere, for a line to the whole room). A run recorded before the sim reported
+who heard each line counts anyone within 2.5 m.
 """
 from __future__ import annotations
 
@@ -47,8 +56,8 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 STEP_KINDS = ("wait", "wait_until", "expect", "fire", "parallel", "unless")
 COND_KINDS = ("robot_spoke_to", "spoke_to_robot", "robot_near", "near", "posture", "in_room", "not_in_room", "robot_did",
               "robot_moved", "fire_out", "elapsed", "all", "any", "not")
-ROBOT_ACTIONS = ("guide", "guided", "seat", "tell", "note", "press_call", "hand_over", "take", "extinguish",
-                 "approach")
+ROBOT_ACTIONS = ("guide", "guided", "guide_ended", "seat", "tell", "note", "press_call", "hand_over", "take",
+                 "extinguish", "approach", "follow")
 POSTURES = ("standing", "walking", "seated", "lying", "gone")
 PEOPLE_WORDS = ("anyone", "newcomer")
 MAX_TIMEOUT_S = 3600.0
@@ -143,8 +152,10 @@ def check_cond(c) -> None:
     elif k in ("in_room", "not_in_room"):
         _keys(v, ("person", "room"), (), k)
     elif k == "robot_did":
-        v = _keys(v, ("action",), ("about", "at_least", "since_step"), k)
+        v = _keys(v, ("action",), ("about", "item", "at_least", "since_step"), k)
         _since_step(v, k)
+        if "item" in v and (not isinstance(v["item"], str) or not v["item"]):
+            raise ValueError("robot_did item takes an item id")
         if "at_least" in v:
             _num(v["at_least"], "at_least", 1, 100)
         if v["action"] not in ROBOT_ACTIONS:
@@ -212,8 +223,9 @@ def walk_conds(c):
         yield from walk_conds(v)
 
 
-def fit_scenario(flow: Flow, *, people, cards, rooms) -> None:
-    """FlowError unless every card, person and room the flow names exists in the scenario; fire ids are unique."""
+def fit_scenario(flow: Flow, *, people, cards, rooms, items=None) -> None:
+    """FlowError unless every card, person and room the flow names exists in the scenario; fire ids are unique.
+    ``items`` (the scenario's object ids), when given, are checked against robot_did's ``item`` too."""
     people, cards, rooms = set(people), set(cards), set(rooms)
     errs, ids = [], set()
 
@@ -240,8 +252,11 @@ def fit_scenario(flow: Flow, *, people, cards, rooms) -> None:
                         person(cv["to"], ck)
                     if ck in ("in_room", "not_in_room") and cv["room"] not in rooms:
                         errs.append(f"{ck}: no room '{cv['room']}'")
-                elif ck == "robot_did" and cv.get("about") is not None:
-                    person(cv["about"], ck)
+                elif ck == "robot_did":
+                    if cv.get("about") is not None:
+                        person(cv["about"], ck)
+                    if items is not None and cv.get("item") is not None and cv["item"] not in set(items):
+                        errs.append(f"{ck}: no item '{cv['item']}' in this scenario")
     if errs:
         raise FlowError("; ".join(errs))
 

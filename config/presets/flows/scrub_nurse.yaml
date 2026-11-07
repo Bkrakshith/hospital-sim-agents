@@ -5,10 +5,17 @@ steps:
 - wait: {seconds: 30}
 - fire: {id: b1, card: instrument_request_batch, target: S1, params: {instruments: 'scalpel, forceps, retractor'},
     label: The surgeon asks for the first instruments}
-- expect: {label: The robot hands over the first batch, when: {robot_did: {action: hand_over, at_least: 3}},
-    timeout_s: 180}
+- expect:
+    label: The robot hands over the first batch
+    when: {all: [{robot_did: {action: hand_over, about: S1, item: scalpel, since_step: true}},
+                 {robot_did: {action: hand_over, about: S1, item: forceps, since_step: true}},
+                 {robot_did: {action: hand_over, about: S1, item: retractor, since_step: true}}]}
+    timeout_s: 180
 - wait: {seconds: 30}
 - fire: {id: b2, card: instrument_request_batch, target: S1, params: {instruments: 'suture scissors, needle holder'},
     label: The surgeon asks for the second instruments}
-- expect: {label: The robot hands over the second batch, when: {robot_did: {action: hand_over, at_least: 5}},
-    timeout_s: 240}
+- expect:
+    label: The robot hands over the second batch
+    when: {all: [{robot_did: {action: hand_over, about: S1, item: suture_scissors, since_step: true}},
+                 {robot_did: {action: hand_over, about: S1, item: needle_holder, since_step: true}}]}
+    timeout_s: 240

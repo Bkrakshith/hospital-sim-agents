@@ -1,23 +1,26 @@
 id: reception_guide
 title: Reception guide
-summary: People come to the main reception. Once the robot is talking to people, one visitor gets lost and a patient who
-  is hard of hearing needs help; then new people arrive. The robot should help each one in turn.
+summary: People come to the main reception. Once the robot is talking to people, one visitor gets lost; once the robot
+  has finished with her, a patient who is hard of hearing needs the way to his clinic; then new people arrive. The robot
+  should help each one in turn.
 steps:
 - wait_until: {label: The robot has greeted someone, when: {robot_spoke_to: anyone}, timeout_s: 45}
 - fire: {id: b1, card: lost_visitor, target: V1, label: V1 gets lost}
 - expect:
-    label: The robot helps V1 (talks to them or walks them there)
-    when: {any: [{robot_did: {action: guide, about: V1, since_step: true}},
-                 {robot_spoke_to: {person: V1, since_step: true}}]}
+    label: The robot helps V1 (walks them there, or gives directions they follow)
+    when: {any: [{robot_did: {action: guide, about: V1}},
+                 {all: [{robot_spoke_to: {person: V1, since_step: true}}, {not_in_room: {person: V1, room: Lobby}}]}]}
     timeout_s: 90
 - wait_until:
-    label: The robot has finished with V1 (V1 reached the ward entrance, or the robot and V1 have parted)
-    when: {any: [{in_room: {person: V1, room: Ward_Entrance}}, {robot_did: {action: guided, about: V1, since_step: true}},
-                 {not: {robot_near: {person: V1, within_m: 3}}}]}
+    label: The robot has finished with V1 (the walk ended, or V1 went on alone)
+    when: {any: [{in_room: {person: V1, room: Ward_Entrance}}, {robot_did: {action: guide_ended, about: V1}},
+                 {all: [{not_in_room: {person: V1, room: Lobby}}, {not: {robot_did: {action: guide, about: V1}}}]}]}
     timeout_s: 120
 - fire: {id: b2, card: hard_of_hearing, target: H1, label: H1 is hard of hearing}
-- fire: {id: b2b, card: lost_visitor, target: H1, label: H1 cannot find the way either}
-- expect: {label: The robot speaks with H1, when: {robot_spoke_to: {person: H1, since_step: true}}, timeout_s: 90}
+- expect:
+    label: The robot walks H1 where they need to go
+    when: {robot_did: {action: guide, about: H1}}
+    timeout_s: 90
 - fire: {id: b3, card: arrival, label: Someone new arrives}
 - expect: {label: The robot greets the newcomer, when: {robot_spoke_to: newcomer}, timeout_s: 120}
 - wait: {seconds: 30}

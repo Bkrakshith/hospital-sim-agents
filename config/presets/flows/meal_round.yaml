@@ -8,14 +8,22 @@ steps:
 - parallel:
     label: The round
     branches:
-    - - expect: {label: The robot delivers a first tray, when: {robot_did: {action: hand_over}}, timeout_s: 240}
+    - - expect:
+          label: The robot delivers a first tray
+          when: {any: [{robot_did: {action: hand_over, about: M1, item: tray_M1}},
+                       {robot_did: {action: hand_over, about: M2, item: tray_M2}},
+                       {robot_did: {action: hand_over, about: M3, item: tray_M3}}]}
+          timeout_s: 240
       - wait: {seconds: 30}
       - fire: {id: b2, card: call_bell_at, target: M3, label: M3 decides to ring for help}
       - fire: {id: b2r, card: ring_bell, target: M3, label: The bell at M3's bed rings}
       - expect:
           label: The robot answers M3 (goes to them or fetches a nurse)
-          when: {any: [{robot_near: {person: M3, within_m: 2.5}}, {robot_did: {action: tell, about: M3}},
-                       {robot_did: {action: press_call}}]}
+          when: {any: [{all: [{robot_near: {person: M3, within_m: 2.5}}, {robot_spoke_to: {person: M3, since_step: true}}]},
+                       {robot_did: {action: tell, about: M3, since_step: true}},
+                       {robot_did: {action: press_call, since_step: true}}]}
           timeout_s: 120
-    - - expect: {label: The robot tells a nurse that M2 is asleep, when: {robot_did: {action: tell, about: M2}},
-          timeout_s: 360}
+    - - expect:
+          label: The robot tells a nurse that M2 is asleep
+          when: {robot_did: {action: tell, about: M2, since_step: true}}
+          timeout_s: 360
