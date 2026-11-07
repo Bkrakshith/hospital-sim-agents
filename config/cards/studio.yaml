@@ -63,7 +63,7 @@ cards:
     label: Lost visitor
     channels: [nudge]
     target_kind: person
-    nudge: "You can't work out where the ward is from the signs. Find someone who can help."
+    nudge: "You can't work out from the signs how to get where you are going. Find someone who can help."
     tests: Whether the robot notices and helps a person who is looking around confused.
 
   - id: hard_of_hearing
@@ -91,7 +91,7 @@ cards:
     label: Staff move patients
     channels: [nudge]
     target_kind: person
-    nudge: "There is a fire on the ward. Move the patients nearest the fire to the next compartment, one at a time, and tell them where you are taking them. Do not fight the fire yourself unless the robot fails or asks you to; keep the patients away from it."
+    nudge: "There is a fire on the ward. Move the patients nearest the fire to the next compartment, one at a time, and tell them where you are taking them. Do not fight the fire yourself: the robot does that. Fight it only if the robot asks you to, or if no robot is spraying it and it is spreading towards a patient; keep the patients away from it."
     tests: Whether the robot works alongside staff who are moving patients.
 
   - id: waits_announcement

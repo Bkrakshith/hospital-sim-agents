@@ -59,6 +59,7 @@ class RolePreset(_P):
     self_confidence: float = Field(ge=0, le=1)
     trust_start: float = Field(ge=0, le=1)
     sources: list[str] = Field(default_factory=list)
+    mobility_aid: Optional[Literal["none", "stick", "frame", "wheelchair"]] = None  # None: by age (a stick at 71+)
 
     @model_validator(mode="after")
     def _intents_match_persona_role(self):
@@ -79,6 +80,9 @@ class MoodPreset(_P):
     sociability_shift: float
     start_mood: str
     sources: list[str] = Field(default_factory=list)
+    # The same mood for a member of staff at work (None: staff get the prompt above). The public text tells a person
+    # to ignore a robot asking for anything; staff must still answer the robot when it calls them to a patient.
+    staff_prompt: Optional[str] = None
 
 
 class CharacterSpec(_P):
@@ -96,6 +100,7 @@ class CharacterSpec(_P):
     yaw: float = 0.0
     bed: Optional[str] = None
     start_seated: bool = False  # on a free A&E waiting seat at the start (the Studio picks the seat)
+    start_asleep: bool = False  # a patient asleep from the start (the cast entry's start_asleep, when the sim has it)
     auto: bool = False  # added by the Studio itself (the receptionist in a reception scene); the user may remove it
 
 
@@ -128,6 +133,9 @@ class ScenarioPreset(_P):
     focus_rooms: list[str]
     known_places: list[str] = Field(default_factory=list)
     robot_brief: dict
+    # What the staff in the scene are told about the robot's job, written to them (never shown to the robot). The
+    # robot's own job text is written to the robot and must not be quoted to staff as if it were theirs.
+    staff_line: Optional[str] = None
     robot_start: RobotStart
     characters: list[CharacterSpec]
     objects: list[dict] = Field(default_factory=list)
@@ -225,6 +233,7 @@ _ROLE_BASE = {  # patience_min, anxiety, sociability
     "ward_nurse": ((10, 25), (0.1, 0.3), (0.3, 0.6)), "receptionist": ((15, 30), (0.1, 0.3), (0.5, 0.8)),
     "patient": ((30, 60), (0.3, 0.5), (0.3, 0.7)), "ae_patient": ((20, 45), (0.4, 0.7), (0.3, 0.7)), "visitor": ((20, 45), (0.3, 0.6), (0.3, 0.7)),
     "surgeon": ((10, 20), (0.1, 0.3), (0.2, 0.4)), "porter": ((15, 30), (0.1, 0.3), (0.3, 0.6)),
+    "wheelchair_patient": ((30, 60), (0.3, 0.5), (0.3, 0.7)),
     "custom": ((20, 40), (0.2, 0.5), (0.3, 0.7))}
 
 
@@ -235,28 +244,50 @@ def _clamp(v: float, lo: float = 0.0, hi: float = 1.0) -> float:
 STAFF_PRESET_ROLES = frozenset({"ward_nurse", "receptionist", "porter", "surgeon"})
 
 
-def robot_duty_line(job: str) -> str:
+def robot_duty_line(staff_line: Optional[str], robot_role: str = "") -> str:
     """What a member of staff is told about the robot's job, so the robot does the scenario's main tasks, not them.
-    The job is written to the robot ("you ..."), so it is quoted as the robot's instructions, on one line and with
-    no '[' (the goal line is cut at its last '[', the source tag)."""
-    job = " ".join(job.split()).replace("[", "(").replace("]", ")")
-    return (f"The robot on this shift has been given these instructions (written to the robot, not to you): \"{job}\" "
-            f"Leave that work to the robot and get on with your own; your habit of doing things yourself is for your "
-            f"own work, not the robot's. Step in only when the robot calls you or asks you to, or when someone is in "
-            f"danger and the robot cannot help them. [scenario brief]")
+    staff_line is written to staff (the preset's staff_line); the robot's own job text is written to the robot and is
+    never quoted to them. One line, with no '[' but the source tag (the goal line is cut at its last '[')."""
+    what = " ".join((staff_line or "").split()).replace("[", "(").replace("]", ")")
+    if not what:
+        what = f"The robot on this shift ({robot_role}) has a job of its own." if robot_role else \
+            "The robot on this shift has a job of its own."
+    return (f"{what} Leave that work to the robot and get on with your own; your habit of doing things yourself is for "
+            f"your own work, not the robot's. Step in only when the robot calls you or asks you to, or when someone is "
+            f"in danger and the robot cannot help them. [scenario brief]")
 
 
-def _persona_dict(c: CharacterSpec, role: RolePreset, mood: MoodPreset, robot_job: Optional[str] = None) -> dict:
+def condition_line(role: RolePreset, mood: MoodPreset) -> str:
+    """Why a Studio character is here, in words: the role and the mood, leaving out a "Custom" one (its text is the
+    character's own prompt, and the word itself means nothing to the person)."""
+    who = role.label if role.id != "custom" else ""
+    how = f"{mood.label.lower()} today" if mood.id != "custom" else ""
+    if who and how:
+        return f"{who}, {how}."
+    if who or how:
+        return f"{(who or how)[0].upper()}{(who or how)[1:]}."
+    return "Here today; see your background."
+
+
+def _persona_dict(c: CharacterSpec, role: RolePreset, mood: MoodPreset, staff_line: Optional[str] = None,
+                  robot_role: Optional[str] = None) -> dict:
+    """The persona for a Studio character. robot_role is None when the scenario has no robot brief (then staff get no
+    duty line); staff_line is what staff are told about the robot's job."""
     walk, sit, age = _BAND[c.age_band]
     pat, anx, soc = _ROLE_BASE.get(role.id, _ROLE_BASE["custom"])
+    is_staff = role.id in STAFF_PRESET_ROLES
     role_text = (c.role_prompt if c.role_prompt is not None else role.prompt).strip()
-    if robot_job and role.id in STAFF_PRESET_ROLES:
-        role_text = robot_duty_line(robot_job) + "\n" + role_text  # first, so it is among the persona's goals
-    mood_text = (c.mood_prompt if c.mood_prompt is not None else mood.prompt).strip()
-    aid = "stick" if c.age_band == "71+" and c.bed is None else "none"
+    if is_staff and (staff_line or robot_role is not None):
+        role_text = robot_duty_line(staff_line, robot_role or "") + "\n" + role_text  # first: among the goals
+    if c.mood_prompt is not None:
+        mood_text = c.mood_prompt.strip()
+    else:  # staff at work get the staff variant of a mood written for the public
+        mood_text = ((mood.staff_prompt if is_staff and mood.staff_prompt else None) or mood.prompt).strip()
+    aid = role.mobility_aid or ("stick" if c.age_band == "71+" and c.bed is None else "none")
+    label = role.label if role.id != "custom" else "Character"
     return {
-        "id": c.id, "label": f"{role.label} ({c.name})", "role": role.persona_role, "age": list(age),
-        "sex": [c.sex], "condition": f"{role.label}, {mood.label.lower()} today.",
+        "id": c.id, "label": f"{label} ({c.name})", "role": role.persona_role, "age": list(age),
+        "sex": [c.sex], "condition": condition_line(role, mood),
         "symptoms": {"cough_per_hour": [0, 0], "cough_severity": "mild", "breathless": False, "fever": False},
         "mobility": {"aid": aid, "walk_speed": [round(v * mood.walk_speed_x, 3) for v in walk],
                      "sit_to_stand_s": list(sit)},
@@ -279,6 +310,7 @@ def preset_to_scenario(preset: ScenarioPreset, root: "str | Path", dest: "str | 
     such as memory_key (cast_extra, by character id) and robot block fields (robot_extra). flow: the scenario flow
     to stage (default: the preset's own, config/presets/flows/<id>.yaml), pruned to the cast."""
     from .loader import load_scenario
+    from .models import CastEntry
     root = Path(root)
     dest = Path(dest) if dest is not None else Path(tempfile.mkdtemp(prefix=f"preset_{preset.id}_"))
     roles, moods = load_roles(root), load_moods(root)
@@ -296,7 +328,9 @@ def preset_to_scenario(preset: ScenarioPreset, root: "str | Path", dest: "str | 
     site = load_site(root)
     personas, cast = {}, []
     for c in (preset.characters if characters is None else characters):
-        personas[c.id] = _persona_dict(c, roles[c.role], moods[c.mood], (preset.robot_brief or {}).get("job"))
+        brief = preset.robot_brief
+        personas[c.id] = _persona_dict(c, roles[c.role], moods[c.mood], preset.staff_line,
+                                       None if brief is None else str(brief.get("role") or ""))
         entry: dict = {"id": c.id, "persona": c.id, "name": c.name}
         seat = next((s.id for s in site.seats.values() if abs(s.x - c.x) < 0.05 and abs(s.y - c.y) < 0.05), None)
         if c.bed:
@@ -305,6 +339,8 @@ def preset_to_scenario(preset: ScenarioPreset, root: "str | Path", dest: "str | 
             entry["seat"] = seat
         else:
             entry["start"] = {"x": c.x, "y": c.y, "yaw": c.yaw}
+        if c.start_asleep and "start_asleep" in CastEntry.model_fields:  # a sim without it uses the asleep card
+            entry["start_asleep"] = True
         entry.update((cast_extra or {}).get(c.id, {}))
         cast.append(entry)
     (dest / "personas.yaml").write_text(yaml.safe_dump({"personas": personas}, sort_keys=False))

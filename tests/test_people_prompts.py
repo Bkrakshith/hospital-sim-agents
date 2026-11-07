@@ -19,17 +19,17 @@ CONFIG = ROOT / "config"
 PRESETS = load_scenario_presets(CONFIG)
 
 
-def _job(pid):
-    return " ".join(PRESETS[pid].robot_brief["job"].split())
+def _staff_line(pid):
+    return " ".join(PRESETS[pid].staff_line.split())
 
 
-def test_staff_duty_line_quotes_the_robot_job(tmp_path):
+def test_staff_duty_line_is_written_to_staff_not_quoted_from_the_robot(tmp_path):
     loaded = preset_to_scenario(PRESETS["ae_waiting"], CONFIG, tmp_path)
     goal = loaded.personas["N1"].goals[0]
-    assert "written to the robot, not to you" in goal
-    assert f'"{_job("ae_waiting")}"' in goal
+    assert goal.startswith(_staff_line("ae_waiting")[:40])
     assert "Leave that work to the robot" in goal
-    assert not goal.startswith("You are the first point of contact")
+    assert "written to the robot" not in goal
+    assert "You are the first point of contact" not in goal
 
 
 def test_duty_line_scopes_fix_it_yourself_to_own_work(tmp_path):
@@ -37,18 +37,24 @@ def test_duty_line_scopes_fix_it_yourself_to_own_work(tmp_path):
     assert "for your own work, not the robot's" in loaded.personas["N1"].goals[0]
 
 
-def test_a_multiline_job_stays_one_goal(tmp_path):
+def test_a_multiline_staff_line_stays_one_goal(tmp_path):
     p = PRESETS["meal_round"]
-    job = "Bring each patient the right tray.\nSkip anyone who is asleep\n  and tell a nurse.\n"
-    p = p.model_copy(update={"robot_brief": {**p.robot_brief, "job": job}})
-    nurse = preset_to_scenario(p, CONFIG, tmp_path).personas["N1"]
+    line = "The robot brings the trays.\nIt answers the bells\n  during the round.\n"
+    nurse = preset_to_scenario(p.model_copy(update={"staff_line": line}), CONFIG, tmp_path).personas["N1"]
     duty = [g for g in nurse.goals if "Leave that work to the robot" in g]
     assert len(duty) == 1 and nurse.goals[0] == duty[0]
-    assert '"Bring each patient the right tray. Skip anyone who is asleep and tell a nurse."' in duty[0]
-    assert "\n" not in robot_duty_line(job).strip()
+    assert duty[0].startswith("The robot brings the trays. It answers the bells during the round.")
+    assert "\n" not in robot_duty_line(line).strip()
 
 
-def test_duty_line_keeps_its_source_tag_and_no_bracket_from_the_job():
+def test_without_a_staff_line_staff_get_the_robot_role_not_its_job(tmp_path):
+    p = PRESETS["meal_round"]
+    nurse = preset_to_scenario(p.model_copy(update={"staff_line": None}), CONFIG, tmp_path).personas["N1"]
+    assert nurse.goals[0].startswith("The robot on this shift (ward meal assistant) has a job of its own.")
+    assert p.robot_brief["job"][:40] not in nurse.backstory
+
+
+def test_duty_line_keeps_its_source_tag_and_no_bracket_from_the_line():
     line = robot_duty_line("Fetch the [urgent] box.")
     assert line.rstrip().endswith("[scenario brief]")
     assert line.count("[") == 1
