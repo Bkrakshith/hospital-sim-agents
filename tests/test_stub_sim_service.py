@@ -207,7 +207,8 @@ def test_robot_reply_goes_to_the_person_it_heard_not_the_nearest(tmp_path):
     s.on_intent(Intent(id="a", person="P5", t=s.t, kind="approach", target="g1"))
     for _ in range(400):
         s.step(0.05)
-    # P2 speaks from her seat; P5 is the one standing at the robot
+    # P2 speaks from 2.3 m away (the reply-to-last-listener rule reaches 3.0 m); P5 is the one standing at the robot
+    _put(s.world, "P2", -1.2, 1.0)
     s.on_say(Say(person="P2", t=s.t, text="Where is Ward B please?", addressee="g1"))
     out = s.step(0.01)
     assert [h.source_id for h in out.robot_heard if h.text] == ["unknown"]  # the robot cannot tell who
@@ -305,7 +306,8 @@ def test_robot_speech_goes_to_the_named_track(tmp_path):
 
 def test_a_name_that_arrives_after_its_words_still_addresses_them(tmp_path):
     """Over ROS the say callback often runs before the toward callback: the words wait for the step and take the
-    name that arrived by then. A name that comes only after its words were sent is dropped, not kept for the next."""
+    name that arrived by then. speech/toward is a FIFO (each toward is the next say's): a name that comes only after
+    its words were sent goes with the next line, if that comes within 2 s."""
     s, w = _staged_people(tmp_path)
     s.on_say(Say(person="P3", t=s.t, text="Excuse me, robot?", addressee="g1"))
     s.step(0.01)
@@ -314,10 +316,10 @@ def test_a_name_that_arrives_after_its_words_still_addresses_them(tmp_path):
     assert s.step(0.01).audio[0].addressee == "P2"
     s.on_robot_say("Over there.")  # no name: nearest within reach
     assert s.step(0.01).audio[0].addressee == "P3"
-    s.on_robot_toward(w.tracks.track("P2"))  # too late for "Over there."
+    s.on_robot_toward(w.tracks.track("P2"))  # after "Over there." went out: the next line's
     s.step(0.01)
-    s.on_robot_say("Anything else?")  # a line with no name of its own
-    assert s.step(0.01).audio[0].addressee == "P3"
+    s.on_robot_say("Anything else?")
+    assert s.step(0.01).audio[0].addressee == "P2"
 
 
 def test_overheard_speech_does_not_capture_the_reply(tmp_path):
