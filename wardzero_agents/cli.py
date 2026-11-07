@@ -65,7 +65,8 @@ ISAAC_KILL_AFTER_S = 30.0  # Kit can take a while to shut down
 # which are encoded to follow.mp4 only after the stop (one encoder session at a time). 10 s cut that encode short.
 ISAAC_STOP_BASE_S = 60.0
 ISAAC_MAX_FPS = 30  # the host's highest frame rate (the walking G1 runs at 25)
-ISAAC_ENCODE_FPS = 50.0  # follow frames encoded per second from JPEG files, with room to spare
+ISAAC_ENCODE_FPS = 80.0  # follow frames encoded per second from JPEG files: 232 measured at 720p (scrub_nurse,
+# 3060 frames in 13.2 s); 80 leaves room for 1080p (2.25 times the pixels)
 SIMS = ("isaac", "stub")
 FASTEMBED_ADVICE = ("The fastembed embedder needs the optional extra. Install it with:\n"
                     f"  pip install -e '{AGENTS_ROOT}[embed]'")
