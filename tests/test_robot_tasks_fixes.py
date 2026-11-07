@@ -87,3 +87,30 @@ def test_speed_cap_holds_on_the_step_the_robot_comes_near(staged, tmp_path, scal
     assert math.hypot(w.robot.x - 19.0, w.robot.y - 16.0) < 0.3
     assert not fast_near
 
+
+# ---- a tell spot is clear of the furniture -------------------------------------------------------------------------
+@pytest.mark.parametrize("scale,wall", [(1.0, 0.1), (3.0, 0.1), (10.0, 0.1)])
+def test_tell_staff_in_b6_stops_clear_and_the_robot_can_walk_back_to_the_patient(staged, tmp_path, scale, wall):
+    """night_call_bell at x3 froze the robot for 430 s in B6: it stopped to tell the nurse in the furniture's
+    clearance band, and no walk could start from there."""
+    s = svc(staged("night_call_bell", auto=True), tmp_path, scale)
+    w = s.world
+    x, y = s.tasks._reach_spots(w.people["P1"], "tray")[0]
+    w.robot.teleport(x, y, 0.0)
+    tr = w.tracks.track("P1")
+    s.on_task_action({"id": "tl", "action": "tell_staff", "about": tr})
+    told = None
+    for _ in range(int(120 / (scale * wall))):
+        o = s.step(wall)
+        if [r for r in o.task_results if r.get("id") == "tl" and r.get("kind") != "goal"]:
+            told = (w.robot.x, w.robot.y)
+            break
+    assert told is not None and w.robot.router.is_clear(*told)
+    s.on_task_action({"id": "ap", "action": "approach", "track": tr})
+    goals = []
+    for _ in range(int(120 / (scale * wall))):
+        o = s.step(wall)
+        goals += [(r["ok"], r["reason"]) for r in o.task_results if r.get("id") == "ap" and r.get("kind") == "goal"]
+        if goals:
+            break
+    assert goals == [(True, "arrived")]

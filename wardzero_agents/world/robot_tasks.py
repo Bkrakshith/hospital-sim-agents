@@ -613,6 +613,12 @@ class RobotTasks:
         bx, by = w._nurse_base(q.x, q.y)
         return pid, self._spots_near(q) + [(bx, by, None)]
 
+    def _clear_here(self) -> bool:
+        """The robot stands where its body is clear of the furniture (out of its router's clearance band)."""
+        r = self.world.robot
+        clear = getattr(r.router, "is_clear", None) or getattr(r.router, "is_free", None)
+        return clear is None or bool(clear(r.x, r.y))
+
     def _in_earshot(self, q, within: float = TELL_RANGE_M) -> bool:
         """q is within this of the robot, with no wall between them."""
         w, r = self.world, self.world.robot
@@ -818,8 +824,9 @@ class RobotTasks:
         tl = self._tell
         if tl is not None and self.mobile and r.has_goal and r._had_goal and self.goal_id == tl["id"]:
             q = w.people.get(tl["staff"])
-            if q is not None and q.posture != "gone" and self._in_earshot(q, TELL_NEAR_M):
-                # close to the staff member it walks to: stop and tell her now (no walking into her)
+            if q is not None and q.posture != "gone" and self._in_earshot(q, TELL_NEAR_M) and self._clear_here():
+                # close to the staff member it walks to: stop and tell her now (no walking into her), but only where
+                # its body is clear of the furniture (stopped in the clearance band it could not walk off again)
                 r.cancel_goal()
                 r.speed_scale, self._holding, self._held_s, self._held_total = 1.0, False, 0.0, 0.0
                 self._backing = False  # a step back under way ends here too
