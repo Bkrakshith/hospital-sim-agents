@@ -206,7 +206,7 @@
         h("span.sw-text", h("b", "Static patients in ward beds"), h("small", "Lying patients fill the free ward beds. They do not speak."))));
 
     function setTab(t) {
-      S.tab = t; renderSide();
+      S.tab = t; renderSide(); body.scrollTop = 0;
       if (t === "characters") S.map.setFocus([]);
     }
 
@@ -404,7 +404,7 @@
         if (/^Untitled/.test(P().name)) patch.name = sc.title;
         await WZ.saveProject(patch);
         S.sel = null; S.scen = null; S.tab = "characters";
-        renderSide(); drawMap(); loadMemory();
+        renderSide(); body.scrollTop = 0; drawMap(); loadMemory();  // the character list from its top, not the card's scroll
         S.map.setFocus([]); S.map.frame(sc.focus_rooms, sc.characters.concat([sc.robot_start]), 0.12, 16);
         WZ.toast("Loaded " + sc.title + ": " + sc.characters.length + " characters");
       } catch (e) { WZ.toast(e.message, "bad"); }
