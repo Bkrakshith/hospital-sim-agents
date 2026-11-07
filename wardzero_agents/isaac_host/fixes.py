@@ -37,7 +37,8 @@ if TYPE_CHECKING:
 log = logging.getLogger("wardzero.isaac.fixes")
 
 NAV_PARENT = "/World/Hospital/Navmesh"
-FREE_USES = ("bedroom", "nurse_base", "ae_treatment")  # rooms that people must be able to walk into (ward and A&E bays)
+FREE_USES = ("bedroom", "nurse_base", "ae_treatment", "triage")  # rooms people must be able to walk into (ward and A&E
+# bays, and A&E triage, which the stage excludes with the whole strip north of the main corridor)
 MIN_OVERLAP_M = 0.3  # an exclude that overlaps a room by less than this (a wall's thickness) is left alone
 DOOR_ROOT = "/World/Fixtures/Doors"  # door leaves only: lifts and call buttons are not touched
 NAV_INCLUDE_PATH = "/World/WZNavMesh/KeptRooms"  # the extra Include volume (never under a culled group)
@@ -53,7 +54,8 @@ def _overlap(a: Box, r) -> float:
 
 
 def nav_volumes_off(volumes: Mapping[str, tuple[str, Box]], site: "Site", plan: CullPlan) -> list[str]:
-    """The Exclude volumes (path -> (type, xy box)) to deactivate: those over a bedroom, nurse-base or A&E treatment room the run keeps."""
+    """The Exclude volumes (path -> (type, xy box)) to deactivate: those over a bedroom, nurse-base, A&E treatment or
+    triage room the run keeps."""
     rooms = [room_rect(r) for rid, r in site.rooms.items()
              if r.use in FREE_USES and (plan.full or rid in plan.rects)]
     return sorted(path for path, (kind, box) in volumes.items()

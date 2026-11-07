@@ -129,3 +129,12 @@ def test_stage_fixes_returns_the_include_box(monkeypatch, v1):
     plan = cull_plan(v1, rooms=["Theatre"])
     off, authored, include = fixes.stage_fixes(v1.site, plan, Path("x.usd"), Path("c.usd"), [])
     assert include == fixes.nav_include_box(VOLUMES, v1.site, plan) and include is not None
+
+
+def test_the_exclude_over_ae_triage_is_switched_off_when_triage_is_kept(v1):
+    """The stage's NavMeshVolume_04 excludes the strip north of the main corridor (y 12.1 to 15.9), AE_Triage with it:
+    in Isaac ae_waiting every path from the A&E seats to AE_Triage ended at its doorway (re-QA bug 11)."""
+    strip = {f"{NAV}/NavMeshVolume_04": ("Exclude", ((-23.38, 12.1), (3.62, 15.9)))}
+    plan = cull_plan(v1, rooms=["AE_Triage", "AE_Waiting", "Lobby", "Main_Corridor"])
+    assert fixes.nav_volumes_off(strip, v1.site, plan) == [f"{NAV}/NavMeshVolume_04"]
+    assert fixes.nav_volumes_off(strip, v1.site, cull_plan(v1, rooms=["AE_Waiting", "Lobby", "Main_Corridor"])) == []
