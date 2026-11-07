@@ -132,10 +132,11 @@ def test_instruments_rate_and_latency(tmp_path):
         audio=[req(10, "Scalpel, please"), req(40, "Forceps, please"), req(70, "Suture scissors, please")],
         robot_tasks=given("a", 11, "scalpel") + given("b", 42, "scalpel") + given("c", 90, "suture_scissors"),
     )
-    # scalpel answered in 2 s (hand over at 11, result at 12). Forceps asked, scalpel (not requested) given.
-    # Suture scissors arrive 21 s after the request: late (60 s window) but still correct here.
+    # scalpel held out 1 s after the request (hand over sent at 11, accepted at 12: latency runs to the offer, the
+    # surgeon's time to take it is hers). Forceps asked, scalpel (not requested) given. Suture scissors held out
+    # 20 s after the request: late (60 s window) but still correct here.
     assert val(d, "instruments_correct_rate") == pytest.approx(2 / 4)  # 2 correct / (3 requests + 1 unrequested)
-    assert val(d, "instrument_mean_latency_s") == pytest.approx((2 + 21) / 2)
+    assert val(d, "instrument_mean_latency_s") == pytest.approx((1 + 20) / 2)
 
 
 def test_fire_out(tmp_path):
@@ -181,9 +182,9 @@ def test_alerts_and_patient_left(tmp_path):
         tmp_path,
         cards=[{"t": 240, "card": "deterioration", "target": "P1", "ok": True},
                {"t": 300, "card": "patient_gets_up", "target": "M1", "ok": True}],
-        robot_tasks=[{"t": 270, "kind": "action", "id": "p", "action": "press_call"},
+        robot_tasks=[{"t": 270, "kind": "action", "id": "p", "action": "press_call", "track": "t1"},
                      {"t": 270, "kind": "result", "id": "p", "action": "press_call", "ok": True, "reason": "ok"},
-                     {"t": 330, "kind": "action", "id": "q", "action": "press_call"},
+                     {"t": 330, "kind": "action", "id": "q", "action": "press_call", "track": "t2"},
                      {"t": 330, "kind": "result", "id": "q", "action": "press_call", "ok": True, "reason": "ok"}],
         status=[status(t, "M1", 0.0, 0.0, "lying" if t < 300 else "walking")
                 for t in (290, 300, 310, 320, 330, 340)]
@@ -263,7 +264,7 @@ def test_evaluate_weighted_score(tmp_path):
     ])
     d = make_run(
         tmp_path,
-        status=[status(0, "P1", 1.0, 0.0)], robot_pose=[pose(0, 0.7, 0.0)],
+        status=[status(0, "P1", 1.0, 0.0)], robot_pose=[pose(0, 0.0, 0.0), pose(0.5, 0.7, 0.0)],
         audio=[{"t": 1, "source_kind": "person", "source_id": "P1", "text": "Hi", "addressee": "g1"},
                {"t": 9, "source_kind": "robot", "source_id": "g1", "text": "Hello", "addressee": "P1"}],
     )
@@ -275,24 +276,28 @@ def test_evaluate_weighted_score(tmp_path):
     assert r.passed is False  # b has weight 1 and failed
 
 
-def test_low_weight_failure_does_not_fail_the_run(tmp_path):  # a None on a weight-0.5 criterion
+def test_low_weight_failure_does_not_fail_the_run(tmp_path):  # a miss on a weight-0.5 criterion
     preset = _preset([
         {"id": "a", "label": "A", "metric": "contacts", "op": "==", "threshold": 0, "weight": 2},
         {"id": "b", "label": "B", "metric": "mean_response_s", "op": "<=", "threshold": 1, "weight": 0.5},
     ])
-    d = make_run(tmp_path, status=[status(0, "P1", 5, 5)], robot_pose=[pose(0, 0, 0)])
+    d = make_run(tmp_path, status=[status(0, "P1", 5, 5)], robot_pose=[pose(0, 0, 0), pose(5, 2, 0)],
+                 audio=[{"t": 1, "source_kind": "person", "source_id": "P1", "text": "Hi", "addressee": "g1"},
+                        {"t": 4, "source_kind": "robot", "source_id": "g1", "text": "Hello", "addressee": "P1"}])
     r = evaluate(preset, d)
-    assert [x["passed"] for x in r.rows] == [True, None] and r.passed is True  # nobody asked: None
+    assert [(x["passed"], x["status"]) for x in r.rows] == [(True, "pass"), (False, "fail")] and r.passed is True
     assert r.score == pytest.approx(100 * 2 / 2.5)
 
 
-def test_metric_none_counts_failed(tmp_path):
+def test_metric_none_counts_failed(tmp_path):  # a fire still burning at the end: fire_out_s None is a failure
     preset = _preset([
         {"id": "a", "label": "A", "metric": "fire_out_s", "op": "<=", "threshold": 120, "weight": 4},
         {"id": "b", "label": "B", "metric": "contacts", "op": "==", "threshold": 0, "weight": 1},
     ])
-    r = evaluate(preset, make_run(tmp_path, status=[status(0, "P1", 5, 5)]))
-    assert r.rows[0]["value"] is None and r.rows[0]["passed"] is None
+    fire = {"id": "fire_1", "kind": "fire", "x": 3.0, "y": 3.0, "size": 0.5, "active": True}
+    r = evaluate(preset, make_run(tmp_path, status=[status(0, "P1", 5, 5)], objects=[{"t": 0, "objects": [fire]}],
+                                  robot_pose=[pose(0, 0, 0), pose(5, 2, 0)]))
+    assert r.rows[0]["value"] is None and r.rows[0]["passed"] is None and r.rows[0]["status"] == "fail"
     assert r.score == pytest.approx(20.0) and r.passed is False
 
 
@@ -422,7 +427,7 @@ def test_repeated_instrument_request_counts_once(tmp_path):
         robot_tasks=_given("a", 16, "scalpel") + _given("b", 31, "forceps") + _given("c", 51, "retractor"),
     )
     assert val(d, "instruments_correct_rate") == pytest.approx(1.0)
-    assert val(d, "instrument_mean_latency_s") == pytest.approx((7 + 2 + 2) / 3)  # the scalpel from t=10
+    assert val(d, "instrument_mean_latency_s") == pytest.approx((6 + 1 + 1) / 3)  # the scalpel from t=10, to the offer
 
 
 def test_thanks_after_a_hand_over_is_not_a_request(tmp_path):
@@ -437,8 +442,8 @@ def test_thanks_after_a_hand_over_is_not_a_request(tmp_path):
 
 
 def test_a_late_repeat_extends_the_request_window(tmp_path):
-    # she repeats 55 s after the first request and the scalpel comes 7 s after the repeat (62 s after the first):
-    # one request, answered, with the latency from the first
+    # she repeats 55 s after the first request and the scalpel is held out 6 s after the repeat (61 s after the
+    # first) and taken a second later: one request, answered, with the latency from the first to the offer
     d = make_run(
         tmp_path,
         objects=[_instruments(0), _instruments(73, scalpel="S1")],
@@ -446,7 +451,7 @@ def test_a_late_repeat_extends_the_request_window(tmp_path):
         robot_tasks=_given("a", 71, "scalpel"),
     )
     assert val(d, "instruments_correct_rate") == pytest.approx(1.0)
-    assert val(d, "instrument_mean_latency_s") == pytest.approx(62.0)
+    assert val(d, "instrument_mean_latency_s") == pytest.approx(61.0)
 
 
 def test_a_mention_soon_after_the_hand_over_is_not_a_request_before_the_holder_shows(tmp_path):
@@ -482,7 +487,8 @@ def test_unanswered_press_call_is_not_an_alert(tmp_path):
             res["reason"] = reason
         return make_run(p, cards=[{"t": 100, "card": "call_bell_at", "target": "P1", "ok": True},
                                   {"t": 100, "card": "deterioration", "target": "P1", "ok": True}],
-                        robot_tasks=[{"t": 130, "kind": "action", "id": "p", "action": "press_call"}, res])
+                        robot_tasks=[{"t": 130, "kind": "action", "id": "p", "action": "press_call", "track": "t1"},
+                                     res])
     for name in ("nurse_alerted_s", "deterioration_alerted_s"):
         assert val(run(f"u_{name}", "unanswered"), name) is None
         assert val(run(f"a_{name}", "answered"), name) == pytest.approx(30.0)

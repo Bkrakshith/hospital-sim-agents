@@ -173,6 +173,16 @@ def _moments(d: RunData, exps, names: dict) -> list[dict]:
             ok = bool(r.get("ok"))
             why = f" ({r['reason']})" if r.get("reason") and not ok else ""
             add(r.get("t"), "robot", f"Robot {what}: {'done' if ok else 'failed'}{why}", 2 if ok else 3)
+        elif r.get("kind") == "follow" and r.get("event") in ("start", "end"):
+            who = nm(r.get("person")) if r.get("person") else "someone"
+            if r["event"] == "start":
+                add(r.get("t"), "robot", f"Robot starts following {who}", 2)
+            else:
+                add(r.get("t"), "robot", f"Robot stops following {who}" + (f" ({r['reason']})" if r.get("reason") else ""),
+                    2)
+        elif r.get("kind") == "hand_over" and r.get("event") == "offer":
+            to = f" to {nm(r['person'])}" if r.get("person") else ""
+            add(r.get("t"), "robot", f"Robot holds out {r.get('item') or 'an item'}{to}", 2)
     for s in d.says:
         if not s.get("text"):
             continue
@@ -218,6 +228,8 @@ def build_facts(run_dir: Path, preset, narrative: Optional[dict] = None) -> dict
         verdict = {"label": "INVALID", "passed": False}
     elif not res.rows:
         verdict = {"label": "NO CRITERIA", "passed": None}
+    elif not res.judged:  # the main task never came up: a fail, said why
+        verdict = {"label": "FAIL", "passed": False, "reason": "nothing_to_judge"}
     else:
         verdict = {"label": "PASS" if res.passed else "FAIL", "passed": res.passed}
     ratings = []
@@ -245,8 +257,9 @@ def build_facts(run_dir: Path, preset, narrative: Optional[dict] = None) -> dict
         "criteria": [{**row, "value": _r(row["value"]), "threshold": _r(row["threshold"])} for row in res.rows],
         "metrics": {k: _r(v) for k, v in compute_all(d).items() if v is not None},
         "counts": {"people": len(people), "criteria": len(res.rows),
-                   "criteria_passed": sum(1 for r in res.rows if r["passed"]),
-                   "criteria_failed": sum(1 for r in res.rows if not r["passed"])},
+                   "criteria_passed": sum(1 for r in res.rows if r["status"] == "pass"),
+                   "criteria_failed": sum(1 for r in res.rows if r["status"] == "fail"),
+                   "criteria_na": sum(1 for r in res.rows if r["status"] == "n/a")},
         "moments": moments, "ratings": ratings, "ratings_mean": rating_mean, "trust": trust,
         "guides": _guides(run_dir, names, d.site),
         "tokens": _tokens(d), "narrative": "", "suggestions": [],
@@ -353,6 +366,9 @@ def render_html(facts: dict) -> str:
                   f"{_e(facts['fairness_violations'])} violation(s) were recorded.</small></div>")
     elif verdict["passed"] is None:
         banner = '<div class="banner none">No verdict<small>This run has no success criteria.</small></div>'
+    elif verdict.get("reason") == "nothing_to_judge":
+        banner = (f'<div class="banner fail">FAIL: score {_fmt(facts["score"])} out of 100<small>Nothing that the '
+                  "criteria on the scenario's main task measure happened in this run, so it cannot pass.</small></div>")
     else:
         ok = verdict["passed"]
         banner = (f'<div class="banner {"pass" if ok else "fail"}">{verdict["label"]}: score {_fmt(facts["score"])} '
@@ -364,12 +380,21 @@ def render_html(facts: dict) -> str:
                   "of it are marked not measured or failed.</small></div>") + banner
     crit_rows = []
     for c in facts["criteria"]:
-        tag = ('<span class="tag none">not measured</span>' if c["passed"] is None else
-               '<span class="tag pass">pass</span>' if c["passed"] else '<span class="tag fail">fail</span>')
+        status = c.get("status")  # an older report.json has no status: a None passed was "not measured"
+        if not status:
+            status = "pass" if c["passed"] else "none" if c["passed"] is None else "fail"
+        tag = ('<span class="tag na" title="Nothing to measure in this run: left out of the score">n/a</span>'
+               if status == "n/a" else
+               '<span class="tag none">not measured</span>' if status == "none" else
+               '<span class="tag pass">pass</span>' if status == "pass" else '<span class="tag fail">fail</span>')
         crit_rows.append([_e(c["label"]), _e(_fmt(c["value"])), _e(f"{c['op']} {_fmt(c['threshold'])}"),
                           _e(_fmt(c["weight"])), tag])
     criteria = (_table(["Criterion", "Measured", "Needed", "Weight", "Result"], crit_rows, num=(1, 2, 3))
                 if crit_rows else '<p class="note">This run has no success criteria.</p>')
+    if any(c.get("status") == "n/a" for c in facts["criteria"]):
+        criteria += ('<p class="note">n/a: nothing to measure in this run (nobody asked the robot anything, no '
+                     "debrief, the event never happened, or, for the safety criteria, the robot never moved). These "
+                     "criteria are left out of the score and cannot fail the run.</p>")
     if facts.get("guides"):
         grows = [[_e(g["who"]), _e(g["where"]), _e(clock(g["t"] or 0)),
                   '<span class="tag none">not judged</span>' if g["arrived"] is None else

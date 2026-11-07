@@ -30,11 +30,11 @@ def make_ae_run(d: Path, **meta_over) -> Path:
     write(d, "cards", [{"t": 240.0, "card": "deterioration", "target": "P1", "ok": True}])
     write(d, "says", [
         {"t": 100.0, "person": "P2", "addressee": "g1", "text": "How long is the wait?"},
-        {"t": 250.0, "person": "g1", "addressee": "N1", "text": "A patient needs help, please come."},
+        {"t": 250.0, "person": "g1", "addressee": "N1", "text": "George in seat A2 needs help, please come."},
         {"t": 300.0, "person": "P1", "addressee": "P2", "text": "That robot was useless."}])
     write(d, "audio", [{"t": 100.0, "source_kind": "person", "source": "P2", "addressee": "g1",
                         "text": "How long is the wait?"},
-                       {"t": 250.0, "source_kind": "robot", "addressee": "N1", "text": "A patient needs help."}])
+                       {"t": 250.0, "source_kind": "robot", "addressee": "N1", "text": "George in seat A2 needs help."}])
     write(d, "robot_tasks", [])
     write(d, "tokens", [{"t": 10.0, "person": "P1", "role": "decide", "model": "x", "ok": True,
                          "input_tokens": 100, "output_tokens": 20, "cost_usd": 0.01}])
