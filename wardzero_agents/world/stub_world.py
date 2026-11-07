@@ -49,6 +49,10 @@ from wardzero_agents.world.route_follower import ROBOT_HARD_M
 
 ROBOT_ID = "g1"
 ROUTE_BLOCK_RADIUS_M = 1.5  # a route_blocked event seals this radius for routing
+DOOR_END_SEAL_M = 0.4  # ... and, where it reaches the end of a doorway, this far on along the door's line
+DOOR_SEAL_R_M = 0.25  # ... in discs this wide
+DOOR_LANDMARK_M = 1.5  # the PA names a blocked doorway by a landmark this close to its middle
+BLOCK_LANDMARK_M = 3.0  # ... or a block off any doorway by a landmark this close to it
 FIRE_KEEP_M = 1.0  # no route (a person's or the robot's) comes closer than this to a burning fire
 APPROACH_GAP_M = 1.0
 SEAT_VIEW_RANGE_M = 6.0
@@ -124,6 +128,14 @@ def _starts_asleep(inst: PersonInstance, scenario) -> bool:
         if getattr(c, "id", None) == inst.person_id and getattr(c, "start_asleep", False):
             return True
     return False
+
+
+def _seg_point(x: float, y: float, a, b) -> float:
+    """Distance from (x, y) to the segment a-b."""
+    dx, dy = b[0] - a[0], b[1] - a[1]
+    L2 = dx * dx + dy * dy
+    u = 0.0 if L2 < 1e-12 else max(0.0, min(1.0, ((x - a[0]) * dx + (y - a[1]) * dy) / L2))
+    return math.hypot(x - (a[0] + u * dx), y - (a[1] + u * dy))
 
 
 @dataclass
@@ -1150,18 +1162,15 @@ class StubWorld:
             # wraps another, like the forbidden-area router, follows the one it wraps)
             self._blocked += 1
             self._route_blocks.append((x, y, ROUTE_BLOCK_RADIUS_M))
-            routers = [r for r in self._all_routers() if hasattr(r, "block")]
-            ids = {id(r) for r in routers}
-            for r in routers:
-                if id(getattr(r, "base", None)) not in ids:
-                    r.block(x, y, ROUTE_BLOCK_RADIUS_M)
+            for sx, sy, sr in [(x, y, ROUTE_BLOCK_RADIUS_M)] + self._door_end_seals(x, y, ROUTE_BLOCK_RADIUS_M):
+                self._seal(sx, sy, sr)
             sign = Sign(id=f"route_blocked_{self._blocked}", text=ev.text or "Route blocked: do not use",
                         x=x, y=y, z=1.2, facing_yaw=0.0, placeholder=True)
             self.signs.append(sign)
             self._omni.add(sign.id)
-            # announced on the PA, so everyone (the robot too) hears which way is blocked
-            rid = self.site.room_at(x, y)
-            where = self.site.rooms[rid].label.split(",")[0] if rid else "this area"
+            # announced on the PA, so everyone (the robot too) hears which way is blocked: the doorway or landmark
+            # it blocks, not the whole room (the room may hold the only other way out)
+            where = self._blocked_name(x, y, ROUTE_BLOCK_RADIUS_M)
             if (ev.t, where) in self._pa_blocked:  # several blocks at once in one place: one announcement
                 return []
             self._pa_blocked.add((ev.t, where))
@@ -1203,6 +1212,66 @@ class StubWorld:
                 Intent(id=f"exit_{ev.id}", person=ev.person, t=ev.t, kind="leave", target=self.loaded.area.entrance)
             )
         return []
+
+    def _seal(self, x: float, y: float, r: float) -> None:
+        """Seal a disc for everyone: the people's router, the robot's, and any the robot's was swapped for (one that
+        wraps another, like the forbidden-area router, follows the one it wraps)."""
+        routers = [rt for rt in self._all_routers() if hasattr(rt, "block")]
+        ids = {id(rt) for rt in routers}
+        for rt in routers:
+            if id(getattr(rt, "base", None)) not in ids:
+                rt.block(x, y, r)
+
+    def _door_end_seals(self, x: float, y: float, r: float) -> list[tuple[float, float, float]]:
+        """Extra discs that carry a block over the end of a doorway it reaches: the map's wall beside a door frame can
+        leave a gap a cell wide, which the disc alone does not close (people walked out past the main entrance's west
+        end). Each end within the disc is sealed DOOR_END_SEAL_M further along the door's line."""
+        out = []
+        for d in self.site.doors:
+            a, b = d["a"], d["b"]
+            n = math.hypot(b[0] - a[0], b[1] - a[1])
+            if n < 1e-6:
+                continue
+            for (ex, ey), (ox, oy) in ((a, b), (b, a)):
+                if math.hypot(ex - x, ey - y) > r:
+                    continue
+                ux, uy = (ex - ox) / n, (ey - oy) / n  # along the door's line, outward past this end
+                k = 0.0
+                while k <= DOOR_END_SEAL_M + 1e-9:
+                    out.append((ex + ux * k, ey + uy * k, DOOR_SEAL_R_M))
+                    k += 0.1
+        return out
+
+    def _blocked_name(self, x: float, y: float, r: float) -> str:
+        """What the PA calls a blocked spot: the doorway the block covers (by the landmark at it, else the door's
+        name), else the nearest landmark within BLOCK_LANDMARK_M, else the room."""
+        lms = [lm for lid, lm in self.site.landmarks.items() if not lid.endswith("_centre") and lm.label]
+
+        def landmark_near(px, py, within):
+            best = min(lms, key=lambda lm: math.hypot(lm.x - px, lm.y - py), default=None)
+            if best is not None and math.hypot(best.x - px, best.y - py) <= within:
+                return best.label.split(",")[0]
+            return None
+
+        doors = []
+        for d in self.site.doors:
+            a, b = d["a"], d["b"]
+            dist = _seg_point(x, y, a, b)
+            if dist <= r:
+                doors.append((dist, d))
+        if doors:
+            d = min(doors, key=lambda e: e[0])[1]
+            mx, my = (d["a"][0] + d["b"][0]) / 2, (d["a"][1] + d["b"][1]) / 2
+            name = landmark_near(mx, my, DOOR_LANDMARK_M)
+            if name:
+                return name
+            if d.get("id"):
+                return str(d["id"]).replace("_", " ").capitalize()
+        name = landmark_near(x, y, BLOCK_LANDMARK_M)
+        if name:
+            return name
+        rid = self.site.room_at(x, y)
+        return self.site.rooms[rid].label.split(",")[0] if rid else "this area"
 
     # ---- objects, hand-overs and role actions --------------------------------------------
     def _log_objects(self, t: float) -> None:

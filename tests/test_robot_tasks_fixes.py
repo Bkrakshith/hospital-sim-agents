@@ -520,3 +520,66 @@ def test_start_asleep_on_the_cast_entry(staged, tmp_path):
     insts = [i.model_copy(update={"start_asleep": True}) if i.person_id == "M2" else i for i in loaded.instances]
     w = sw.StubWorld(dataclasses.replace(loaded, instances=insts), 1)
     assert w.people["M2"].asleep and not w.people["M1"].asleep
+
+
+# ---- route blocks: the seal, what the PA says, and the robot's guide router ------------------------------------------
+ENTRANCE_BLOCKS = ((-4.2, -2.6), (-1.2, -2.6), (1.8, -2.6))  # evacuation_guide's three blocks across the main entrance
+
+
+def _crosses_entrance(path, start):
+    """True when a route crosses the main entrance's line (y = -2.8, between x -6.5 and 3.5)."""
+    pts = [start] + [tuple(p) for p in path]
+    for (x0, y0), (x1, y1) in zip(pts, pts[1:]):
+        if (y0 + 2.8) * (y1 + 2.8) < 0:
+            x = x0 + (x1 - x0) * (-2.8 - y0) / (y1 - y0)
+            if -6.5 <= x <= 3.5:
+                return True
+    return False
+
+
+def _block_entrance(s, t=0.0):
+    pas = []
+    for i, (x, y) in enumerate(ENTRANCE_BLOCKS):
+        pas += s.world.apply_world_event(WorldEvent(id=f"rb{i}", t=t, kind="route_blocked", x=x, y=y))
+    return pas
+
+
+def test_the_entrance_blocks_seal_the_whole_doorway_for_people(staged, tmp_path):
+    """The three discs left a 0.2 m gap at the door's west end (x -5.8): people walked out through it."""
+    s = svc(staged("evacuation_guide", auto=True), tmp_path)
+    _block_entrance(s)
+    w = s.world
+    for start in ((-3.0, 0.0), (1.0, -0.9), (-6.5, 0.0)):
+        for goal in ((-1.24, -4.5), (-6.0, -4.0), (-1.2, -5.0)):
+            path = w.router.route(start, goal)
+            assert path is None or not _crosses_entrance(path, start), (start, goal, path)
+
+
+def test_the_route_blocked_pa_names_the_blocked_way_not_the_whole_room(staged, tmp_path):
+    s = svc(staged("evacuation_guide", auto=True), tmp_path)
+    pas = [e for e in _block_entrance(s) if e.source_kind == "pa"]
+    assert len(pas) == 1
+    assert "Main entrance" in pas[0].text and "Main lobby" not in pas[0].text
+
+
+def test_route_blocked_reaches_the_robots_guide_router(staged, tmp_path):
+    """The A&E guide went through the Lobby past the fire: a guide's walk must keep out of the blocks and the fire."""
+    s = svc(staged("evacuation_guide", auto=True), tmp_path)
+    w = s.world
+    s.on_world_event(WorldEvent(id="f", t=0.0, kind="fire_start", x=-1.24, y=-2.3))
+    for i, (x, y) in enumerate(ENTRANCE_BLOCKS):
+        s.on_world_event(WorldEvent(id=f"rb{i}", t=0.0, kind="route_blocked", x=x, y=y))
+    s.step(0.1)
+    put(w, "V2", 1.6, -0.6)
+    s.step(0.1)
+    s.on_task_action({"id": "gd", "action": "guide_start", "track": w.tracks.track("V2"), "place": "AE_Handover"})
+    s.step(0.1)
+    assert s.tasks._guide is not None
+    path = [(w.robot.x, w.robot.y)] + [tuple(p) for p in w.robot._path]
+    for (x0, y0), (x1, y1) in zip(path, path[1:]):
+        k = max(1, int(math.hypot(x1 - x0, y1 - y0) / 0.05))
+        for i in range(k + 1):
+            x, y = x0 + (x1 - x0) * i / k, y0 + (y1 - y0) * i / k
+            for bx, by in ENTRANCE_BLOCKS:
+                assert math.hypot(x - bx, y - by) >= sw.ROUTE_BLOCK_RADIUS_M - 0.15
+            assert math.hypot(x + 1.24, y + 2.3) >= sw.FIRE_KEEP_M - 0.1
