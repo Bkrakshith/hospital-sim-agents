@@ -152,3 +152,81 @@ def test_an_isaac_run_waits_for_kit_to_exit_before_calling_the_agents_exit_early
     launched.clear()
     assert main(["run", V1, "--sim", "stub", "--no-report"]) == 0
     assert launched[0][1]["early_exit_grace_s"] == cli.EARLY_EXIT_GRACE_S
+
+
+# ---- the Isaac host gets time to finish its videos (QA bug 21) -----------------------------------------------
+import os
+import signal
+import sys
+import time
+
+
+def _py(code):
+    return [sys.executable, "-c", code]
+
+
+def test_a_child_with_a_longer_stop_grace_is_not_sent_sigterm_while_it_finishes(tmp_path, capsys):
+    """The host keeps encoding follow.mp4 after SIGINT: SIGTERM 10 s later killed it (exit 143 in every QA run)."""
+    done = tmp_path / "encoded"
+    slow = ("import signal, sys, time, pathlib\n"
+            "signal.signal(signal.SIGTERM, lambda *a: sys.exit(143))\n"
+            f"def h(*a):\n    time.sleep(1.2); pathlib.Path({str(done)!r}).write_text('x'); sys.exit(0)\n"
+            "signal.signal(signal.SIGINT, h)\nwhile True: time.sleep(0.05)")
+    code = cli.supervise([cli.Child("ender", _py("import time; time.sleep(0.3)"), ends_run=True),
+                          cli.Child("isaac_like", _py(slow), term_after_s=10.0)],
+                         term_after_s=0.3, kill_after_s=5)
+    assert code == 0 and done.exists()
+    assert "143" not in capsys.readouterr().err
+
+
+def test_the_default_stop_grace_still_applies_to_other_children(tmp_path):
+    slow = ("import signal, sys, time\n"
+            "signal.signal(signal.SIGTERM, lambda *a: sys.exit(143))\n"
+            "signal.signal(signal.SIGINT, lambda *a: time.sleep(3) or sys.exit(0))\nwhile True: time.sleep(0.05)")
+    t0 = time.monotonic()
+    code = cli.supervise([cli.Child("ender", _py("import time; time.sleep(0.3)"), ends_run=True),
+                          cli.Child("agents", _py(slow))], term_after_s=0.3, kill_after_s=5)
+    assert code == 1 and time.monotonic() - t0 < 3
+
+
+def test_a_recording_isaac_host_gets_a_stop_grace_for_its_encode(launched):
+    assert main(["run", V1, "--sim", "isaac", "--record", "--no-report"]) == 0
+    host, children, _ = child(launched, "isaac_host")
+    from wardzero_agents.config.loader import load_scenario
+    minutes = load_scenario(V1).scenario.duration_min
+    # every frame of the follow camera is encoded after the stop: at least the run's frames at the encode rate
+    assert host.term_after_s >= minutes * 60 * cli.ISAAC_MAX_FPS / cli.ISAAC_ENCODE_FPS
+    assert host.term_after_s > cli.TERM_AFTER_S
+    others = [c for c in children if c.name != "isaac_host"]
+    assert all(c.term_after_s is None for c in others)
+
+
+def test_an_isaac_host_that_does_not_record_still_gets_more_than_the_default(launched):
+    assert main(["run", V1, "--sim", "isaac", "--no-report"]) == 0
+    host, _, _ = child(launched, "isaac_host")
+    assert cli.TERM_AFTER_S < host.term_after_s <= cli.ISAAC_STOP_BASE_S
+
+
+def test_a_host_problem_reaches_the_run_meta_and_the_console(monkeypatch, capsys):
+    """people_not_animated in host.jsonl (QA bug 12): the run record says so, and so does the console."""
+    def fake(children, **kw):
+        host = next(c for c in children if c.name == "isaac_host")
+        rd = Path(opt(host.argv, "--run-dir"))
+        row = {"kind": "problem", "what": "people_not_animated", "missing": ["N1", "S1"], "bound": 0, "expected": 2,
+               "message": "people bound: 0 of 2 characters have a Behavior agent; N1, S1 will not walk or animate"}
+        (rd / "host.jsonl").write_text(json.dumps({"kind": "startup"}) + "\n" + json.dumps(row) + "\n")
+        return 0
+
+    monkeypatch.setattr(cli, "supervise", fake)
+    assert main(["run", V1, "--sim", "isaac", "--no-report"]) == 0
+    runs = sorted((Path(os.environ["WARDZERO_RUNS_DIR"])).iterdir())
+    meta = json.loads((runs[-1] / "meta.json").read_text())
+    assert meta["isaac_problems"][0]["what"] == "people_not_animated"
+    assert "0 of 2" in capsys.readouterr().err
+
+
+def test_a_run_without_host_problems_has_none_in_meta(launched):
+    assert main(["run", V1, "--sim", "isaac", "--no-report"]) == 0
+    host, _, _ = child(launched, "isaac_host")
+    meta = json.loads((Path(opt(host.argv, "--run-dir")) / "meta.json").read_text())
+    assert "isaac_problems" not in meta

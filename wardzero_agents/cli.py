@@ -24,7 +24,8 @@ the director and, unless
 --bot none, the robot: the built-in Claude robot when a Claude key is set, else the placeholder
 reception robot. The run ends when any child exits (normally the sim,
 at the scenario's duration); the rest then get SIGINT, SIGTERM after 10 s, SIGKILL after a
-further grace (longer for the agent node, which drains its minds and saves the memory snapshot).
+further grace (longer for the agent node, which drains its minds and saves the memory snapshot, and for the Isaac host,
+which finishes its videos before it exits).
 Ctrl+C does the same; press it again to hurry. Run folders go to $WARDZERO_RUNS_DIR, default
 <hospital-sim-agents>/runs.
 """
@@ -60,6 +61,11 @@ DEFAULT_SCENARIO = AGENTS_ROOT / "config" / "scenarios" / "waiting_area_v1.yaml"
 ISAAC_ROOT = Path(os.environ.get("ISAAC_SIM_ROOT") or "~/isaacsim").expanduser()
 ISAAC_HOST_SH = AGENTS_ROOT / "scripts" / "isaac_host.sh"
 ISAAC_KILL_AFTER_S = 30.0  # Kit can take a while to shut down
+# SIGINT to SIGTERM for the Isaac host: Kit's shutdown and the rosbag, and with --record the follow camera's frames,
+# which are encoded to follow.mp4 only after the stop (one encoder session at a time). 10 s cut that encode short.
+ISAAC_STOP_BASE_S = 60.0
+ISAAC_MAX_FPS = 30  # the host's highest frame rate (the walking G1 runs at 25)
+ISAAC_ENCODE_FPS = 50.0  # follow frames encoded per second from JPEG files, with room to spare
 SIMS = ("isaac", "stub")
 FASTEMBED_ADVICE = ("The fastembed embedder needs the optional extra. Install it with:\n"
                     f"  pip install -e '{AGENTS_ROOT}[embed]'")
@@ -173,6 +179,7 @@ class Child:
     name: str
     argv: list[str]
     kill_after_s: Optional[float] = None  # SIGTERM to SIGKILL grace; None: the supervise default
+    term_after_s: Optional[float] = None  # SIGINT to SIGTERM grace; None: the supervise default
     ends_run: bool = False  # its clean exit is the normal end of the run (the stub sim)
     env: Optional[dict] = None  # this child's environment; None: the env given to supervise
 
@@ -313,7 +320,8 @@ def _stop_all(procs: dict, by_name: dict, signals: list, term_after_s: float, ki
             if p.poll() is not None:
                 continue
             if name not in termed:
-                if now - t0 >= term_after_s or extra >= 1:
+                patience = by_name[name].term_after_s if by_name[name].term_after_s is not None else term_after_s
+                if now - t0 >= patience or extra >= 1:
                     _signal(p, signal.SIGTERM)
                     termed[name] = now
             else:
@@ -475,7 +483,7 @@ def _start_live(args, loaded, overrides: dict, meta: dict, out: Optional[dict] =
     robot_domain = getattr(args, "robot_domain", None)
     rcfg = str(write_robot_config(run_dir, staged, domain=robot_domain, budget_usd=rb.robot, sim=sim))
     children = [
-        _sim_child(args, rd, sp, ts, ready),
+        _sim_child(args, rd, sp, ts, ready, duration_s=staged.scenario.duration_min * 60.0),
         Child("agents", _module("wardzero_agents.ros.agent_node", "--run-dir", rd, "--scenario", sp),
               kill_after_s=AGENT_KILL_AFTER_S, env=_child_env(with_keys=True)),
         Child("director", _module("wardzero_agents.ros.director_node", "--run-dir", rd, "--scenario", sp,
@@ -492,9 +500,38 @@ def _start_live(args, loaded, overrides: dict, meta: dict, out: Optional[dict] =
     grace = ISAAC_EARLY_EXIT_GRACE_S if sim == "isaac" else EARLY_EXIT_GRACE_S
     code = supervise(children, env=_child_env(), early_exit_grace_s=grace)
     print(f"Run finished (exit code {code}). Run folder: {run_dir}", flush=True)
+    if sim == "isaac":
+        _record_host_problems(run_dir)
     if sim == "isaac" and args.record and not getattr(args, "no_voice", False) and code in (0, 130):
         _post_voice(run_dir)
     return code
+
+
+def _record_host_problems(run_dir: Path) -> list:
+    """The Isaac host's start-up problems (host.jsonl rows of kind "problem", such as people with no Behavior agent):
+    a warning each on the console, and the list in meta.json as "isaac_problems". Returns the rows."""
+    from .runlog import RunLog
+    rows = []
+    try:
+        for line in (run_dir / "host.jsonl").read_text(encoding="utf-8").splitlines():
+            try:
+                r = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(r, dict) and r.get("kind") == "problem":
+                rows.append(r)
+    except OSError:
+        return []
+    if not rows:
+        return []
+    for r in rows:
+        err(f"WARNING: Isaac Sim: {r.get('message') or r.get('what')}")
+    try:
+        meta = json.loads((run_dir / "meta.json").read_text(encoding="utf-8"))
+        RunLog(run_dir).write_meta({**meta, "isaac_problems": rows})
+    except (OSError, ValueError):
+        pass
+    return rows
 
 
 def _say_if_g1_static(sim: str, loaded, args) -> None:
@@ -546,7 +583,14 @@ def _warn_if_task_out_of_reach(sim: str, loaded, args, meta: dict, overrides: Op
           f"Sim, and check with `hhumans doctor`.", flush=True)
 
 
-def _sim_child(args, rd: str, sp: str, ts: float, ready: float) -> Child:
+def isaac_stop_grace_s(duration_s: float, record: bool) -> float:
+    """How long the Isaac host may take to stop after SIGINT before it gets SIGTERM: Kit's shutdown, plus, for a
+    recorded run, encoding every follow-camera frame of the run (at most the run's length at the host's top rate)."""
+    encode = duration_s * ISAAC_MAX_FPS / ISAAC_ENCODE_FPS if record else 0.0
+    return ISAAC_STOP_BASE_S + encode
+
+
+def _sim_child(args, rd: str, sp: str, ts: float, ready: float, duration_s: float = 0.0) -> Child:
     """The process that owns the world and ends the run: the Isaac host or the stub sim."""
     lock = ["--lockstep"] if args.lockstep else []
     if getattr(args, "sim", None) == "isaac":
@@ -560,7 +604,8 @@ def _sim_child(args, rd: str, sp: str, ts: float, ready: float) -> Child:
         argv += ["--full-site"] if args.full_site else []
         if getattr(args, "robot_domain", None) is not None:
             argv += ["--robot-domain", str(args.robot_domain)]
-        return Child("isaac_host", argv, kill_after_s=ISAAC_KILL_AFTER_S, ends_run=True)  # no key in its env
+        return Child("isaac_host", argv, kill_after_s=ISAAC_KILL_AFTER_S, ends_run=True,  # no key in its env
+                     term_after_s=isaac_stop_grace_s(duration_s, bool(args.record)))
     return Child("stub_sim", _module("wardzero_agents.ros.stub_sim_node", "--run-dir", rd, "--scenario", sp,
                                      "--time-scale", str(ts), "--ready-timeout", str(ready),
                                      "--wait-for", "agents,director", *lock,
