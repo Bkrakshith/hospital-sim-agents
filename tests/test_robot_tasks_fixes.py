@@ -627,3 +627,34 @@ def test_the_robot_hears_what_a_bell_is_and_the_repeater_has_no_bearing(staged, 
         assert (h.bearing_deg is None) == (ev is repeater)
     own = w._event(1.0, "person", "bell_robot", w.robot.x + 1, w.robot.y, 2.0, 55.0)
     assert w.robot_heard(own).text == "staff call chime"
+
+
+# ---- claims checked end to end (the world's own run-log rows, read by the director) ------------------------------------
+def _director_reading(loaded, tmp_path, run):
+    from wardzero_agents.ros.director_node import DirectorService
+
+    class Out:
+        def publish(self, kind, obj):
+            pass
+
+    d = DirectorService(loaded, RunLog(tmp_path / "dir"), Out(), run_id="r1")
+    for r in rows(run, "robot_tasks"):
+        d.ingest("robot_tasks", r)
+    return d
+
+
+def test_an_unanswered_press_call_is_not_credited(staged, tmp_path):
+    loaded = staged("evacuation_guide")  # no staff in earshot
+    s = svc(loaded, tmp_path)
+    s.on_task_action({"id": "pc", "action": "press_call"})
+    outs = advance(s, 0.3)
+    assert [(r["ok"], r["reason"]) for r in results(outs, "pc", "action")] == [(True, "unanswered")]
+    assert not [x for x in _director_reading(loaded, tmp_path, tmp_path / "run").robot_did if x[1] == "press_call"]
+    # answered (ae_waiting: triage hears it): credited
+    loaded = staged("ae_waiting")
+    s = svc(loaded, tmp_path / "b")
+    s.on_task_action({"id": "pc", "action": "press_call"})
+    outs = advance(s, 0.3)
+    assert [(r["ok"], r["reason"]) for r in results(outs, "pc", "action")] == [(True, "answered")]
+    assert [x for x in _director_reading(loaded, tmp_path / "b", tmp_path / "b" / "run").robot_did
+            if x[1] == "press_call"]
