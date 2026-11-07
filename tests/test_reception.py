@@ -199,13 +199,15 @@ def test_the_guided_person_follows_behind_and_arrives_and_the_robot_goes_back(re
         outs.append(o)
         if w.robot.has_goal and p.intent_kind == "follow" and p.state == "running":
             gaps.append(math.hypot(p.x - w.robot.x, p.y - w.robot.y))
-        if w.robot.speed_cap is not None and s.tasks._guide is not None:
-            slow.append(w.robot.speed_cap)
+        r = w.robot
+        behind = (p.x - r.x) * math.cos(r.yaw) + (p.y - r.y) * math.sin(r.yaw) <= 0.0
+        if w.robot.speed_cap is not None and s.tasks._guide is not None and behind:
+            slow.append(w.robot.speed_cap)  # in front of it (as it turns to set off) she slows it like anyone
         if any(r["id"] == "gd-return" for r in results([o], "goal")):
             break
     assert p.state == "done" and math.hypot(p.x - we.x, p.y - we.y) <= 2.0
     assert max(gaps) <= rt.GUIDE_HOLD_M + 0.3 and min(gaps[20:]) >= 0.95  # trails, never presses on the robot
-    assert not slow  # the guided person never slowed the robot
+    assert not slow  # the guided person, following behind it, never slowed the robot
     goals = results(outs, "goal")
     assert ("gd", True, "arrived") in [(r["id"], r["ok"], r["reason"]) for r in goals]
     assert ("gd-return", True, "arrived") in [(r["id"], r["ok"], r["reason"]) for r in goals]

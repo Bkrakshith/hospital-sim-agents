@@ -28,6 +28,7 @@ from wardzero_agents.contracts import (
     AudioEvent,
     Heard,
     Intent,
+    Nudge,
     Observation,
     Roster,
     SeenObject,
@@ -48,6 +49,10 @@ from wardzero_agents.world.route_follower import ROBOT_HARD_M
 
 ROBOT_ID = "g1"
 ROUTE_BLOCK_RADIUS_M = 1.5  # a route_blocked event seals this radius for routing
+DOOR_END_SEAL_M = 0.4  # ... and, where it reaches the end of a doorway, this far on along the door's line
+DOOR_SEAL_R_M = 0.25  # ... in discs this wide
+DOOR_LANDMARK_M = 1.5  # the PA names a blocked doorway by a landmark this close to its middle
+BLOCK_LANDMARK_M = 3.0  # ... or a block off any doorway by a landmark this close to it
 FIRE_KEEP_M = 1.0  # no route (a person's or the robot's) comes closer than this to a burning fire
 APPROACH_GAP_M = 1.0
 SEAT_VIEW_RANGE_M = 6.0
@@ -84,7 +89,12 @@ FOLLOW_GAP_M = 1.25  # ... walking up to this far behind when they have fallen b
 FOLLOW_DONE_M = 1.75  # the robot has stopped and the follower is this close: the follow is done
 ROBOT_AVOID_M = 0.75  # people's routes keep this far from where the robot stands, when they can
 ARRIVAL_JITTER_M = 0.8  # people arriving mid-run appear up to this far from the entrance, so they do not stack
+ROBOT_SUBSTEP_S = 0.1  # the robot moves in steps no longer than this, its speed cap set before each one
 STAFF_ROLES = frozenset({"receptionist", "ward_nurse", "staff", "nurse", "porter", "surgeon"})
+ASLEEP_CARD = "asleep"  # a fired card with this id puts its person to sleep
+# what a person asleep may do and stay asleep (anything else their own mind chooses wakes them); a reflex (an overlay
+# intent such as a cough) never wakes them
+ASLEEP_KEEP = ("sit_idle", "wait_standing", "lie_back", "cough", "fidget")
 ROLE_KINDS = ("give_item", "take_item", "call_for_help", "call_bell", "accept_item", "refuse_item",
               "request_instrument", "reject_item", "take_instrument_self", "use_extinguisher",
               "sit_up_in_bed", "lie_back")
@@ -108,6 +118,24 @@ def spawned_instance(loaded: LoadedScenario, pid: str, persona_id: str,
     seed = loaded.scenario.seed * 1000 + 100 + n
     cast = CastEntry(id=pid, persona=persona_id, seed=seed, arrive_at_s=max(0.0, float(arrive_at_s)))
     return sample_instance(loaded.personas[persona_id], cast, loaded.scenario.seed, n)
+
+
+def _starts_asleep(inst: PersonInstance, scenario) -> bool:
+    """start_asleep: true on the person's scenario entry (the instance, or its cast entry)."""
+    if getattr(inst, "start_asleep", False):
+        return True
+    for c in getattr(scenario, "cast", None) or ():
+        if getattr(c, "id", None) == inst.person_id and getattr(c, "start_asleep", False):
+            return True
+    return False
+
+
+def _seg_point(x: float, y: float, a, b) -> float:
+    """Distance from (x, y) to the segment a-b."""
+    dx, dy = b[0] - a[0], b[1] - a[1]
+    L2 = dx * dx + dy * dy
+    u = 0.0 if L2 < 1e-12 else max(0.0, min(1.0, ((x - a[0]) * dx + (y - a[1]) * dy) / L2))
+    return math.hypot(x - (a[0] + u * dx), y - (a[1] + u * dy))
 
 
 @dataclass
@@ -146,6 +174,7 @@ class _Person:
     kind: str = "mind"  # "static" for a patient lying in a bed with no mind
     bed: Optional[str] = None
     sitting_up: bool = False  # in a bed: propped up (posture stays "lying")
+    asleep: bool = False  # asleep until spoken to by address (a robot line to them) or their own mind acts
 
 
 class StubWorld:
@@ -153,6 +182,8 @@ class StubWorld:
         self.loaded = loaded
         self.rng = np.random.default_rng(seed)
         self._ear_rng = np.random.default_rng([seed, 1])  # the noise on the direction of what the robot hears
+        self._repeaters: set[str] = set()  # ids of call-bell chimes repeated at a nurse base (no bearing to the bed)
+        self._sleep_rng = np.random.default_rng([seed, 2])  # whether a sleeper's ears caught a line to them
         self._pa_blocked: set = set()  # (t, place) of route-block announcements already made
         self.signs: list[Sign] = list(loaded.signs)
         self.last_t = 0.0
@@ -186,6 +217,14 @@ class StubWorld:
         self.body_driven: set[str] = set()  # people whose phases a body ends (see end_phase)
         self.named: set[str] = set()  # people who have said their own first name aloud
         self.trail_released: set[str] = set()  # followers whose guide is over: their follow ends now
+        self.guide_over: set[str] = set()  # people whose robot guide ended: they do not follow it again unless guided
+        self.alarm_active = False  # a fire alarm has sounded (it stays on for the rest of the run)
+        # set by the task layer: the robot's speed cap near people (None for no cap), worked out from where everyone
+        # is just before the robot moves, so it is never a step late
+        self.robot_speed_cap = None
+        # set by the task layer: carries out the robot's commands that came since the last step (route searches
+        # included), at the start of the step, before anyone moves
+        self.robot_commands = None
         taken_beds: set[str] = set()
         for inst in loaded.instances:
             if inst.seat is not None:
@@ -199,6 +238,9 @@ class StubWorld:
                 self.people[inst.person_id] = _Person(inst, inst.start.x, inst.start.y, inst.start.yaw, "standing")
             else:
                 self.people[inst.person_id] = self._at_entrance(inst)
+        for inst in loaded.instances:
+            if _starts_asleep(inst, loaded.scenario):
+                self.people[inst.person_id].asleep = True
         self._seed_objects(loaded.scenario.objects)
         if loaded.scenario.static_patients:
             for b in self.site.beds.values():
@@ -310,16 +352,50 @@ class StubWorld:
         id (P1, N2, ...) is replaced by "unknown"; the kind of sound is kept. A person's voice or cough also
         carries the direction it came from (bearing_deg in the robot's frame, positive = left), give or take
         BEARING_NOISE_DEG, so the robot can tell which of the people it sees made it."""
+        self.hear_robot_line(ev)  # every sound in the world passes here: a line to someone asleep wakes them
         r = self.robot_pose
         h = audio.route(ev, r, ROBOT_ID, 0.0, self.rng)
         if h is None:
             return None
         upd: dict = {"source_id": "unknown"}
-        if ev.source_kind in ("person", "cough") and ev.source_id != "bell_robot":  # not its own call chime
+        if ev.source_kind == "person" and not ev.text and ev.source_id.startswith("bell_"):
+            # a chime: the robot can tell what it is (a bed's call bell, or the staff call it pressed itself)
+            bed = ev.source_id[len("bell_"):]
+            upd["text"] = "staff call chime" if bed == "robot" else f"call bell, bed {bed}"
+        if ev.source_kind in ("person", "cough") and ev.source_id != "bell_robot" and ev.id not in self._repeaters:
+            # not its own call chime, nor a bell's repeater at the nurse base (that points away from the bed)
             # its own random stream: the world's draws (and so the rest of a seeded run) are unchanged
             noise = float(self._ear_rng.uniform(-BEARING_NOISE_DEG, BEARING_NOISE_DEG))
             upd["bearing_deg"] = round(wrap_deg(bearing_deg(r, ev.x, ev.y) + noise), 1)
         return h.model_copy(update=upd)
+
+    # ---- sleep -----------------------------------------------------------------------------
+    def apply_nudge(self, n: Nudge) -> None:
+        """A card fired at a person: the "asleep" card puts them to sleep (other cards only reach their mind)."""
+        if n.card != ASLEEP_CARD:
+            return
+        p = self.people.get(n.person)
+        if p is None or p.posture == "gone" or p.kind == "static" or p.asleep:
+            return
+        p.asleep = True
+        self._log.append(("world", {"t": n.t, "kind": "asleep", "event": "start", "person": n.person}))
+
+    def _wake(self, pid: str, t: float, reason: str) -> None:
+        p = self.people.get(pid)
+        if p is None or not p.asleep:
+            return
+        p.asleep = False
+        self._log.append(("world", {"t": t, "kind": "asleep", "event": "end", "person": pid, "reason": reason}))
+
+    def hear_robot_line(self, ev: AudioEvent) -> None:
+        """A robot line addressed to someone asleep wakes them, when it reaches their ears."""
+        if ev.source_kind != "robot" or not ev.addressee:
+            return
+        p = self.people.get(ev.addressee)
+        if p is None or not p.asleep or p.posture == "gone":
+            return
+        if audio.route(ev, Pose(p.x, p.y, p.yaw), ev.addressee, p.inst.hearing_loss_db, self._sleep_rng) is not None:
+            self._wake(ev.addressee, ev.t, "spoken_to")
 
     # ---- intents -------------------------------------------------------------------------
     def _fail(self, p: _Person, intent: Intent, reason: str) -> None:
@@ -381,6 +457,8 @@ class StubWorld:
             self._fail(p, intent, "patient is in bed")
             return []
         kind = intent.kind
+        if p.asleep and not intent.overlay and kind not in ASLEEP_KEEP:
+            self._wake(intent.person, intent.t, "own_intent")
         self._fighting.pop(intent.person, None)
         if kind in ROLE_KINDS:
             return self._role_action(p, intent)
@@ -452,6 +530,11 @@ class StubWorld:
         elif kind == "follow":
             if not self.loaded.scenario.robot.enabled or (intent.target or ROBOT_ID) not in (ROBOT_ID, "robot"):
                 self._fail(p, intent, "unknown target")
+                return []
+            if intent.person in self.guide_over:
+                # the robot's guide for them is over: they do not trail it again (it would cap the robot at 0.3 m/s
+                # and walk them back with it) unless it offers them a new guide
+                self._fail(p, intent, "the robot is not guiding you now")
                 return []
             self._begin(p, intent)
             self.trail_released.discard(intent.person)
@@ -897,16 +980,22 @@ class StubWorld:
             return  # time never runs backwards; last_t is unchanged
         dt = t - self.last_t
         self.last_t = t
+        if self.robot_commands is not None:
+            self.robot_commands(t)
         for pid, p in self.people.items():
             if p.plan and pid not in self.body_driven:
                 self._advance(pid, p, dt)
         if self.loaded.scenario.robot.enabled:
             # people lying in a bed are never "contacts"; passing a bed is bed_contact (below)
             near = [(pid, p.x, p.y) for pid, p in self.people.items() if p.posture not in ("gone", "lying")]
-            for pid in self.robot.step(dt, self.site.grid, near):
-                self._log.append(("world", {"t": t, "kind": "contact", "person": pid,
-                                            "x": round(self.robot.x, 3), "y": round(self.robot.y, 3),
-                                            "speed": round(self.robot.speed, 3)}))
+            n = max(1, math.ceil(dt / ROBOT_SUBSTEP_S - 1e-9))
+            for _ in range(n):  # people have moved: the cap for where they are now, before each part of the move
+                if self.robot_speed_cap is not None:
+                    self.robot.speed_cap = self.robot_speed_cap(dt / n) if self.robot.has_goal else None
+                for pid in self.robot.step(dt / n, self.site.grid, near):
+                    self._log.append(("world", {"t": t, "kind": "contact", "person": pid,
+                                                "x": round(self.robot.x, 3), "y": round(self.robot.y, 3),
+                                                "speed": round(self.robot.speed, 3)}))
             touching = set()
             if self.robot.speed > 0.05:
                 touching = {b.id for b in self.site.beds.values()
@@ -947,7 +1036,7 @@ class StubWorld:
             Status(
                 person=pid, t=self.last_t, x=p.x, y=p.y, yaw=p.yaw, posture=p.posture,
                 intent_id=p.intent_id, intent_kind=p.intent_kind, progress=p.progress,
-                state=p.state, reason=p.reason,
+                state=p.state, reason=p.reason, asleep=p.asleep,
             )
             for pid, p in self.people.items()
         ]
@@ -1062,6 +1151,7 @@ class StubWorld:
         if ev.kind == "pa_announcement":
             return [self._event(ev.t, "pa", "pa", x, y, 2.5, 80.0, ev.text)]
         if ev.kind == "alarm":
+            self.alarm_active = True
             return [self._event(ev.t, "alarm", "alarm", x, y, 2.5, 100.0, ev.text)]
         if ev.kind == "wet_floor":
             self._wet += 1
@@ -1078,18 +1168,15 @@ class StubWorld:
             # wraps another, like the forbidden-area router, follows the one it wraps)
             self._blocked += 1
             self._route_blocks.append((x, y, ROUTE_BLOCK_RADIUS_M))
-            routers = [r for r in self._all_routers() if hasattr(r, "block")]
-            ids = {id(r) for r in routers}
-            for r in routers:
-                if id(getattr(r, "base", None)) not in ids:
-                    r.block(x, y, ROUTE_BLOCK_RADIUS_M)
+            for sx, sy, sr in [(x, y, ROUTE_BLOCK_RADIUS_M)] + self._door_end_seals(x, y, ROUTE_BLOCK_RADIUS_M):
+                self._seal(sx, sy, sr)
             sign = Sign(id=f"route_blocked_{self._blocked}", text=ev.text or "Route blocked: do not use",
                         x=x, y=y, z=1.2, facing_yaw=0.0, placeholder=True)
             self.signs.append(sign)
             self._omni.add(sign.id)
-            # announced on the PA, so everyone (the robot too) hears which way is blocked
-            rid = self.site.room_at(x, y)
-            where = self.site.rooms[rid].label.split(",")[0] if rid else "this area"
+            # announced on the PA, so everyone (the robot too) hears which way is blocked: the doorway or landmark
+            # it blocks, not the whole room (the room may hold the only other way out)
+            where = self._blocked_name(x, y, ROUTE_BLOCK_RADIUS_M)
             if (ev.t, where) in self._pa_blocked:  # several blocks at once in one place: one announcement
                 return []
             self._pa_blocked.add((ev.t, where))
@@ -1115,6 +1202,10 @@ class StubWorld:
             except ValueError:
                 log.warning("arrival ignored: unknown persona '%s'", persona)
             return []
+        if ev.kind == "asleep":
+            # the asleep card as the sim gets it (the card's nudge only reaches the person's mind)
+            self.apply_nudge(Nudge(person=ev.person or "", t=ev.t, card=ASLEEP_CARD, message=ev.text or ""))
+            return []
         if ev.kind == "ring_bell":
             # the scenario rings the bell itself, so it does not hang on the patient's model choosing to ring
             q = self.people.get(ev.person or "")
@@ -1131,6 +1222,66 @@ class StubWorld:
                 Intent(id=f"exit_{ev.id}", person=ev.person, t=ev.t, kind="leave", target=self.loaded.area.entrance)
             )
         return []
+
+    def _seal(self, x: float, y: float, r: float) -> None:
+        """Seal a disc for everyone: the people's router, the robot's, and any the robot's was swapped for (one that
+        wraps another, like the forbidden-area router, follows the one it wraps)."""
+        routers = [rt for rt in self._all_routers() if hasattr(rt, "block")]
+        ids = {id(rt) for rt in routers}
+        for rt in routers:
+            if id(getattr(rt, "base", None)) not in ids:
+                rt.block(x, y, r)
+
+    def _door_end_seals(self, x: float, y: float, r: float) -> list[tuple[float, float, float]]:
+        """Extra discs that carry a block over the end of a doorway it reaches: the map's wall beside a door frame can
+        leave a gap a cell wide, which the disc alone does not close (people walked out past the main entrance's west
+        end). Each end within the disc is sealed DOOR_END_SEAL_M further along the door's line."""
+        out = []
+        for d in self.site.doors:
+            a, b = d["a"], d["b"]
+            n = math.hypot(b[0] - a[0], b[1] - a[1])
+            if n < 1e-6:
+                continue
+            for (ex, ey), (ox, oy) in ((a, b), (b, a)):
+                if math.hypot(ex - x, ey - y) > r:
+                    continue
+                ux, uy = (ex - ox) / n, (ey - oy) / n  # along the door's line, outward past this end
+                k = 0.0
+                while k <= DOOR_END_SEAL_M + 1e-9:
+                    out.append((ex + ux * k, ey + uy * k, DOOR_SEAL_R_M))
+                    k += 0.1
+        return out
+
+    def _blocked_name(self, x: float, y: float, r: float) -> str:
+        """What the PA calls a blocked spot: the doorway the block covers (by the landmark at it, else the door's
+        name), else the nearest landmark within BLOCK_LANDMARK_M, else the room."""
+        lms = [lm for lid, lm in self.site.landmarks.items() if not lid.endswith("_centre") and lm.label]
+
+        def landmark_near(px, py, within):
+            best = min(lms, key=lambda lm: math.hypot(lm.x - px, lm.y - py), default=None)
+            if best is not None and math.hypot(best.x - px, best.y - py) <= within:
+                return best.label.split(",")[0]
+            return None
+
+        doors = []
+        for d in self.site.doors:
+            a, b = d["a"], d["b"]
+            dist = _seg_point(x, y, a, b)
+            if dist <= r:
+                doors.append((dist, d))
+        if doors:
+            d = min(doors, key=lambda e: e[0])[1]
+            mx, my = (d["a"][0] + d["b"][0]) / 2, (d["a"][1] + d["b"][1]) / 2
+            name = landmark_near(mx, my, DOOR_LANDMARK_M)
+            if name:
+                return name
+            if d.get("id"):
+                return str(d["id"]).replace("_", " ").capitalize()
+        name = landmark_near(x, y, BLOCK_LANDMARK_M)
+        if name:
+            return name
+        rid = self.site.room_at(x, y)
+        return self.site.rooms[rid].label.split(",")[0] if rid else "this area"
 
     # ---- objects, hand-overs and role actions --------------------------------------------
     def _log_objects(self, t: float) -> None:
@@ -1154,6 +1305,7 @@ class StubWorld:
 
     def _step_objects(self, t: float, dt: float) -> None:
         for f in self.objects.step(dt):
+            self.alarm_active = True
             self._outbox.append(self._event(t, "alarm", f.id, f.x, f.y, 2.5, ALARM_DB, "Fire alarm"))
         for pid, fid in list(self._fighting.items()):
             p, f = self.people.get(pid), self.objects.fires.get(fid)
@@ -1275,10 +1427,17 @@ class StubWorld:
             if not answered and t - o["t"] <= self._window(receiver):
                 continue
             del self._offers[receiver]
-            ok, why = self.hand_over(o["giver"], receiver, o["item"], o["place"], max(t, resp[1] if resp else t))
+            q = self.people.get(receiver)
+            mindless = q is not None and q.kind == "static"
+            if o["giver"] == ROBOT_ID and not answered and not mindless:
+                ok, why = False, "no_answer"  # the window ran out with no reply: not a refusal, not a reach problem
+            elif o["giver"] == ROBOT_ID and answered and resp[0] != "accept_item":
+                ok, why = False, "refused"  # they declined: said before any check of where it was held out
+            else:
+                ok, why = self.hand_over(o["giver"], receiver, o["item"], o["place"], max(t, resp[1] if resp else t))
             if o["giver"] == ROBOT_ID:
                 self.robot_results.append({"id": o["intent"], "action": "hand_over", "ok": ok,
-                                           "reason": why})
+                                           "reason": why, "person": receiver, "item": o["item"]})
             if giver is not None and giver.intent_id == o["intent"]:
                 giver.state, giver.reason = ("done", None) if ok else ("failed", why)
                 giver.progress = 1.0 if ok else giver.progress
@@ -1295,8 +1454,9 @@ class StubWorld:
         bx, by = (bed.x, bed.y) if bed is not None else (p.x, p.y)
         nx, ny = self._nurse_base(p.x, p.y)
         self._log_objects(t)
-        return [self._event(t, "person", f"bell_{p.bed}", bx, by, 1.0, BELL_DB),
-                self._event(t, "person", f"bell_{p.bed}", nx, ny, 2.0, BELL_DB)]
+        rep = self._event(t, "person", f"bell_{p.bed}", nx, ny, 2.0, BELL_DB)
+        self._repeaters.add(rep.id)
+        return [self._event(t, "person", f"bell_{p.bed}", bx, by, 1.0, BELL_DB), rep]
 
     def _held(self, who: str) -> list:
         return [i for i in self.objects.items.values() if i.holder == who]
@@ -1413,7 +1573,7 @@ class StubWorld:
         old = self._offers.get(intent.target)
         if old is not None and old["giver"] == ROBOT_ID:  # the robot's offer is replaced: tell it
             self.robot_results.append({"id": old["intent"], "action": "hand_over", "ok": False,
-                                       "reason": "superseded"})
+                                       "reason": "superseded", "person": intent.target, "item": old["item"]})
         self._offers[intent.target] = {"giver": pid, "item": item.id, "place": place, "t": t,
                                        "intent": intent.id}
         return []

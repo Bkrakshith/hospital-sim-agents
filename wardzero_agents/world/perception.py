@@ -18,6 +18,10 @@ BOX_SEATED = (0.6, 0.6, 1.2)
 BOX_LYING = (1.8, 0.6, 0.5)
 DOOR_LIGHT_OUT_M = 0.3  # a call light over a door shows this far outside the room
 BLOCKED_SIGN = "route_blocked"  # the id prefix of the sign a route_blocked event puts up
+# an item this close to the robot is seen whichever way it faces (a glance down or over its shoulder at what is within
+# its arms' reach, like the instrument tray on the trolley just behind it)
+REACH_VIEW_M = 1.0
+ASLEEP_SEEN_M = 4.0  # the camera can tell someone is asleep (eyes shut, still) this close
 
 
 class Tracks:
@@ -46,6 +50,10 @@ def _in_view(world, body: RobotBody, x: float, y: float) -> bool:
     if d > 1e-6 and abs(bearing_deg(Pose(*body.pose), x, y)) > cfg.fov_deg / 2:
         return False
     return world._los((body.x, body.y), (x, y))
+
+
+def _in_reach(world, body: RobotBody, x: float, y: float) -> bool:
+    return math.hypot(x - body.x, y - body.y) <= REACH_VIEW_M and world._los((body.x, body.y), (x, y))
 
 
 def call_light_points(site, bed_id: str) -> list[tuple[float, float]]:
@@ -97,12 +105,18 @@ def _moving(p) -> bool:
     return bool(p.plan) and p.plan[0].kind == "walk"
 
 
+def _seen_asleep(p, body: RobotBody) -> bool:
+    return bool(getattr(p, "asleep", False)) and math.hypot(p.x - body.x, p.y - body.y) <= ASLEEP_SEEN_M
+
+
 def perceive_people(world, body: RobotBody) -> list[dict]:
     out = []
     for pid, p in _visible(world, body):
-        out.append({"track": world.tracks.track(pid), "x": round(p.x, 3), "y": round(p.y, 3),
-                    "posture": p.posture, "moving": _moving(p), "holding": _holding(world, pid),
-                    "bed": p.bed})
+        d = {"track": world.tracks.track(pid), "x": round(p.x, 3), "y": round(p.y, 3),
+             "posture": p.posture, "moving": _moving(p), "holding": _holding(world, pid), "bed": p.bed}
+        if _seen_asleep(p, body):
+            d["asleep"] = True
+        out.append(d)
     return out
 
 
@@ -110,7 +124,7 @@ def perceive_objects(world, body: RobotBody) -> dict:
     items = [{"id": it.id, "kind": it.kind, "label": it.label, "x": round(it.x, 3), "y": round(it.y, 3),
               "z": round(it.z, 3)}
              for it in world.objects.items.values()
-             if it.holder is None and _in_view(world, body, it.x, it.y)]
+             if it.holder is None and (_in_view(world, body, it.x, it.y) or _in_reach(world, body, it.x, it.y))]
     held = [{"id": it.id, "kind": it.kind, "label": it.label}
             for it in world.objects.items.values() if it.holder == world_robot_id(world)]
     occupied = {p.bed for p in world.people.values() if p.bed and p.posture == "lying"}
@@ -153,4 +167,6 @@ def bbox_3d(world, body: RobotBody, t: float) -> dict:
                                 "yaw": round(p.yaw, 3)},
                      "size": {"x": size[0], "y": size[1], "z": size[2]}},
         })
+        if _seen_asleep(p, body):
+            dets[-1]["asleep"] = True  # eyes shut and still, close enough for the camera to tell
     return {"header": {"stamp": t, "frame_id": "map"}, "detections": dets}

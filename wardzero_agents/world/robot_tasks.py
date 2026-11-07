@@ -1,7 +1,11 @@
 """Robot task actions for the stub world (the test double for the Isaac host's task layer).
 
 An action is a JSON dict {"id", "action", ...} from <ns>/task/action:
-  hand_over {item, to: track, place?: [x,y,z]}   an open offer; the result comes when it resolves
+  hand_over {item, to: track, place?: [x,y,z]}   an open offer; the result comes when it resolves. An item it does not
+                                                  hold but has within TAKE_REACH_M is taken first, in the same action.
+                                                  Reasons: ok, refused (declined), no_answer (no reply in the offer
+                                                  window, or the person is asleep), out_of_reach_receiver (geometry),
+                                                  out_of_reach_giver, not_holding, unknown_track, superseded
   take {item}                                     an unheld item within 0.8 m
   extinguish {fire}                               sprays until the fire is out (or the robot leaves); out of range, it
                                                   first walks to free floor SPRAY_FROM_M from the fire
@@ -10,24 +14,33 @@ An action is a JSON dict {"id", "action", ...} from <ns>/task/action:
                                                   member who hears it is told where the robot is, which call lights
                                                   are on and, with track, who needs them. ok, with reason "answered"
                                                   (someone heard it) or "unanswered" (nobody did)
-  guide_start {track, place, seat?} / guide_stop {}
+  guide_start {track, place, seat?, return_to_post?} / guide_stop {}
                                                   walks to the place at the person's pace; the person is offered a walk;
-                                                  with seat, it ends beside a free seat there and shows it to them
+                                                  with seat, it ends beside a free seat there and shows it to them;
+                                                  return_to_post (default true) false leaves it where the guide ended
+  follow {track}                                  walks up to the person and stays 1.0-1.5 m from them as they move,
+                                                  stepping back when they come nearer, until guide_stop, a goal,
+                                                  cmd_vel, another walking task it takes on (one refused leaves the
+                                                  follow on), or they are gone; result ok/following at the start
+                                                  (no_person: unknown track)
   approach {track}                                walks up to the person (APPROACH_M from them) and faces them; to a
                                                   patient in bed, or with an item in hand, it ends where it can hand
                                                   the item over (beside the bed; in front of or beside them)
   tell_staff {about: track, message?}             walks to the reception counter, or on a ward to the nearest ward
                                                   staff member (a staff locator: the robot is led to where she is),
                                                   tells them this person needs help, then walks back to its post
+                                                  (not while a fire alarm sounds)
   note_desk {about: track, message}               a note on the reception desk computer: the robot does not move or
                                                   speak; the receptionist reads it when she is at the desk
 Each action ends in one result {"id", "action", "ok", "reason", "t"}; nothing here uses person ids
 on the robot's side of the wire: people are addressed by track.
 
 Guiding: the robot holds while the person it guides is more than 2.5 m behind (and walks on once they are within
-2 m); that person never slows it, other people within 1.5 m slow it to 0.3 m/s. At the place it waits up to 20 s
-for them to arrive, says goodbye and walks back to its post (goal id "<id>-return"). It gives up if they never come
-within 2.5 m for 30 s.
+2 m); that person, following behind it, does not slow it, but it keeps clear of them like anyone else, and its walk
+ends at least GUIDE_CLEAR_M from them. Other people within 1.5 m slow it to 0.3 m/s. At the place it waits up to 20 s
+for them to arrive, says goodbye and walks back to its post (goal id "<id>-return"), unless return_to_post is false or
+a fire alarm has sounded. It gives up if they never come within 2.5 m for 30 s. Once a guide is over, the person does
+not take up following the robot again unless it guides them again.
 
 A guide to a seat: when the robot reaches the place it picks the free seat nearest to it, among those its camera could
 see by turning its head (within its range, in line of sight; never a staff chair). It walks to a spot beside that seat,
@@ -51,7 +64,8 @@ The desk note: the result ("noted") comes at once, since the computer takes the 
 nudge (what is on her screen) when she is within 1.5 m of her chair, at once or when she gets back, and only once.
 
 The sim-side run log (robot_tasks.jsonl, never sent to the robot) gets a "guide" row at the start and end of each
-guide, with the person's id, and a "tell" row for each tell_staff and a "note" row for each desk note when it is read (and when it is left unread at
+guide, with the person's id, a "follow" row at the start and end of each follow, a "hand_over" offer row (person,
+item) when the robot holds an item out, the hand_over result row with the receiver (person) and item, and a "tell" row for each tell_staff and a "note" row for each desk note when it is read (and when it is left unread at
 the end of the run, nothing: unread notes are not logged).
 """
 from __future__ import annotations
@@ -70,7 +84,8 @@ from wardzero_agents.world.reach import giver_reach_ok, receiver_zone_ok
 TAKE_REACH_M = 0.8
 CHIME_DB = 55.0
 ACTIONS = ("hand_over", "take", "extinguish", "press_call", "guide_start", "guide_stop", "tell_staff", "note_desk",
-           "approach")
+           "approach", "follow")
+WALKING = ("approach", "guide_start", "tell_staff", "extinguish", "follow")  # these end a follow under way
 GUIDE_CARD = "robot_guide"
 TELL_CARD = "robot_tell_staff"
 CALL_CARD = "robot_staff_call"
@@ -103,6 +118,12 @@ BACK_OFF_S = 0.5
 BACK_OFF_STEP_M = 0.7
 BACK_OFF_COOLDOWN_S = 4.0
 SAFETY = "safety"  # goal ids of its own safety moves: their results are not reported to the brain
+FOLLOW_GOAL = "follow"  # goal ids of its own walks while it follows someone: not reported either
+FOLLOW_NEAR_M = 1.0  # following, the robot keeps between these two distances from the person ...
+FOLLOW_FAR_M = 1.5
+FOLLOW_GAP_M = 1.25  # ... walking up to this far from them when they get further than FOLLOW_FAR_M
+FOLLOW_REPLAN_M = 0.5  # its walk is re-planned once the spot it walks to has moved this far
+FOLLOW_RETRY_S = 2.0  # a walk that failed (blocked, stuck) is tried again after this long
 DESK_M = 1.5  # the receptionist reads the desk computer when she is this close to her chair
 
 GUIDE_HOLD_M = 2.5  # the robot waits while the guided person is further behind than this ...
@@ -110,8 +131,10 @@ GUIDE_RESUME_M = 2.0  # ... and walks on once they are this close again
 GUIDE_GIVE_UP_S = 30.0  # held this long without them coming within GUIDE_HOLD_M: the guide is given up
 GUIDE_ARRIVE_WAIT_S = 20.0  # at the place, wait this long for the person to arrive
 NEAR_PLACE_M = 2.0  # a person this close to the place (or in the named room) has arrived
+GUIDE_CLEAR_M = 1.2  # the guide's walk ends at least this far from the person it guides (moved off the place if needed)
 NEAR_PERSON_M = 1.5  # another person this close slows the robot ...
 NEAR_PERSON_SPEED = 0.3  # ... to this (m/s)
+CAP_MARGIN_M = 0.02  # coming up to NEAR_PERSON_M of someone, the robot keeps this short of it at full speed
 PERSON_AVOID_M = 0.7  # the robot's routes keep this far from people standing in the way, when they can
 TELL_RANGE_M = 5.0  # a staff member further than this from the robot is "not at the desk"
 TELL_NEAR_M = 1.5  # walking to tell a staff member, it stops and speaks once she is this close and in sight
@@ -124,6 +147,15 @@ STAFF_SPOT = "reception_staff"  # where the receptionist sits (the robot faces i
 STAFF_SEAT = "R1"  # the receptionist's chair, where the desk computer is
 RECEPTION_ROLES = ("receptionist",)
 WARD_STAFF_ROLES = ("ward_nurse", "nurse", "staff")
+
+
+SIM_ONLY_KEYS = ("person",)  # result keys for the run log only: the robot addresses people by track, never by id
+
+
+def wire_result(r: dict) -> dict:
+    """A task result as the robot may see it on <ns>/task/result: without the sim-only keys (the receiver's person id
+    on a hand_over result is for the run log and the benchmark)."""
+    return {k: v for k, v in r.items() if k not in SIM_ONLY_KEYS}
 
 
 def _seg_dist(x: float, y: float, a, b) -> float:
@@ -146,6 +178,7 @@ class RobotTasks:
         self._spray: dict[str, str] = {}  # action id -> fire id
         self._to_fire: dict[str, str] = {}  # action id -> fire id, walking up to it before spraying
         self._guide: Optional[dict] = None
+        self._following: Optional[dict] = None  # the follow action under way
         self._tell: Optional[dict] = None
         self._notes: list[dict] = []  # desk notes not read yet
         self._goal_xy: Optional[tuple] = None  # (x, y, yaw, exempt) of the goal in flight, for a re-route
@@ -164,24 +197,58 @@ class RobotTasks:
         rc = getattr(getattr(getattr(world, "loaded", None), "scenario", None), "robot", None)
         self.post = (rc.x, rc.y, rc.yaw) if rc is not None else tuple(world.robot.pose)
         self._hazards_seen = (getattr(world, "_hazards", ()), self._router_version())
+        world.robot_speed_cap = self._near_cap  # the world sets the cap just before it moves the robot
+        self._inbox: list[tuple[str, object, float]] = []  # commands not carried out yet: (kind, payload, t)
+        world.robot_commands = self.apply_pending  # the world carries them out at the start of its step
 
-    def _result(self, aid, action, ok, reason, t) -> None:
-        self._out.results.append({"id": aid, "action": action, "ok": ok, "reason": reason, "t": t})
+    def _result(self, aid, action, ok, reason, t, **extra) -> None:
+        self._out.results.append({"id": aid, "action": action, "ok": ok, "reason": reason, "t": t, **extra})
 
     def _log(self, rec: dict) -> None:
         """A sim-side row for robot_tasks.jsonl (the benchmark's view; never published to the robot)."""
         self.world._log.append(("robot_tasks", rec))
 
+    # ---- commands in: kept for the step (a route search never runs in a message callback) -----------------------
     def handle(self, msg: dict, t: float) -> None:
+        """A task action from <ns>/task/action. It is carried out on the world's next step (``apply_pending``), in the
+        order the commands came, so the route searches it may need run there, not in the message callback."""
+        self._inbox.append(("action", dict(msg), t))
+
+    def goal_pose(self, x, y, yaw, t) -> None:
+        """A goal_pose command (carried out on the next step); no route is reported as a goal result."""
+        self._inbox.append(("goal", (x, y, yaw), t))
+
+    def cmd_vel(self, cmd, t) -> None:
+        """A cmd_vel command (carried out on the next step, after any command that came before it)."""
+        self._inbox.append(("cmd", cmd, t))
+
+    def apply_pending(self, t: float) -> None:
+        """Carry out the commands that came since the last step. The world calls this at the start of its step, before
+        anyone moves; ``step`` calls it too, for a clock that is held."""
+        while self._inbox:  # each keeps the time it came (a reply to it may come before this step)
+            kind, payload, t0 = self._inbox.pop(0)
+            t0 = min(t0, t)
+            if kind == "action":
+                self._handle_now(payload, t0)
+            elif kind == "goal":
+                self._goal_pose_now(*payload, t0)
+            else:
+                self._cmd_vel_now(payload, t0)
+
+    def _handle_now(self, msg: dict, t: float) -> None:
         aid = str(msg.get("id") or f"a{len(self._out.results)}")
         action = msg.get("action")
         if action not in ACTIONS:
             self._result(aid, str(action), False, "unknown_action", t)
             return
+        f, n0 = self._following, len(self._out.results)
         try:
             getattr(self, f"_{action}")(aid, msg, t)
         except (KeyError, TypeError, ValueError, IndexError):
             self._result(aid, action, False, "bad_request", t)
+        refused = any(r.get("id") == aid and r.get("ok") is False for r in self._out.results[n0:])
+        if action in WALKING and f is not None and self._following is f and not refused:
+            self._end_follow(t, "superseded")  # another walking task was taken on (one refused leaves the follow on)
 
     # ---- actions -------------------------------------------------------------------------
     def _person(self, track) -> Optional[str]:
@@ -189,15 +256,32 @@ class RobotTasks:
         p = self.world.people.get(pid or "")
         return pid if p is not None and p.posture != "gone" else None
 
+    def _ho_result(self, aid, ok, reason, t, pid: Optional[str], item_id) -> None:
+        """A hand_over result; the run log row names the receiver (person) and the item. ``wire_result`` drops the
+        person before the robot gets it."""
+        self._out.results.append({"id": aid, "action": "hand_over", "ok": ok, "reason": reason, "t": t,
+                                  "person": pid, "item": None if item_id is None else str(item_id)})
+
     def _hand_over(self, aid, msg, t) -> None:
         w = self.world
+        item_id = str(msg["item"])
         pid = self._person(msg["to"])
         if pid is None:
-            return self._result(aid, "hand_over", False, "unknown_track", t)
-        item = w.objects.items.get(str(msg["item"]))
+            return self._ho_result(aid, False, "unknown_track", t, None, item_id)
+        item = w.objects.items.get(item_id)
+        r = w.robot
+        if item is not None and item.holder is None and \
+                math.hypot(item.x - r.x, item.y - r.y) <= TAKE_REACH_M:
+            # within its reach and not held yet: it takes the item and holds it out, in one action
+            item.holder, item.x, item.y = "g1", r.x, r.y
+            w._log_objects(t)
         if item is None or item.holder != "g1":
-            return self._result(aid, "hand_over", False, "not_holding", t)
-        q, r = w.people[pid], w.robot
+            return self._ho_result(aid, False, "not_holding", t, pid, item_id)
+        q = w.people[pid]
+        if getattr(q, "asleep", False):
+            # held out to someone asleep: nobody answers (she is not asked, and nothing is put down)
+            self._log({"t": t, "kind": "hand_over", "event": "offer", "id": aid, "person": pid, "item": item.id})
+            return self._ho_result(aid, False, "no_answer", t, pid, item.id)
         if msg.get("place") is not None:
             place = tuple(float(v) for v in msg["place"])
             if len(place) != 3:
@@ -205,7 +289,7 @@ class RobotTasks:
         else:
             place, why = self.hand_over_place((r.x, r.y), q, item.kind)
             if place is None:
-                return self._result(aid, "hand_over", False, why, t)
+                return self._ho_result(aid, False, why, t, pid, item.id)
         why = w._check_hand_over("g1", pid, item.id, place)
         lying = q.bed is not None and q.posture == "lying" and not q.sitting_up
         name = self._item_name(item)
@@ -217,7 +301,7 @@ class RobotTasks:
                 f"(accept_item) and you sit up in bed to take it, with no separate sit_up_in_bed needed; if not, "
                 f"refuse it (refuse_item).")))
         elif why != "ok":
-            return self._result(aid, "hand_over", False, why, t)
+            return self._ho_result(aid, False, why, t, pid, item.id)
         elif q.kind != "static" and "accept_item" in ROLE_INTENTS.get(q.inst.role, ()):
             # someone up and about: nothing else tells them an offer is open, and it closes after a few seconds
             no = "reject_item" if "reject_item" in ROLE_INTENTS.get(q.inst.role, ()) else "refuse_item"
@@ -226,8 +310,10 @@ class RobotTasks:
                 f"it ({no}).")))
         old = w._offers.get(pid)
         if old is not None and old["giver"] == "g1":  # one result per action: close the old offer
-            self._result(old["intent"], "hand_over", False, "superseded", t)
+            self._ho_result(old["intent"], False, "superseded", t, pid, old["item"])
         w._offers[pid] = {"giver": "g1", "item": item.id, "place": place, "t": t, "intent": aid}
+        # the moment the robot holds it out (a latency is measured to here, not to the receiver's answer)
+        self._log({"t": t, "kind": "hand_over", "event": "offer", "id": aid, "person": pid, "item": item.id})
 
     @staticmethod
     def _item_name(item) -> str:
@@ -295,14 +381,15 @@ class RobotTasks:
 
     def _take(self, aid, msg, t) -> None:
         w = self.world
-        item = w.objects.items.get(str(msg["item"]))
+        item_id = str(msg["item"])
+        item = w.objects.items.get(item_id)
         if item is None or item.holder is not None:
-            return self._result(aid, "take", False, "unknown_item", t)
+            return self._result(aid, "take", False, "unknown_item", t, item=item_id)
         if math.hypot(item.x - w.robot.x, item.y - w.robot.y) > TAKE_REACH_M:
-            return self._result(aid, "take", False, "out_of_reach", t)
+            return self._result(aid, "take", False, "out_of_reach", t, item=item_id)
         item.holder, item.x, item.y = "g1", w.robot.x, w.robot.y
         w._log_objects(t)
-        self._result(aid, "take", True, "ok", t)
+        self._result(aid, "take", True, "ok", t, item=item_id)
 
     def _extinguish(self, aid, msg, t) -> None:
         w = self.world
@@ -419,23 +506,57 @@ class RobotTasks:
         xy = w._resolve_place(place)
         if xy is None:
             return self._result(aid, "guide_start", False, "unknown_place", t)
-        if not self._set_goal(aid, xy[0], xy[1], None, t, exempt=pid):
+        back = msg.get("return_to_post", True)
+        if not isinstance(back, bool):
+            raise TypeError("return_to_post")
+        room = place if place in w.site.rooms else None
+        xy = self._clear_of_person(xy, w.people[pid], room)
+        # the person it guides is not exempt from its keeping clear: a walk ending where they stand drove into them
+        if not self._set_goal(aid, xy[0], xy[1], None, t):
             return self._result(aid, "guide_start", False, "no_route", t)
         self._end_guide(t, "superseded")  # an earlier guide (perhaps waiting at its place) is over
         lm = w.site.landmarks.get(place)
         label = (lm.label.split(",")[0] if lm is not None and lm.label else place.replace("_", " "))
-        room = place if place in w.site.rooms else None
         r = w.robot
         pts = [(r.x, r.y)] + list(r._path)
         route_m = sum(math.hypot(b[0] - a[0], b[1] - a[1]) for a, b in zip(pts, pts[1:]))
         self._guide = {"id": aid, "pid": pid, "place": place, "goal": xy, "room": room, "phase": "walking",
-                       "held": False, "held_s": 0.0, "t0": t, "seat": bool(msg.get("seat")), "seat_id": None}
+                       "held": False, "held_s": 0.0, "t0": t, "seat": bool(msg.get("seat")), "seat_id": None,
+                       "return": back}
+        w.guide_over.discard(pid)  # guided again: they may follow the robot
         self._log({"t": t, "kind": "guide", "event": "start", "id": aid, "person": pid, "place": place,
                    "x": round(xy[0], 3), "y": round(xy[1], 3), "room": room, "route_m": round(route_m, 2)})
         self._out.nudges.append(Nudge(person=pid, t=t, card=GUIDE_CARD, message=(
             f"The robot is offering to walk you to {label}. If you want to go there, follow it (follow g1): "
             f"walk a little behind it and it will wait for you.")))
         self._result(aid, "guide_start", True, "started", t)
+
+    def _clear_of_person(self, xy, q, room: Optional[str]) -> tuple[float, float]:
+        """Where a guide's walk ends: the place itself, or when the person it guides stands within GUIDE_CLEAR_M of it,
+        the nearest free floor (clear for the robot's body, in the place's room when it names one) that far from
+        them. The place unchanged when there is none."""
+        w = self.world
+        if math.hypot(xy[0] - q.x, xy[1] - q.y) >= GUIDE_CLEAR_M:
+            return xy
+        clear = getattr(w.robot.router, "is_clear", None) or getattr(w.robot.router, "is_free", None)
+        others = [(p.x, p.y) for p in w.people.values() if p is not q and p.posture not in ("gone",) and
+                  p.kind != "static"]
+        best, bd = None, math.inf
+        for k in range(1, 9):
+            dist = 0.25 * k
+            for j in range(16):
+                a = 2 * math.pi * j / 16
+                x, y = xy[0] + dist * math.cos(a), xy[1] + dist * math.sin(a)
+                if math.hypot(x - q.x, y - q.y) < GUIDE_CLEAR_M or w.site.grid.blocked(x, y) \
+                        or (clear is not None and not clear(x, y)) \
+                        or any(math.hypot(x - ox, y - oy) < PERSON_KEEP_M for ox, oy in others) \
+                        or (room is not None and w.site.room_at(x, y) != room):
+                    continue
+                if dist < bd:
+                    best, bd = (x, y), dist
+            if best is not None:
+                return best
+        return xy
 
     def _end_guide(self, t, reason: str) -> None:
         g, self._guide = self._guide, None
@@ -444,6 +565,7 @@ class RobotTasks:
             p = self.world.people.get(g["pid"])
             if p is not None and p.plan and p.plan[0].kind == "walk" and p.plan[0].trail:
                 self.world.trail_released.add(g["pid"])  # following ends with the guide
+            self.world.guide_over.add(g["pid"])  # and they do not take it up again unless guided again
             self._log({"t": t, "kind": "guide", "event": "end", "id": g["id"], "person": g["pid"], "reason": reason})
 
     def _arrived(self, g: dict) -> bool:
@@ -483,7 +605,8 @@ class RobotTasks:
         if arrived or t - g["t_arrive"] >= GUIDE_ARRIVE_WAIT_S:
             self._out.audio.append(w.robot_say(GOODBYE, t).model_copy(update={"addressee": g["pid"]}))
             self._end_guide(t, "arrived" if arrived else "timeout")
-            if self.mobile:
+            # back to its post unless told to stay, and never while the fire alarm sounds (its post may be by the fire)
+            if self.mobile and g.get("return", True) and not getattr(w, "alarm_active", False):
                 x, y, yaw = self.post
                 self._set_goal(f"{g['id']}-return", x, y, yaw, t)
 
@@ -515,9 +638,16 @@ class RobotTasks:
             spot = self._aside(c, q, fx, fy, px, py, free)
             if spot is not None:
                 return spot
-        # nowhere beside it: back off along the line from the seat through the robot, past the seat's front
+        # nowhere beside it: back off along the line from the seat through the robot, past the seat's front, to a spot
+        # its body is clear at; else it shows the seat from where it stands
         d = max(math.hypot(w.robot.x - c.x, w.robot.y - c.y), 1e-6)
-        return c.x + (w.robot.x - c.x) / d * (SEAT_BESIDE_M + 1.0), c.y + (w.robot.y - c.y) / d * (SEAT_BESIDE_M + 1.0)
+        for free in (getattr(r_, "is_clear", None), getattr(r_, "is_free", None)):
+            for k in (1.0, 1.5, 0.5, 2.0):
+                x = c.x + (w.robot.x - c.x) / d * (SEAT_BESIDE_M + k)
+                y = c.y + (w.robot.y - c.y) / d * (SEAT_BESIDE_M + k)
+                if not w.site.grid.blocked(x, y) and (free is None or free(x, y)):
+                    return x, y
+        return w.robot.x, w.robot.y
 
     def _aside(self, c, q, fx, fy, px, py, free) -> Optional[tuple[float, float]]:
         w = self.world
@@ -567,7 +697,7 @@ class RobotTasks:
         c = w.site.seats[sid]
         g["seat_id"], g["goal"], g["room"], g["shown"] = sid, (c.x, c.y), None, False
         x, y = self.aside_of_seat(c, g["pid"])
-        if not self._set_goal(g["id"], x, y, math.atan2(c.y - y, c.x - x), t, exempt=g["pid"]):
+        if not self._set_goal(g["id"], x, y, math.atan2(c.y - y, c.x - x), t):
             w.robot.turn_to(math.atan2(c.y - w.robot.y, c.x - w.robot.x))  # nowhere to stand aside: show it from here
             self._show_seat(g, t)
             g["phase"], g["t_arrive"] = "waiting", t
@@ -587,7 +717,95 @@ class RobotTasks:
             self._goal(self.goal_id, False, "cancelled", t)
         self.world.robot.cancel_goal()
         self._end_guide(t, "stopped")
+        self._end_follow(t, "stopped")
         self._result(aid, "guide_stop", True, "ok", t)
+
+    # ---- following a person ---------------------------------------------------------------
+    def _follow(self, aid, msg, t) -> None:
+        """Stay with a person: walk up to them and keep FOLLOW_NEAR_M-FOLLOW_FAR_M from them as they move, until
+        guide_stop, a goal_pose, cmd_vel, another walking task, or they are gone."""
+        w = self.world
+        pid = self._person(msg["track"])
+        if pid is None:
+            return self._result(aid, "follow", False, "no_person", t)
+        if not self.mobile:
+            return self._result(aid, "follow", False, "cannot_walk", t)
+        r = w.robot
+        if r.has_goal and r._had_goal:  # a walk under way (its own or a task's) is over
+            self._goal(self.goal_id, False, "superseded", t)
+            if self._tell is not None:
+                self._result(self._tell["id"], "tell_staff", False, "superseded", t)
+                self._tell = None
+            r.cancel_goal()
+        self._end_guide(t, "superseded")
+        self._end_follow(t, "superseded")  # following someone else (or the same person afresh)
+        self._following = {"id": aid, "pid": pid, "spot": None, "retry_at": -math.inf}
+        self._log({"t": t, "kind": "follow", "event": "start", "id": aid, "person": pid})
+        self._result(aid, "follow", True, "following", t)
+        self._follow_step(t)
+
+    def _end_follow(self, t: float, reason: str) -> None:
+        f, self._following = self._following, None
+        if f is None:
+            return
+        r = self.world.robot
+        if str(self.goal_id).startswith(FOLLOW_GOAL + "-") and r.has_goal and r._had_goal:
+            r.cancel_goal()
+        self._log({"t": t, "kind": "follow", "event": "end", "id": f["id"], "person": f["pid"], "reason": reason})
+
+    def _follow_spot(self, p) -> Optional[tuple[float, float]]:
+        """Free floor FOLLOW_GAP_M (or a little nearer or further) from the person, on the robot's side of them, clear
+        for its body: the one nearest the robot."""
+        w, r = self.world, self.world.robot
+        clear = getattr(r.router, "is_clear", None) or getattr(r.router, "is_free", None)
+        base = math.atan2(r.y - p.y, r.x - p.x)
+        best, bd = None, math.inf
+        for dist in (FOLLOW_GAP_M, FOLLOW_NEAR_M + 0.1, FOLLOW_FAR_M - 0.1):
+            for deg in (0, 30, -30, 60, -60, 90, -90):
+                a = base + math.radians(deg)
+                x, y = p.x + dist * math.cos(a), p.y + dist * math.sin(a)
+                if w.site.grid.blocked(x, y) or (clear is not None and not clear(x, y)) \
+                        or not w._los((x, y), (p.x, p.y)):
+                    continue
+                d = math.hypot(x - r.x, y - r.y) + 0.3 * abs(deg) / 90.0
+                if d < bd:
+                    best, bd = (x, y), d
+            if best is not None:
+                return best
+        return None
+
+    def _follow_step(self, t: float) -> None:
+        f, w = self._following, self.world
+        r = w.robot
+        p = w.people.get(f["pid"])
+        if p is None or p.posture == "gone":
+            return self._end_follow(t, "person_gone")
+        walking = r.has_goal and r._had_goal and str(self.goal_id).startswith(FOLLOW_GOAL + "-")
+        d = math.hypot(p.x - r.x, p.y - r.y)
+        # nearer than FOLLOW_NEAR_M (she came towards it): it steps back to the gap, on its side of her
+        if d >= FOLLOW_NEAR_M and (d <= FOLLOW_GAP_M or (not walking and d <= FOLLOW_FAR_M)):
+            if walking:
+                r.cancel_goal()  # close enough: stop here
+                f["spot"] = None
+            if not r.has_goal:
+                face = math.atan2(p.y - r.y, p.x - r.x)
+                if abs(math.atan2(math.sin(face - r.yaw), math.cos(face - r.yaw))) > 0.35:
+                    r.turn_to(face)
+            return
+        if t < f["retry_at"]:
+            return
+        spot = self._follow_spot(p)
+        if spot is None:
+            f["retry_at"] = t + FOLLOW_RETRY_S
+            return
+        if walking and f["spot"] is not None and math.hypot(spot[0] - f["spot"][0], spot[1] - f["spot"][1]) \
+                < FOLLOW_REPLAN_M:
+            return  # the walk under way still goes to about the right place
+        gid = f"{FOLLOW_GOAL}-{f['id']}"
+        if self._set_goal(gid, spot[0], spot[1], math.atan2(p.y - spot[1], p.x - spot[0]), t):
+            f["spot"] = spot
+        else:
+            f["retry_at"] = t + FOLLOW_RETRY_S
 
     # ---- telling the staff ---------------------------------------------------------------
     def _staff_to_tell(self) -> tuple[Optional[str], list]:
@@ -610,6 +828,12 @@ class RobotTasks:
             return pid, []
         bx, by = w._nurse_base(q.x, q.y)
         return pid, self._spots_near(q) + [(bx, by, None)]
+
+    def _clear_here(self) -> bool:
+        """The robot stands where its body is clear of the furniture (out of its router's clearance band)."""
+        r = self.world.robot
+        clear = getattr(r.router, "is_clear", None) or getattr(r.router, "is_free", None)
+        return clear is None or bool(clear(r.x, r.y))
 
     def _in_earshot(self, q, within: float = TELL_RANGE_M) -> bool:
         """q is within this of the robot, with no wall between them."""
@@ -673,7 +897,8 @@ class RobotTasks:
         self._log({"t": t, "kind": "tell", "id": tl["id"], "about": tl["about"], "staff": tl["staff"],
                    "heard": heard, "reason": reason})
         self._result(tl["id"], "tell_staff", heard, reason, t)
-        if self.mobile and tl.get("walked"):  # walked to tell them: back to its post, as after a guide
+        if self.mobile and tl.get("walked") and not getattr(w, "alarm_active", False):
+            # walked to tell them: back to its post, as after a guide (never while the fire alarm sounds)
             x, y, yaw = self.post
             if self._set_goal(f"{tl['id']}-return", x, y, yaw, t):
                 return
@@ -769,8 +994,8 @@ class RobotTasks:
             in_front = ahead >= 0.5 * d  # within 60 degrees of its heading: someone beside it is not in its way
             before_goal = ahead < left + 0.3  # someone beyond the end of its walk is not in its way
             exempt = self._goal_xy[3] if self._goal_xy is not None else None
-            if pid == exempt or (self._guide is not None and pid == self._guide["pid"]):
-                # the person it walks up to (a hand-over may need it close) or leads: only when really close
+            if pid == exempt:
+                # the person it walks up to (a hand-over may need it close): only when really close
                 if d < TARGET_KEEP_M and in_front:
                     return pid
                 continue
@@ -816,8 +1041,9 @@ class RobotTasks:
         tl = self._tell
         if tl is not None and self.mobile and r.has_goal and r._had_goal and self.goal_id == tl["id"]:
             q = w.people.get(tl["staff"])
-            if q is not None and q.posture != "gone" and self._in_earshot(q, TELL_NEAR_M):
-                # close to the staff member it walks to: stop and tell her now (no walking into her)
+            if q is not None and q.posture != "gone" and self._in_earshot(q, TELL_NEAR_M) and self._clear_here():
+                # close to the staff member it walks to: stop and tell her now (no walking into her), but only where
+                # its body is clear of the furniture (stopped in the clearance band it could not walk off again)
                 r.cancel_goal()
                 r.speed_scale, self._holding, self._held_s, self._held_total = 1.0, False, 0.0, 0.0
                 self._backing = False  # a step back under way ends here too
@@ -850,8 +1076,7 @@ class RobotTasks:
         if not self.mobile or getattr(self, "_backing", False) or (moving and not hold):
             self._close_s = 0.0
             return
-        led = self._guide["pid"] if self._guide is not None else None
-        near = [(math.hypot(q.x - r.x, q.y - r.y), q) for pid, q in self._others() if pid != led]
+        near = [(math.hypot(q.x - r.x, q.y - r.y), q) for pid, q in self._others()]
         near = [(d, q) for d, q in near if d < BACK_OFF_M]
         self._close_s = self._close_s + dt if near else 0.0
         if not near or self._close_s < BACK_OFF_S or t - self._backed_at < BACK_OFF_COOLDOWN_S:
@@ -886,9 +1111,9 @@ class RobotTasks:
         v = getattr(rr, "version", None)
         return v if v is not None else getattr(getattr(rr, "base", None), "version", 0)
 
-    def goal_pose(self, x, y, yaw, t) -> None:
-        """A goal_pose command; no route is reported as a goal result."""
+    def _goal_pose_now(self, x, y, yaw, t) -> None:
         self._goal_n += 1
+        self._end_follow(t, "superseded")
         gid = f"goal_pose-{self._goal_n}"
         if not self._set_goal(gid, x, y, yaw, t):
             self._goal(gid, False, "no_route", t)
@@ -909,38 +1134,54 @@ class RobotTasks:
         self._goal_xy, self._held_s = (x, y, yaw, exempt), 0.0
         if in_flight:
             self._goal(self.goal_id, False, "superseded", t)
+        self.goal_id = gid  # before the follow ends: ending it must not cancel this new walk
+        if self._following is not None and not str(gid).startswith((SAFETY, FOLLOW_GOAL + "-")):
+            self._end_follow(t, "superseded")  # another walk: the follow is over
         if self._tell is not None and self._tell["id"] != gid:
             self._result(self._tell["id"], "tell_staff", False, "superseded", t)
             self._tell = None
-        self.goal_id = gid
         return True
 
-    def cmd_vel(self, cmd, t) -> None:
+    def _cmd_vel_now(self, cmd, t) -> None:
         if self.world.robot.has_goal and self.world.robot._had_goal:
             self._goal(self.goal_id, False, "cancelled", t)
         if self._tell is not None:
             self._result(self._tell["id"], "tell_staff", False, "cancelled", t)
             self._tell = None
         self._end_guide(t, "cancelled")
+        self._end_follow(t, "cancelled")
         self.world.robot.set_cmd_vel(*cmd)
 
     def _goal(self, gid, ok, reason, t) -> None:
+        if str(gid).startswith(FOLLOW_GOAL + "-"):
+            return  # one of its own walks while following: the follow action reports, not each walk
         self._out.results.append({"kind": "goal", "id": gid, "action": "goal", "ok": ok,
                                   "reason": reason, "t": t})
 
     # ---- time ----------------------------------------------------------------------------
-    def _near_cap(self) -> Optional[float]:
-        """0.3 m/s while someone other than the guided person is within 1.5 m, else no cap."""
+    def _near_cap(self, dt: float = 0.0) -> Optional[float]:
+        """0.3 m/s while someone is within 1.5 m (the person it guides only when not behind it), else no cap. With dt (the move about
+        to be made), someone just outside 1.5 m caps it too, so that it reaches 1.5 m from them no faster than it
+        could stop to 0.3 m/s there: it never comes within 1.5 m of anyone faster than 0.3 m/s."""
         w = self.world
+        r = w.robot
         exempt = self._guide["pid"] if self._guide is not None else None
+        nearest = math.inf
         for pid, q in w.people.items():
-            if pid != exempt and q.posture != "gone" and q.kind != "static" \
-                    and math.hypot(q.x - w.robot.x, q.y - w.robot.y) <= NEAR_PERSON_M:
-                return NEAR_PERSON_SPEED
+            if q.posture == "gone" or q.kind == "static":
+                continue
+            if pid == exempt and (q.x - r.x) * math.cos(r.yaw) + (q.y - r.y) * math.sin(r.yaw) <= 0.0:
+                continue  # the person it guides, following behind it: the robot walks away from them
+            nearest = min(nearest, math.hypot(q.x - r.x, q.y - r.y))
+        if nearest <= NEAR_PERSON_M:
+            return NEAR_PERSON_SPEED
+        if dt > 0 and nearest - NEAR_PERSON_M < w.robot.max_speed * dt:
+            return max(NEAR_PERSON_SPEED, (nearest - NEAR_PERSON_M - CAP_MARGIN_M) / dt)
         return None
 
     def step(self, t: float, dt: float) -> TaskOutputs:
         w = self.world
+        self.apply_pending(t)  # commands the world did not step for (a held clock)
         for aid, fid in list(self._spray.items()):
             f = w.objects.fires.get(fid)
             if f is None or math.hypot(f.x - w.robot.x, f.y - w.robot.y) > EXTINGUISH_RANGE_M:
@@ -988,7 +1229,7 @@ class RobotTasks:
                 if ev == "arrived":
                     self._speak_tell(t)
                 else:
-                    self._result(gid, "tell_staff", False, "no_route" if ev == "stuck" else ev, t)
+                    self._result(gid, "tell_staff", False, ev, t)  # a route existed: "stuck" says what happened
                     self._tell = None
         hz = (getattr(w, "_hazards", ()), self._router_version())
         if hz != self._hazards_seen:  # a fire started or went out, or a route was blocked: the walk under way goes round
@@ -1009,6 +1250,10 @@ class RobotTasks:
                 self._result(aid, "extinguish", False, "cancelled", t)
         if self._guide is not None:
             self._guide_step(t, dt)
+        if self._following is not None:
+            if ev is not None and ev != "arrived" and str(self.goal_id).startswith(FOLLOW_GOAL + "-"):
+                self._following["retry_at"] = t + FOLLOW_RETRY_S  # its walk failed: try again in a moment
+            self._follow_step(t)
         if self._notes:
             self._read_notes(t)
         self._safety(t, dt)
@@ -1016,5 +1261,7 @@ class RobotTasks:
         for r in w.robot_results:
             self._out.results.append({**r, "t": t})
         w.robot_results.clear()
+        for n in self._out.nudges:  # what the robot's actions told people goes in nudges.jsonl, like every nudge
+            w._log.append(("nudges", n.model_dump(mode="json", by_alias=True)))
         out, self._out = self._out, TaskOutputs()
         return out

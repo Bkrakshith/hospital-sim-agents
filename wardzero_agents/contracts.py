@@ -80,6 +80,7 @@ class Status(_Envelope):
     progress: float
     state: Literal["running", "done", "failed", "idle"]
     reason: Optional[str] = None
+    asleep: bool = False  # fell asleep (an "asleep" card, or start_asleep) and not woken yet
 
 
 class Seen(_Envelope):
@@ -158,7 +159,7 @@ class WorldEvent(_Envelope):
     id: str
     t: float
     kind: Literal["pa_announcement", "alarm", "wet_floor", "arrival", "person_exit", "fire_start",
-                  "route_blocked", "ring_bell"]
+                  "route_blocked", "ring_bell", "asleep"]
     text: Optional[str] = None
     x: Optional[float] = None
     y: Optional[float] = None

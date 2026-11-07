@@ -273,8 +273,8 @@ def test_route_blocked_blocks_every_router_and_is_announced(staged, tmp_path):
         assert w.robot.has_goal
         assert _route_clear_of(list(w.robot._path), (w.robot.x, w.robot.y), cx, cy, ROUTE_BLOCK_RADIUS_M - 0.15)
     pa = [h for h in out.robot_heard if h.source_kind == "pa"]
-    room = w.site.rooms[w.site.room_at(cx, cy)].label.split(",")[0]
-    assert pa and "blocked" in pa[0].text and room in pa[0].text
+    # it names the landmark at the block, not the whole room the block is in (that room may hold the other way out)
+    assert pa and "blocked" in pa[0].text and lm.label.split(",")[0] in pa[0].text
 
 
 def test_blocks_at_one_time_and_place_are_announced_once(staged):
