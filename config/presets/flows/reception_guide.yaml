@@ -7,9 +7,8 @@ steps:
 - wait_until: {label: The robot has greeted someone, when: {robot_spoke_to: anyone}, timeout_s: 45}
 - fire: {id: b1, card: lost_visitor, target: V1, label: V1 gets lost}
 - expect:
-    label: The robot helps V1 (walks them there, or gives directions they follow)
-    when: {any: [{robot_did: {action: guide, about: V1}},
-                 {all: [{robot_spoke_to: {person: V1, since_step: true}}, {not_in_room: {person: V1, room: Lobby}}]}]}
+    label: The robot walks V1 where they need to go (the walk ends with V1 there)
+    when: {robot_did: {action: guided, about: V1}}
     timeout_s: 90
 - wait_until:
     label: The robot has finished with V1 (the walk ended, or V1 went on alone)
@@ -19,7 +18,7 @@ steps:
 - fire: {id: b2, card: hard_of_hearing, target: H1, label: H1 is hard of hearing}
 - expect:
     label: The robot walks H1 where they need to go
-    when: {robot_did: {action: guide, about: H1}}
+    when: {robot_did: {action: guided, about: H1}}
     timeout_s: 90
 - fire: {id: b3, card: arrival, label: Someone new arrives}
 - expect: {label: The robot greets the newcomer, when: {robot_spoke_to: newcomer}, timeout_s: 120}

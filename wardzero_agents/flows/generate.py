@@ -35,6 +35,9 @@ Rules:
 - Fire a card when the scene is ready for it (the robot is near enough to notice, the person is where it matters),
   with a time limit as the fallback. Use expect steps for what the robot should do in reply, so the run's report
   can show whether it did.
+- An expect that credits the robot for walking someone somewhere uses robot_did guided (the walk ended with them
+  at the place), never guide (the robot only set off) and never only where the person ended up: people may walk
+  there on their own.
 - World cards that happen at a place (fire_start, route_blocked, alarm) take params {x, y}: a point in the room.
 - Labels are short plain English, written for a person watching the run.
 - Answer with the whole flow as YAML in flow_yaml (keys: id, title, summary, steps), and one or two sentences in

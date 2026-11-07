@@ -11,19 +11,19 @@ steps:
     branches:
     - - expect:
           label: The robot checks Ava in (a desk note, a walk to a seat or a word with staff)
-          when: {any: [{robot_did: {action: note, about: P2}}, {robot_did: {action: guide, about: P2}},
+          when: {any: [{robot_did: {action: note, about: P2}}, {robot_did: {action: guided, about: P2}},
                        {robot_did: {action: tell, about: P2}}]}
           timeout_s: 300
     - - expect:
           label: The robot checks George in (a desk note, a walk to a seat or a word with staff)
-          when: {any: [{robot_did: {action: note, about: P1}}, {robot_did: {action: guide, about: P1}},
+          when: {any: [{robot_did: {action: note, about: P1}}, {robot_did: {action: guided, about: P1}},
                        {robot_did: {action: tell, about: P1}}]}
           timeout_s: 300
     - - wait_until:
           label: Ava and George are checked in (or two minutes have passed)
-          when: {all: [{any: [{robot_did: {action: note, about: P2}}, {robot_did: {action: guide, about: P2}},
+          when: {all: [{any: [{robot_did: {action: note, about: P2}}, {robot_did: {action: guided, about: P2}},
                               {robot_did: {action: tell, about: P2}}]},
-                       {any: [{robot_did: {action: note, about: P1}}, {robot_did: {action: guide, about: P1}},
+                       {any: [{robot_did: {action: note, about: P1}}, {robot_did: {action: guided, about: P1}},
                               {robot_did: {action: tell, about: P1}}]}]}
           timeout_s: 120
       - wait: {seconds: 15, label: The room settles}

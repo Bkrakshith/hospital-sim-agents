@@ -13,7 +13,7 @@ steps:
           when: {all: [{robot_near: {person: W1, within_m: 2.5}},
                        {any: [{robot_did: {action: approach, since_step: true}},
                               {robot_did: {action: follow, about: W1, since_step: true}},
-                              {robot_did: {action: guide, about: W1, since_step: true}}]}]}
+                              {robot_did: {action: guided, about: W1, since_step: true}}]}]}
           timeout_s: 60
     - - expect:
           label: The robot speaks calmly to W1
