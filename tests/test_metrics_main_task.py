@@ -4,6 +4,8 @@ import json
 import pytest
 
 from wardzero_agents.bench.metrics import METRICS, RunData
+from wardzero_agents.bench.report import build_facts
+from wardzero_agents.config.presets import ScenarioPreset
 
 
 def make_run(tmp_path, meta=None, **streams):
@@ -253,6 +255,18 @@ def test_a_follow_answers_a_request(tmp_path):
                                "reason": "following"},
                               {"t": 12, "kind": "follow", "event": "start", "person": "S1", "reason": None}])
     assert val(d, "unanswered_requests") == 0.0 and val(d, "mean_response_s") == pytest.approx(2.0)
+
+
+def test_follow_and_offers_appear_in_the_report_timeline(tmp_path):
+    make_run(tmp_path, {}, robot_tasks=[
+        {"t": 12, "kind": "action", "id": "f1", "action": "follow", "track": "t1"},
+        {"t": 12, "kind": "follow", "event": "start", "id": "f1", "person": "W1", "reason": None},
+        {"t": 40, "kind": "follow", "event": "end", "id": "f1", "person": "W1", "reason": "guide_stop"},
+        {"t": 50, "kind": "hand_over", "event": "offer", "person": "M1", "item": "tray_M1"}])
+    facts = build_facts(tmp_path, ScenarioPreset.model_construct(id="t", criteria=[]))
+    texts = [m["text"] for m in facts["moments"]]
+    assert "Robot starts following W1" in texts and "Robot stops following W1 (guide_stop)" in texts
+    assert "Robot holds out tray_M1 to M1" in texts
 
 
 def test_the_porter_is_known_from_the_scenario_when_meta_has_no_people(tmp_path):

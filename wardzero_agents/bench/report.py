@@ -173,6 +173,16 @@ def _moments(d: RunData, exps, names: dict) -> list[dict]:
             ok = bool(r.get("ok"))
             why = f" ({r['reason']})" if r.get("reason") and not ok else ""
             add(r.get("t"), "robot", f"Robot {what}: {'done' if ok else 'failed'}{why}", 2 if ok else 3)
+        elif r.get("kind") == "follow" and r.get("event") in ("start", "end"):
+            who = nm(r.get("person")) if r.get("person") else "someone"
+            if r["event"] == "start":
+                add(r.get("t"), "robot", f"Robot starts following {who}", 2)
+            else:
+                add(r.get("t"), "robot", f"Robot stops following {who}" + (f" ({r['reason']})" if r.get("reason") else ""),
+                    2)
+        elif r.get("kind") == "hand_over" and r.get("event") == "offer":
+            to = f" to {nm(r['person'])}" if r.get("person") else ""
+            add(r.get("t"), "robot", f"Robot holds out {r.get('item') or 'an item'}{to}", 2)
     for s in d.says:
         if not s.get("text"):
             continue
