@@ -510,7 +510,7 @@ def test_reception_waits_until_the_robot_has_finished_with_v1():
     # it talks to V1 until t=70, then walks off; V1 stays in the lobby: the wait runs to its limit
     e, fired = _reception(lambda t: v1 if t < 70 else (5.0, 5.0), until=300.0)
     assert fired["lost_visitorV1"] == 5.0
-    help_t = _node_by_label(e.tree(), "The robot helps V1 (walks them there, or gives directions they follow)")["t"]
+    help_t = _node_by_label(e.tree(), "The robot walks V1 where they need to go (the walk ends with V1 there)")["t"]
     assert fired["hard_of_hearingH1"] == pytest.approx(help_t + 120.0, abs=0.6)
     # the end of a guide ends the wait, even with the robot still beside V1
     e, fired = _reception(lambda t: v1, robot_did_at=lambda t: [(8.0, "guide", "V1")] +
@@ -546,15 +546,25 @@ def test_evacuation_credits_only_people_the_robot_got_out():
                              said_at={"V1": [4.8]})
     assert _node_by_label(e.tree(), LOBBY)["state"] == "timed_out"
     assert _node_by_label(e.tree(), P1_OUT)["state"] == "timed_out"
-    # after the alarm the robot guides V1, speaks to V2 and guides P1, and each of them leaves
-    did = lambda t: [x for x in ((20.0, "guide", "V1"), (40.0, "guide", "P1")) if x[0] <= t]  # noqa: E731
+    # after the alarm the robot walks V1, V2 and P1 out, and each walk ends with them there
+    did = lambda t: [x for x in ((20.0, "guide", "V1"), (30.0, "guided", "V1"), (31.0, "guide", "V2"),  # noqa: E731
+                                 (45.0, "guided", "V2"), (46.0, "guide", "P1"), (60.0, "guided", "P1")) if x[0] <= t]
     e = _evacuation_outcomes(moves=lambda t: {k: v for k, v in out.items() if t >= (60 if k == "P1" else 30)},
                              robot_did_at=did, said_at={"V1": [4.8], "V2": [25.0]})
     assert _node_by_label(e.tree(), LOBBY)["state"] == "met"
     assert _node_by_label(e.tree(), P1_OUT)["state"] == "met"
-    # P1 leaves A&E waiting, but the robot never guided P1
+    # everyone leaves; the robot spoke to V2 and P1 and started walks it never finished: none of it is credited
     e = _evacuation_outcomes(moves=lambda t: {k: v for k, v in out.items() if t >= 30},
-                             robot_did_at=lambda t: [x for x in ((20.0, "guide", "V1"),) if x[0] <= t],
+                             robot_did_at=lambda t: [x for x in ((20.0, "guided", "V1"), (21.0, "guide", "V2"),
+                                                                 (22.0, "guide", "P1"), (40.0, "guide_ended", "P1"))
+                                                     if x[0] <= t],
                              said_at={"V1": [4.8], "V2": [25.0], "P1": [26.0]})
-    assert _node_by_label(e.tree(), LOBBY)["state"] == "met"
+    assert _node_by_label(e.tree(), LOBBY)["state"] == "timed_out"
     assert _node_by_label(e.tree(), P1_OUT)["state"] == "timed_out"
+    # a word to V1 after the alarm and V1 leaving the lobby on her own is not the robot getting her out: only a
+    # walk with her that arrived is, even when V2 was walked out
+    e = _evacuation_outcomes(moves=lambda t: {k: v for k, v in out.items() if t >= 30},
+                             robot_did_at=lambda t: [x for x in ((21.0, "guide", "V2"), (40.0, "guided", "V2"))
+                                                     if x[0] <= t],
+                             said_at={"V1": [4.8, 25.0], "V2": [25.0]})
+    assert _node_by_label(e.tree(), LOBBY)["state"] == "timed_out"

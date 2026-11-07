@@ -75,11 +75,15 @@ def test_unanswered_request_counted(tmp_path):
         tmp_path,
         audio=[ask(10), robot(14), ask(30), robot(45), ask(60),
                {"t": 70, "source_kind": "person", "source_id": "P2", "text": "Hi", "addressee": "P1"}],
-        robot_tasks=[{"t": 66, "kind": "action", "id": "a1", "action": "press_call"}],
+        robot_tasks=[{"t": 66, "kind": "action", "id": "a1", "action": "press_call", "track": "t1"},
+                     {"t": 66, "kind": "result", "id": "a1", "action": "press_call", "ok": True,
+                      "reason": "answered", "person": "P1"},
+                     {"t": 61, "kind": "action", "id": "a2", "action": "goal_pose", "x": 1.0, "y": 1.0}],
         status=[status(100.0, "P1", 0, 0)],
     )
     # ask@10 answered after 4 s; ask@30 first reply at 45 = 15 s (over 10 s, unanswered); ask@60 answered by
-    # an action 6 s later. The P1-to-P2 line is not addressed to the robot.
+    # an action about P1 (a staff call with her track) 6 s later, not by the walk that is about nobody. The P1-to-P2
+    # line is not addressed to the robot.
     assert val(d, "unanswered_requests") == 1.0
     assert val(d, "mean_response_s") == pytest.approx((4 + 15 + 6) / 3)
 

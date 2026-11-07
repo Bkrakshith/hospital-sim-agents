@@ -147,7 +147,7 @@ flowchart TD
   n7 --> n8
   n9(["Expect: The robot fetches the nurse (up to 120 s)"])
   n7 --> n9
-  n10{"Unless: The nurse reaches P1"}
+  n10{"Unless: The nurse reaches P1's bedside"}
   n7 --> n10
   n11["Wait 150 s"]
   n10 --> n11
@@ -173,7 +173,7 @@ flowchart TD
   n1 --> n2
   n3[["V1 gets lost [lost_visitor]"]]
   n2 --> n3
-  n4(["Expect: The robot helps V1 (walks them there, or gives directions they follow) (up to 90 s)"])
+  n4(["Expect: The robot walks V1 where they need to go (the walk ends with V1 there) (up to 90 s)"])
   n3 --> n4
   n5["Wait until: The robot has finished with V1 (the walk ended, or V1 went on alone) (up to 120 s)"]
   n4 --> n5

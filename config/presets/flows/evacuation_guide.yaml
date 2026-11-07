@@ -26,15 +26,10 @@ steps:
           timeout_s: 90
     - - expect:
           label: The robot gets V1 and V2 out of the lobby
-          when: {all: [{all: [{any: [{robot_did: {action: guide, about: V1, since_step: true}},
-                                     {robot_spoke_to: {person: V1, since_step: true}}]},
-                              {not_in_room: {person: V1, room: Lobby}}]},
-                       {all: [{any: [{robot_did: {action: guide, about: V2, since_step: true}},
-                                     {robot_spoke_to: {person: V2, since_step: true}}]},
-                              {not_in_room: {person: V2, room: Lobby}}]}]}
+          when: {all: [{robot_did: {action: guided, about: V1, since_step: true}},
+                       {robot_did: {action: guided, about: V2, since_step: true}}]}
           timeout_s: 300
     - - expect:
           label: The robot gets P1 out of A&E waiting
-          when: {all: [{robot_did: {action: guide, about: P1, since_step: true}},
-                       {not_in_room: {person: P1, room: AE_Waiting}}]}
+          when: {robot_did: {action: guided, about: P1, since_step: true}}
           timeout_s: 400

@@ -27,6 +27,8 @@ Conditions (``when``, a one-key mapping):
                                                        (about: person id, where it is known: the person guided, told
                                                        about, followed, or the receiver of a hand_over; item: the item
                                                        id of a hand_over or take; at_least: how many times, default 1;
+                                                       guide: the robot set off to walk them somewhere (only
+                                                       for gates; a walk is credited with guided);
                                                        guided: a person the robot walked somewhere arrived;
                                                        guide_ended: a walk the robot led ended, arrived or not;
                                                        hand_over: the person took the item; press_call: a call that

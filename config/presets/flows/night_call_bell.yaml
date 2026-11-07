@@ -22,8 +22,8 @@ steps:
                        {robot_did: {action: press_call, since_step: true}}]}
           timeout_s: 120
     - - unless:
-          label: The nurse reaches P1
-          when: {near: {person: N1, to: P1, within_m: 1.5}}
+          label: The nurse reaches P1's bedside
+          when: {near: {person: N1, to: P1, within_m: 2.0}}
           then:
           - wait: {seconds: 150}
           - fire: {id: b2, card: ring_bell, target: P1, label: P1 rings again}
