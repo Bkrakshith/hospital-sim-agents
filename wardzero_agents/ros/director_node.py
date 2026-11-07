@@ -146,8 +146,9 @@ class DirectorService:
 
     def on_status(self, st: Status) -> None:
         prev = self.statuses.get(st.person)
-        if st.posture == "seated":
-            if prev is None or prev.posture != "seated" or st.person not in self.seated_since:
+        in_seat = ("seated", "slumped")  # slumped is someone unwell still in their seat: their wait goes on
+        if st.posture in in_seat:
+            if prev is None or prev.posture not in in_seat or st.person not in self.seated_since:
                 self.seated_since[st.person] = st.t
         else:
             self.seated_since.pop(st.person, None)

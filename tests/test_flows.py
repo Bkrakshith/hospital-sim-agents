@@ -568,3 +568,13 @@ def test_evacuation_credits_only_people_the_robot_got_out():
                                                      if x[0] <= t],
                              said_at={"V1": [4.8, 25.0], "V2": [25.0]})
     assert _node_by_label(e.tree(), LOBBY)["state"] == "timed_out"
+
+
+def test_evacuation_walks_that_end_inside_the_room_are_not_getting_people_out():
+    """Guides with V1, V2 and P1 that all end arrived, but nobody has left their room (the robot walked V1 and V2 to
+    the reception desk in the lobby): the evacuation expects are not met."""
+    did = lambda t: [x for x in ((20.0, "guide", "V1"), (30.0, "guided", "V1"), (31.0, "guide", "V2"),
+                                 (45.0, "guided", "V2"), (46.0, "guide", "P1"), (60.0, "guided", "P1")) if x[0] <= t]
+    e = _evacuation_outcomes(moves=lambda t: {}, robot_did_at=did, said_at={"V1": [4.8], "V2": [25.0]})
+    assert _node_by_label(e.tree(), LOBBY)["state"] != "met"
+    assert _node_by_label(e.tree(), P1_OUT)["state"] != "met"

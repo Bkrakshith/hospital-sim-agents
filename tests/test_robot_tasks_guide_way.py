@@ -445,7 +445,7 @@ def test_a_bystander_standing_at_the_place_does_not_stop_the_guide(staged, tmp_p
     assert math.hypot(w.robot.x - goal[0], w.robot.y - goal[1]) < rt.NEAR_PLACE_M
 
 
-@pytest.mark.parametrize("gap_m", [2.0, 3.0, 4.0])
+@pytest.mark.parametrize("gap_m", [2.0, 3.0])  # further: see test_a_person_already_at_the_place_far_from_the_robot
 def test_a_guide_whose_person_waits_at_the_place_ahead_of_it_ends_arrived(staged, tmp_path, body, gap_m):
     """She knows the way, walked on ahead and waits at the place, gap_m ahead of the robot (further than GUIDE_HOLD_M:
     not "behind" it): the robot walks on to the place and the guide ends arrived, not left_behind after 30 s."""
@@ -471,3 +471,54 @@ def test_a_guide_whose_person_waits_at_the_place_ahead_of_it_ends_arrived(staged
     assert not contacts(tmp_path)
     if d0 > rt.GUIDE_CLEAR_M + 0.5:  # it walked up to her (it does not stand still and claim the guide)
         assert math.hypot(w.robot.x - goal[0], w.robot.y - goal[1]) < d0 - 0.5
+
+
+# --- a person who gets to the place without the robot is not a guide that arrived ---------------------------------
+
+def _walk_alone(s, pid, goal, speed=1.0, dt=0.1, secs=90.0, start_after=1.0):
+    """The guided person walks straight to the place on their own (never follows the robot)."""
+    w = s.world
+    p = w.people[pid]
+    for _ in range(int(secs / dt)):
+        if s.t >= start_after:
+            dx, dy = goal[0] - p.x, goal[1] - p.y
+            d = math.hypot(dx, dy)
+            if d > 0.3:
+                k = min(speed * dt, d - 0.3) / d
+                p.x += dx * k
+                p.y += dy * k
+        p.plan = []
+        s.step(dt)
+        if s.tasks._guide is None:
+            break
+
+
+@pytest.mark.parametrize("place", ["ward_entrance"])  # the corridor is so near that he walks it beside the robot
+def test_a_person_who_walks_there_alone_is_not_guided_there(staged, tmp_path, place):
+    """He sets off for the place on his own, gets well ahead and the robot stands held behind: not guided there."""
+    s = svc(staged("reception_guide"), tmp_path)
+    w = s.world
+    alone_with(w, {"H1"})
+    r = w.robot
+    goal = w._resolve_place(place)
+    put(w, "H1", r.x + 1.2 * math.cos(r.yaw), r.y + 1.2 * math.sin(r.yaw))
+    s.step(0.1)
+    s.on_task_action({"id": "gd", "action": "guide_start", "track": w.tracks.track("H1"), "place": place})
+    _walk_alone(s, "H1", goal)
+    assert [e["reason"] for e in guide_end(tmp_path)] != ["arrived"]
+
+
+def test_a_person_already_at_the_place_far_from_the_robot_is_not_guided_there(staged, tmp_path):
+    s = svc(staged("reception_guide"), tmp_path)
+    w = s.world
+    alone_with(w, {"H1"})
+    goal = w._resolve_place("clinic_corridor")
+    put(w, "H1", goal[0], goal[1])
+    s.step(0.1)
+    s.on_task_action({"id": "gd", "action": "guide_start", "track": w.tracks.track("H1"), "place": "clinic_corridor"})
+    for _ in range(900):
+        s.step(0.1)
+        w.people["H1"].plan = []
+        if s.tasks._guide is None:
+            break
+    assert [e["reason"] for e in guide_end(tmp_path)] != ["arrived"]

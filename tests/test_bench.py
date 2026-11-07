@@ -118,6 +118,24 @@ def test_tray_metric_counts_only_ok_in_reach(tmp_path):
     assert val(d, "trays_correct_in_reach") == 1.0  # tr2 failed, tr3 went to the wrong patient
 
 
+def test_a_tray_the_robot_gave_someone_else_is_not_its_delivery(tmp_path):
+    # the robot hands M1's tray to the nurse N1, who carries it to M1: not the robot's delivery
+    d = make_run(
+        tmp_path,
+        objects=[objs(0, tr1=("M1", "g1"), tr2=("M2", "g1")), objs(30, tr1=("M1", "N1"), tr2=("M2", "M2")),
+                 objs(60, tr1=("M1", "M1"), tr2=("M2", "M2"))],
+        robot_tasks=[
+            {"t": 20, "kind": "action", "id": "h1", "action": "hand_over", "item": "tr1", "to": "T5"},
+            {"t": 21, "kind": "result", "id": "h1", "action": "hand_over", "ok": True, "reason": "ok",
+             "person": "N1", "item": "tr1"},
+            {"t": 25, "kind": "action", "id": "h2", "action": "hand_over", "item": "tr2", "to": "T2"},
+            {"t": 26, "kind": "result", "id": "h2", "action": "hand_over", "ok": True, "reason": "ok",
+             "person": "M2", "item": "tr2"},
+        ],
+    )
+    assert val(d, "trays_correct_in_reach") == 1.0  # only tr2, handed to M2 by the robot
+
+
 def test_instruments_rate_and_latency(tmp_path):
     inst = [{"id": i, "kind": "instrument", "label": i.replace("_", " "), "holder": None}
             for i in ("scalpel", "forceps", "suture_scissors")]

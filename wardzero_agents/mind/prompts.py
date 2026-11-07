@@ -94,10 +94,15 @@ def _nullable() -> dict:
     return {"anyOf": [{"type": "string"}, {"type": "null"}]}
 
 
-def role_kinds(role: Optional[str]) -> list[str]:
-    """The intent kinds a role may choose, in IntentKind order. Unknown or no role: the basics."""
+# what a person may do only when no robot is there to do it: with a robot brief it is the robot's job
+ROBOT_JOB_INTENTS = frozenset({"take_instrument_self"})
+
+
+def role_kinds(role: Optional[str], robot_role: Optional[str] = None) -> list[str]:
+    """The intent kinds a role may choose, in IntentKind order. Unknown or no role: the basics. With a robot brief
+    (robot_role not None, see robot_role_of) the robot's own jobs (ROBOT_JOB_INTENTS) are left out."""
     allowed = ROLE_INTENTS.get(role or "custom", BASIC_INTENTS)
-    return [k for k in ALL_INTENT_KINDS if k in allowed]
+    return [k for k in ALL_INTENT_KINDS if k in allowed and not (robot_role is not None and k in ROBOT_JOB_INTENTS)]
 
 
 def robot_role_of(scenario) -> Optional[str]:
@@ -112,7 +117,7 @@ def system_fixed(role: Optional[str] = None, robot_role: Optional[str] = None) -
     when it lacks some of the basics). Identical to SYSTEM_FIXED when the role has the basics only
     and the scenario has no robot brief (robot_role None, see robot_role_of). With a brief the robot
     is not called a reception robot: the persona card gives its role instead."""
-    kinds = role_kinds(role)
+    kinds = role_kinds(role, robot_role)
     extra = [k for k in kinds if k not in BASIC_INTENTS]
     lost = [k for k in INTENT_KINDS if k not in kinds]
     base = SYSTEM_FIXED if robot_role is None else SYSTEM_FIXED.replace("the reception robot", "the robot")
@@ -126,10 +131,10 @@ def system_fixed(role: Optional[str] = None, robot_role: Optional[str] = None) -
     return out
 
 
-def decision_schema(role: Optional[str] = None) -> dict:
-    """DECISION_SCHEMA with the intent.kind enum filtered to the role's intents."""
+def decision_schema(role: Optional[str] = None, robot_role: Optional[str] = None) -> dict:
+    """DECISION_SCHEMA with the intent.kind enum filtered to the role's intents (see role_kinds)."""
     schema = copy.deepcopy(DECISION_SCHEMA)
-    schema["properties"]["intent"]["properties"]["kind"]["enum"] = role_kinds(role)
+    schema["properties"]["intent"]["properties"]["kind"]["enum"] = role_kinds(role, robot_role)
     return schema
 
 

@@ -407,3 +407,13 @@ def test_legacy_situation_unchanged_from_843145b():
     assert "- the reception robot g1 (1.6 m ahead to your left)" in s.splitlines()
     # sha256 of the same situation rendered by render_situation at 843145b
     assert hashlib.sha256(s.encode()).hexdigest() == "7b4cc2ceebc512aa5ddc906b0c334c818ad1b4be92ba36fdfe1c4169f2291c61"
+
+
+def test_surgeon_with_a_robot_brief_is_not_offered_the_robots_job():
+    """With a robot on the shift, handing her instruments is its job: her menu and prompt leave out taking one
+    herself (the world refuses it too). Without a robot brief she keeps it."""
+    from wardzero_agents.mind.prompts import system_fixed
+    kinds = decision_schema("surgeon", "scrub assistant")["properties"]["intent"]["properties"]["kind"]["enum"]
+    assert "take_instrument_self" not in kinds and {"request_instrument", "accept_item"} <= set(kinds)
+    assert "take_instrument_self" not in system_fixed("surgeon", "scrub assistant")
+    assert "take_instrument_self" in system_fixed("surgeon", None)

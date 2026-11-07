@@ -639,6 +639,19 @@ class RobotTasks:
             return True
         return g["room"] is not None and self.world.site.room_at(p.x, p.y) == g["room"]
 
+    def _there_with_robot(self, g: dict) -> bool:
+        """The guided person is at the place and the robot got there with them: it stands within GUIDE_HOLD_M of the
+        walk's end, or in the named room within GUIDE_HOLD_M of them. Someone who got there while the robot stood
+        held far behind, or who was there before it set off, was not walked there by it."""
+        if not self._arrived(g):
+            return False
+        w, r = self.world, self.world.robot
+        if math.hypot(r.x - g["goal"][0], r.y - g["goal"][1]) <= GUIDE_HOLD_M:
+            return True
+        p = w.people[g["pid"]]
+        return g["room"] is not None and w.site.room_at(r.x, r.y) == g["room"] \
+            and math.hypot(p.x - r.x, p.y - r.y) <= GUIDE_HOLD_M
+
     def _guide_step(self, t: float, dt: float) -> None:
         g, w = self._guide, self.world
         p = w.people.get(g["pid"])
@@ -647,9 +660,9 @@ class RobotTasks:
                 w.robot.speed_scale = 1.0
                 return
             d = math.hypot(p.x - w.robot.x, p.y - w.robot.y)
-            if self._arrived(g):
-                # at the place already (walked on ahead of it): not behind it, so it does not wait for them but walks
-                # on to the place, where the guide ends arrived
+            if self._there_with_robot(g):
+                # at the place just ahead of it (it is nearly there too): it does not wait for them but walks on to
+                # the place, where the guide ends arrived
                 g["held"], g["held_s"] = False, 0.0
             elif g["held"] and d <= GUIDE_RESUME_M:
                 g["held"], g["held_s"] = False, 0.0
@@ -1228,7 +1241,7 @@ class RobotTasks:
                 self._guide_walk_ended(g, "arrived", t)
                 return
         if patient and g is not None and blocker == g["pid"] and not getattr(self, "_backing", False) \
-                and self._arrived(g):
+                and self._there_with_robot(g):
             # the person it guides is at the place already, standing in its way: the walk there is done
             r.cancel_goal()
             r.speed_scale, self._holding, self._held_s, self._held_total, self._let_pass_s = 1.0, False, 0.0, 0.0, 0.0

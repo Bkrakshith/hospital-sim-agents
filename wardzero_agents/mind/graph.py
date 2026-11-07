@@ -222,7 +222,7 @@ def build_graph(deps: "MindDeps", checkpointer: Any = None):
         out.append(state["situation"])
         return "\n".join(out)
 
-    sysfixed, schema = system_fixed(inst.role, robot_role), decision_schema(inst.role)
+    sysfixed, schema = system_fixed(inst.role, robot_role), decision_schema(inst.role, robot_role)
 
     async def decide(state: MindState) -> dict:
         user = user_text(state)

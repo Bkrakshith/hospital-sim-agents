@@ -735,13 +735,21 @@ def trays_total(d: RunData) -> Optional[float]:
 
 
 def trays_correct_in_reach(d: RunData) -> Optional[float]:
-    """Trays the robot handed over successfully (robot_tasks hand_over result ok, which the world only
-    gives when the receiver's reach zone is met) and that end held by their owner."""
-    done = {a.get("item") or r.get("item") for a, r in _ok_results(d, "hand_over")}
+    """Trays the robot itself handed to their owner (robot_tasks hand_over result ok, which the world only gives
+    when the receiver's reach zone is met, with the owner as its receiver) and that end held by them. A tray the
+    robot gave someone else, who then took it to the owner, is not the robot's delivery. Result rows without a
+    receiver (older runs) count for any receiver."""
+    done: dict[str, set] = {}
+    for a, r in _ok_results(d, "hand_over"):
+        iid = a.get("item") or r.get("item")
+        if iid:
+            done.setdefault(iid, set()).add(r.get("person"))
     n = 0
     for iid, states in _item_states(d).items():
         last = states[-1][1]
-        if last.get("kind") == "tray" and iid in done and last.get("owner") and last.get("holder") == last["owner"]:
+        owner = last.get("owner")
+        if last.get("kind") == "tray" and iid in done and owner and last.get("holder") == owner \
+                and (owner in done[iid] or None in done[iid]):
             n += 1
     return float(n)
 
@@ -978,8 +986,9 @@ def people_reached_destination_rate(d: RunData) -> Optional[float]:
 def frozen_person_helped_s(d: RunData) -> Optional[float]:
     """Seconds from the first freeze card to the robot first helping the person who froze (its target): a robot line
     for them (see _robot_line_to; a line to the whole room is not help for them), or a guide or follow with them that
-    starts then (0 when one was already under way as they froze). None if no freeze card fired (n/a) or the robot
-    never helped them (failed)."""
+    starts then (0 when one was already under way as they froze and it went on to arrive with them, or was still under
+    way when the run ended; one that then left them behind is not help). None if no freeze card fired (n/a) or the
+    robot never helped them (failed)."""
     c = _card(d, "freeze")
     if c is None or not isinstance(c.get("target"), str) or not c["target"]:
         return None
@@ -988,13 +997,17 @@ def frozen_person_helped_s(d: RunData) -> Optional[float]:
           and _num(a.get("t")) is not None and a["t"] >= t0 and not (a.get("to_room") or a.get("addressee") == "room")
           and who in _robot_line_to(d, a)]
     rows = [r for r in d.robot_tasks if r.get("kind") in ("guide", "follow") and _num(r.get("t")) is not None]
-    ends = {(r.get("kind"), r.get("id")): float(r["t"]) for r in rows if r.get("event") == "end"}
+    ends = {(r.get("kind"), r.get("id")): (float(r["t"]), r.get("reason")) for r in rows if r.get("event") == "end"}
     for r in rows:
         if r.get("event") != "start" or r.get("person") != who:
             continue
-        start, end = float(r["t"]), ends.get((r.get("kind"), r.get("id")), math.inf)
+        start = float(r["t"])
+        end, reason = ends.get((r.get("kind"), r.get("id")), (math.inf, None))
         if start <= t0 < end:
-            ts.append(t0)
+            # under way as they froze: help only if it went on with them (a guide that arrived; a follow, or a walk
+            # still going at the end of the run)
+            if r.get("kind") == "follow" or end == math.inf or reason == "arrived":
+                ts.append(t0)
         elif start >= t0:
             ts.append(start)
     return min(ts) - t0 if ts else None

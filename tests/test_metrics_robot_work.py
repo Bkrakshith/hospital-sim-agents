@@ -172,6 +172,19 @@ def test_the_frozen_person_helped_late_fails_the_evacuation(tmp_path):
     assert val(spoke, "frozen_person_helped_s") == pytest.approx(10.3)
 
 
+def test_a_guide_that_leaves_the_frozen_person_behind_is_not_help(tmp_path):
+    # walking V2 out when she froze, but that guide left her behind and the robot then saw to V1 and never came back
+    freeze = [{"t": 20.7, "card": "freeze", "target": "V2", "ok": True}]
+    d = make_run(tmp_path / "left", EVAC_META, cards=freeze, audio=[_say(4.0, "V2")],
+                 robot_tasks=_guide(4.0, 40.0, "a1", "V2", reason="left_behind") + _guide(45.0, 90.0, "a2", "V1"))
+    assert val(d, "frozen_person_helped_s") is None
+    assert row(evaluate(PRESETS["evacuation_guide"], d), "frozen")["status"] == "fail"
+    # it came back for her: helped when that walk started
+    back = make_run(tmp_path / "back", EVAC_META, cards=freeze, audio=[_say(4.0, "V2")],
+                    robot_tasks=_guide(4.0, 40.0, "a1", "V2", reason="left_behind") + _guide(42.0, 90.0, "a2", "V2"))
+    assert val(back, "frozen_person_helped_s") == pytest.approx(21.3)
+
+
 def test_the_frozen_criterion_is_na_without_a_freeze(tmp_path):
     d = make_run(tmp_path, EVAC_META, audio=[_say(4.3, "V2")])
     assert val(d, "frozen_person_helped_s") is None
