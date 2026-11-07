@@ -299,17 +299,27 @@ class ScriptedRobot:
                 p.aid = m.group(3)
                 return
 
-    def _finished(self, new: list[Result]) -> Optional[Result]:
-        """The result that ends the pending action, if it came."""
+    GUIDE_STAY_S = 21.0  # a guide that stays at the place waits up to 20 s there for the person, then ends
+
+    def _finished(self, new: list[Result], t: float = 0.0) -> Optional[Result]:
+        """The result that ends the pending action, if it came. A guide that stays at the place (return_to_post false)
+        is over only once it has had time to wait there for the person: a walk started before then replaces it, and it
+        ends superseded instead of arrived."""
         p = self.pending
         if p is None:
             return None
+        held = p.extra.get("at_place")
+        if held is not None:
+            return held[1] if t - held[0] >= self.GUIDE_STAY_S else None
         for r in new:
             if p.action == "go_to" and r.what == "walking to a goal" and not r.id.startswith("rb"):
                 return r
             if p.aid is None or r.id != p.aid:
                 continue
             if p.action in ("guide", "approach", "follow"):
+                if p.action == "guide" and p.extra.get("back") is False and r.ok and r.reason == "arrived":
+                    p.extra["at_place"] = (t, r)  # at the place: the guide waits there for the person
+                    return None
                 if r.what == "walking to a goal" or not r.ok or r.reason in ("already_there", "arrived"):
                     return r
             elif r.reason not in ("started", "following"):
@@ -476,7 +486,7 @@ class ScriptedRobot:
         self._ids(s)
         before = self.pending
         new = self._new_results(s)
-        done = self._finished(new)
+        done = self._finished(new, s.t)
         if self.pending is not None and (done is not None or s.t - self.pending.t > self.MAX_BUSY_S):
             self.mem.setdefault("finished", []).append((self.pending, done))
             self.on_finished(s, c, self.pending, done)
@@ -525,7 +535,13 @@ class ScriptedRobot:
         if p.action == "take" and (r is None or not r.ok):
             self.mem.pop("take_then_offer", None)
         if p.action == "guide" and r is not None and not r.ok and p.track:
-            self.mem.setdefault("walk_on", []).append(p.track)  # held up short of the place: send them on
+            tries = self.mem.get(("reguided", p.track), 0)
+            if r.reason == "blocked_by_person" and tries < self.REGUIDE_TRIES and self.mem.get(("guide_to", p.track)):
+                # someone stood in the way: a new guide plans its route round people standing still, so try again
+                self.mem[("reguided", p.track)] = tries + 1
+                self.mem["reguide"] = (p.track, self.mem[("guide_to", p.track)], p.extra.get("back", True), p.t)
+            else:
+                self.mem.setdefault("walk_on", []).append(p.track)  # held up short of the place: send them on
         post = self.mem.get("post")
         if (p.aid and r is not None and r.ok and post is not None and p.extra.get("back", True)
                 and p.action in ("guide", "tell_staff") and math.hypot(s.x - post[0], s.y - post[1]) > self.POST_M):
@@ -543,6 +559,25 @@ class ScriptedRobot:
     # ---- shared skills ------------------------------------------------------------------------------------------------
     def busy(self) -> bool:
         return self.pending is not None
+
+    REGUIDE_TRIES = 1  # a guide held up by someone in the way is started again this many times
+
+    def reguide(self, s: Situation) -> Optional[dict]:
+        """Start again a guide that someone standing in the way held up, when the person is still beside the robot;
+        else send them on (walk_on)."""
+        if not self.mem.get("reguide") or not self.free() or "guide" not in self.allowed:
+            return None
+        tid, place, back, t_start = self.mem.pop("reguide")
+        # they follow behind the robot, out of the camera's view: a guide that was not given up (it waits for someone
+        # who drops back) had them with it; else they must be in view near it now
+        tr = s.track(tid)
+        _, _, _, t_seen, _ = self.last_seen.get(tid, (0.0, 0.0, False, -1e9, ""))
+        if (tr is None and t_seen < t_start - 1.0) or (tr is not None and tr.dist > self.SPEAK_M):
+            self.mem.setdefault("walk_on", []).append(tid)
+            return None
+        return self._start(s, _decision("guide", f"Someone is in the way. Let's go round them, please stay with me "
+                                        f"to {place}.", tid, tid, destination=place, return_to_post=back,
+                                        reason="the walk was held up: trying again"))
 
     def reply(self, s: Situation, c: Card, h: Heard, *, walk_with: bool = True) -> dict:
         """An answer to a line spoken to the robot: walk them where they need to go, fetch staff, the wait, or a
@@ -1048,6 +1083,9 @@ class ScriptedRobot:
         p = self.pending
         if p is not None and p.action in ("guide", "approach") and not p.extra.get("minor"):
             return _decision(reason="guiding")
+        again = self.reguide(s)
+        if again is not None:
+            return again
         if self.mem.get("walk_on") and (p is None or p.extra.get("minor")):
             tid = self.mem["walk_on"][0]
             tr = s.track(tid)
@@ -1220,7 +1258,7 @@ class ScriptedRobot:
             return self.reply(s, c, req[0])
         if req:
             return self.defer(s, req[0])  # busy, or the speaker is out of view: a word now, help once found
-        back = self.walk_on(s) if self.free() else None
+        back = (self.reguide(s) or self.walk_on(s)) if self.free() else None
         back = back or (self.deferred(s, c) if self.free() or self._walked_up_to_asker(s) else None)
         back = back or (self.then_say(s) if not self.busy() else None) or self.look_toward(s)
         if back is not None:

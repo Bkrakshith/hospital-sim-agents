@@ -104,3 +104,91 @@ def test_without_the_unwell_cue_a_cough_from_their_direction_still_counts(staged
     r.mem["noted"] = {"t1"}
     d = _decide(r, m, 70.5)
     assert d["action"] == "press_call" and d["target"] == "t1", d
+
+
+def test_a_guide_that_stays_at_the_place_is_left_to_end_before_the_robot_walks_on():
+    """A guide with return_to_post false waits at the place for the person (up to 20 s) after its goal arrives, and
+    only then ends arrived (what a flow credits). Walking on at once replaced it (ended superseded), so the robot holds
+    its next walk until the guide has had time to end."""
+    from wardzero_agents.llm.fake_robot import _Pending
+    r = ScriptedRobot()
+    job = ("When the alarm sounds, get everyone out by a safe open way. Once the people near you are on their way out, "
+           "check the A&E waiting area and walk anyone still there out.")
+    c = "\n".join(["THE HOSPITAL", "Places you know:", "- Main lobby and reception: Main lobby and reception (lobby)",
+                   "- A&E walk-in reception: A&E walk-in reception + 15-seat waiting (waiting)", "", "YOUR JOB",
+                   "Role: fire evacuation guide", f"Job: {job}",
+                   "Safe exit: the safe way out is the Ambulance handover bay in A&E.", "", "YOUR BODY", "A humanoid."])
+
+    def sit(t, results=()):
+        return "\n".join([f"NOW t={t:.1f} s. You are at (x=0.00, y=0.00), facing 0 degrees, in Ambulance handover bay.",
+                          "You are holding: nothing.", "Heard recently, newest last:", "- 30 s ago, an alarm, 85 dB",
+                          "People your camera sees (anonymous tracks):",
+                          "- t2: 1.5 m, behind you, standing, still, at (x=-1.50, y=0.00)", "Objects in view:",
+                          "- nothing notable", *(["Results of your recent actions:", *results] if results else []),
+                          "Your last events, oldest first:", "- t=40.0s You started guide as rb9 for track t2.",
+                          "Decide what to do now."])
+    actions = ["none", "wait", "go_to", "approach", "guide", "follow", "tell_staff", "press_call"]
+    r.decide(c, sit(39.0), actions)
+    r.mem.update({"alarm": True, "announced": True, "told": {"t2": 10.0}, "guided": {"t2"}})
+    r.pending = _Pending("guide", 40.0, "t2", aid="rb9", extra={"back": False})
+    done = ["- rb9 walking to a goal: ok (arrived)"]
+    d = r.decide(c, sit(70.0, done), actions)
+    assert r.busy() and d["action"] not in ("go_to", "guide", "approach", "follow"), d
+    d = r.decide(c, sit(80.0, done), actions)
+    assert r.busy() and d["action"] not in ("go_to", "guide", "approach", "follow"), d
+    d = r.decide(c, sit(91.5, done), actions)
+    assert d["action"] == "go_to", d
+
+
+def test_a_guide_held_up_by_someone_in_the_way_is_tried_again_round_them():
+    """A guide that ends blocked_by_person short of the place, with the person still beside the robot, is started
+    again (a new guide plans its route round people standing in the way) before the robot falls back to telling them
+    to walk on; a flow credits only a guide that ends arrived."""
+    from wardzero_agents.llm.fake_robot import _Pending
+    r = ScriptedRobot()
+    job = "When the alarm sounds, get everyone out by a safe open way."
+    c = "\n".join(["THE HOSPITAL", "Places you know:", "- Main lobby and reception: Main lobby and reception (lobby)",
+                   "", "YOUR JOB", "Role: fire evacuation guide", f"Job: {job}",
+                   "Safe exit: the safe way out is the Ambulance handover bay in A&E.", "", "YOUR BODY", "A humanoid."])
+
+    def sit(t, results=()):
+        return "\n".join([f"NOW t={t:.1f} s. You are at (x=0.00, y=0.00), facing 0 degrees, in an unnamed space.",
+                          "You are holding: nothing.", "Heard recently, newest last:", "- 30 s ago, an alarm, 85 dB",
+                          "People your camera sees (anonymous tracks):",
+                          "- t3: 1.5 m, behind you, standing, still, at (x=-1.50, y=0.00)",
+                          "- t2: 0.9 m, straight ahead, standing, still, at (x=0.90, y=0.00)", "Objects in view:",
+                          "- nothing notable", *(["Results of your recent actions:", *results] if results else []),
+                          "Your last events, oldest first:", "- t=140.0s You started guide as rb22 for track t3.",
+                          "Decide what to do now."])
+    actions = ["none", "wait", "go_to", "approach", "guide", "follow", "tell_staff", "press_call"]
+    r.decide(c, sit(139.0), actions)
+    r.mem.update({"alarm": True, "announced": True, "told": {"t2": 10.0, "t3": 100.0}, "guided": {"t2", "t3"},
+                  ("guide_to", "t3"): "Ambulance handover bay"})
+    r.pending = _Pending("guide", 140.0, "t3", aid="rb22", extra={"back": False})
+    d = r.decide(c, sit(172.8, ["- rb22 walking to a goal: failed (blocked_by_person)"]), actions)
+    assert d["action"] == "guide" and d["target"] == "t3" and d["destination"] == "Ambulance handover bay", d
+    assert d["return_to_post"] is False
+
+
+def test_the_guide_is_tried_again_with_someone_following_out_of_view_behind():
+    from wardzero_agents.llm.fake_robot import _Pending
+    r = ScriptedRobot()
+    c = "\n".join(["THE HOSPITAL", "Places you know:", "- Main lobby and reception: Main lobby and reception (lobby)",
+                   "", "YOUR JOB", "Role: fire evacuation guide", "Job: When the alarm sounds, get everyone out.",
+                   "Safe exit: the safe way out is the Ambulance handover bay in A&E.", "", "YOUR BODY", "A humanoid."])
+
+    def sit(t, tracks, results=()):
+        return "\n".join([f"NOW t={t:.1f} s. You are at (x=0.00, y=0.00), facing 0 degrees, in an unnamed space.",
+                          "You are holding: nothing.", "Heard recently, newest last:", "- 30 s ago, an alarm, 85 dB",
+                          "People your camera sees (anonymous tracks):", *(tracks or ["- nobody in view"]),
+                          "Objects in view:", "- nothing notable",
+                          *(["Results of your recent actions:", *results] if results else []),
+                          "Your last events, oldest first:", "- t=140.0s You started guide as rb22 for track t3.",
+                          "Decide what to do now."])
+    actions = ["none", "wait", "go_to", "approach", "guide", "follow", "tell_staff", "press_call"]
+    r.decide(c, sit(160.0, ["- t3: 1.8 m, ahead and to your left, standing, moving, at (x=-1.00, y=1.50)"]), actions)
+    r.mem.update({"alarm": True, "announced": True, "told": {"t3": 100.0}, "guided": {"t3"},
+                  ("guide_to", "t3"): "Ambulance handover bay"})
+    r.pending = _Pending("guide", 140.0, "t3", aid="rb22", extra={"back": False})
+    d = r.decide(c, sit(172.8, [], ["- rb22 walking to a goal: failed (blocked_by_person)"]), actions)
+    assert d["action"] == "guide" and d["target"] == "t3", d

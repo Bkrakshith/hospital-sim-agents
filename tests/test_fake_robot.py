@@ -352,7 +352,16 @@ def test_the_reception_guide_sends_someone_on_when_a_walk_with_them_is_held_up_s
                              "- In front of the reception desk: about 8 m, setting off ahead and to your left."],
                      results=["- rb8 guide_start: ok (started)", "- rb8 walking to a goal: failed (blocked_by_person)"],
                      events=["- t=34.8s You started guide as rb8 for track t2."])
-    d = decide(r, c, held)
+    d = decide(r, c, held)  # held up by someone in the way: tried once more (a new guide plans round them)
+    assert d["action"] == "guide" and d["target"] == "t2" and d["destination"] == "Corridor to the outpatient clinics"
+    again = situation(t=60.0, x=6.58, y=6.05, yaw=-147.0, room="Main corridor",
+                      tracks=["- t2: 1.5 m, behind you, standing, still, at (x=7.60, y=6.90)"],
+                      routes=["- Corridor to the outpatient clinics: about 2 m, setting off straight ahead.",
+                              "- In front of the reception desk: about 8 m, setting off ahead and to your left."],
+                      results=["- rb9 guide_start: ok (started)", "- rb9 walking to a goal: failed (blocked_by_person)"],
+                      events=["- t=34.8s You started guide as rb8 for track t2.",
+                              "- t=47.7s You started guide as rb9 for track t2."])
+    d = decide(r, c, again)
     assert d["toward_track"] == "t2" and "walk on" in d["say"] and "Corridor to the outpatient clinics" in d["say"]
 
 
