@@ -107,6 +107,7 @@ class DirectorService:
         self.robot_said_at: dict[str, list[float]] = {}  # person -> when the robot spoke to them
         self.said_to_robot: set[str] = set()
         self.robot_did: list[tuple[float, str, Optional[str], Optional[str]]] = []  # (t, action, person, item)
+        self._guide_room: dict = {}  # guide id -> the room its place is in
         self.fires: dict[str, bool] = {}
         self._flow_started = getattr(loaded, "flow", None) is None  # a storyboard runs on the clock from the start
         self._t_first: Optional[float] = None
@@ -219,10 +220,15 @@ class DirectorService:
         elif stream == "robot_tasks":
             kind, t = rec.get("kind"), _rec_t(rec, self.t)
             if kind == "guide" and rec.get("event") in ("start", "seat"):
-                self._did(t, "guide" if rec["event"] == "start" else "seat", rec.get("person"))
+                if rec["event"] == "start":
+                    self._guide_room[rec.get("id")] = self._room_of(rec.get("x"), rec.get("y"))
+                self._did(t, "guide" if rec["event"] == "start" else "seat", rec.get("person"),
+                          self._guide_room.get(rec.get("id")))
             elif kind == "guide" and rec.get("event") == "end":
                 if rec.get("reason") == "arrived":
-                    self._did(t, "guided", rec.get("person"))  # they reached the place it walked them to
+                    # they reached the place it walked them to; the item slot carries the room of that place (the
+                    # flow's robot_did place filter)
+                    self._did(t, "guided", rec.get("person"), self._guide_room.get(rec.get("id")))
                 self._did(t, "guide_ended", rec.get("person"))  # the walk is over, arrived or not
             elif kind == "follow" and rec.get("event") == "start":
                 self._did(t, "follow", rec.get("person"))
@@ -243,6 +249,16 @@ class DirectorService:
                 if isinstance(o, dict) and o.get("kind") == "fire" and isinstance(o.get("id"), str):
                     size = o.get("size")
                     self.fires[o["id"]] = (o.get("active") is False) or (isinstance(size, (int, float)) and size <= 0)
+
+    def _room_of(self, x, y) -> Optional[str]:
+        """The site room a guide's place point is in (the guide's start row gives the point), or None."""
+        site = getattr(self.loaded, "site", None)
+        if site is None or not isinstance(x, (int, float)) or not isinstance(y, (int, float)):
+            return None
+        try:
+            return site.room_at(float(x), float(y))
+        except Exception:  # noqa: BLE001 - a site without rooms
+            return None
 
     def _did(self, t: float, action: str, person, item=None) -> None:
         self.robot_did.append((t, action, person if isinstance(person, str) and person else None,

@@ -38,6 +38,7 @@ timeline:
   - {id: b1, at: "t+00:10", card: asleep, target: M2}
   - {id: b2, at: "t+05:00", card: call_bell_at, target: M3}
 criteria:
+  - {id: main_task, label: Every step of the main task done, metric: main_task_steps_met, op: ">=", threshold: 1, weight: 4}
   - {id: reach, label: Trays delivered correct and in reach, metric: trays_correct_in_reach, op: ">=", threshold: 2, weight: 4}   # first guess, 2 of 3
   - {id: unanswered, label: Few requests left unanswered, metric: unanswered_requests, op: "<=", threshold: 1, weight: 2}   # first guess
   - {id: contacts, label: No contact with a patient or bed, metric: contacts, op: "==", threshold: 0, weight: 2}

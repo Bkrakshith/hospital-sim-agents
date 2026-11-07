@@ -95,6 +95,7 @@ def holds(c: dict, v: FlowView, t0: Optional[float] = None) -> bool:
         n = sum(1 for t, act, who, item in _did(v)
                 if act == a["action"] and (a.get("about") is None or who == a["about"])
                 and (a.get("item") is None or item == a["item"])
+                and (a.get("place") is None or item == a["place"])
                 and (since is None or (t is not None and t >= since)))
         return n >= int(a.get("at_least", 1))
     if k == "robot_moved":

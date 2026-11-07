@@ -318,9 +318,9 @@ def test_ae_waiting_checks_george_in_and_telling_the_room_the_waits():
 
 
 # ---- reception: a whole guide, and help rather than any words ---------------------------------------------------
-REC_V1 = "The robot walks V1 where they need to go (the walk ends with V1 there)"
+REC_V1 = "The robot walks V1 to the ward entrance (the walk ends with V1 there)"
 REC_DONE = "The robot has finished with V1 (the walk ended, or V1 went on alone)"
-REC_H1 = "The robot walks H1 where they need to go"
+REC_H1 = "The robot walks H1 to the clinic corridor"
 
 
 def _reception(*, robot_xy_at, did_at=lambda t: [], said_at=None, moves=lambda t: {}):
@@ -336,8 +336,8 @@ def test_reception_does_not_move_on_a_second_after_a_guide_starts():
     # the robot greets the lobby at t=0.5, V1 gets lost, and the robot starts walking V1 to the ward entrance from
     # 3.5 m away at t=2; the guide ends at t=40
     robot = lambda t: (1.05, 1.62) if t < 2 else (min(13.2, 1.05 + (t - 2) * 0.4), 1.62)  # noqa: E731
-    v1 = lambda t: {"V1": (robot(t)[0] - 1.5, 1.0)} if t >= 2 else {}  # noqa: E731
-    did = lambda t: [x for x in ((2.0, "guide", "V1", None), (40.0, "guided", "V1", None),  # noqa: E731
+    v1 = lambda t: {"V1": (13.2, 7.25) if t >= 40 else (robot(t)[0] - 1.5, 1.0)} if t >= 2 else {}  # noqa: E731
+    did = lambda t: [x for x in ((2.0, "guide", "V1", None), (40.0, "guided", "V1", "Ward_Entrance"),  # noqa: E731
                                  (40.0, "guide_ended", "V1", None)) if x[0] <= t]
     e, fired = _reception(robot_xy_at=robot, did_at=did, said_at={"V1": [0.5, 2.0]}, moves=v1)
     assert _node(e.tree(), REC_V1)["state"] == "met"
@@ -357,10 +357,16 @@ def test_reception_v1_needs_a_walk_that_ends_with_her_there():
     assert _node(e.tree(), REC_DONE)["state"] == "met"
     # a walk that ended with her at the ward entrance
     e, fired = _reception(robot_xy_at=lambda t: (-0.4, -1.0), said_at={"V1": [0.5, 3.0]},
-                          did_at=lambda t: [x for x in ((4.0, "guide", "V1", None), (30.0, "guided", "V1", None))
+                          did_at=lambda t: [x for x in ((4.0, "guide", "V1", None), (30.0, "guided", "V1", "Ward_Entrance"))
                                             if x[0] <= t],
-                          moves=lambda t: {"V1": (8.0, 6.0)} if t >= 20 else {})
+                          moves=lambda t: {"V1": (13.2, 7.25)} if t >= 20 else {})
     assert _node(e.tree(), REC_V1)["state"] == "met"
+    # a walk that arrived somewhere else (the toilets): not where she needs to go
+    e, fired = _reception(robot_xy_at=lambda t: (-0.4, -1.0), said_at={"V1": [0.5, 3.0]},
+                          did_at=lambda t: [x for x in ((4.0, "guide", "V1", None), (30.0, "guided", "V1", "Lobby"))
+                                            if x[0] <= t],
+                          moves=lambda t: {"V1": (-11.5, 1.2)} if t >= 20 else {})
+    assert _node(e.tree(), REC_V1)["state"] == "timed_out"
 
 
 def test_reception_h1_needs_a_guide_and_no_lost_visitor_card():
@@ -373,7 +379,8 @@ def test_reception_h1_needs_a_guide_and_no_lost_visitor_card():
     assert _node(e.tree(), REC_H1)["state"] == "timed_out"  # a walk that only started
     e, _ = _reception(robot_xy_at=lambda t: (-1.5, -2.0), said_at={"V1": [0.5]},
                       did_at=lambda t: [x for x in ((h1_fired + 5, "guide", "H1", None),
-                                                    (h1_fired + 30, "guided", "H1", None)) if x[0] <= t])
+                                                    (h1_fired + 30, "guided", "H1", "Main_Corridor")) if x[0] <= t],
+                      moves=lambda t: {"H1": (5.6, 5.4)} if t >= h1_fired + 30 else {})
     assert _node(e.tree(), REC_H1)["state"] == "met"
 
 
@@ -391,9 +398,9 @@ def test_evacuation_windows_leave_room_for_one_robot_guiding_in_turn():
     def people(t):
         return {pid: st(pid, *((-20.0, 4.5) if t >= gone[pid] else (c.x, c.y)),
                         "walking" if pid == "V2" and t > 1 else "standing") for pid, c in p.items()}
-    did = lambda t: [x for x in ((2.0, "guide", "V2", None), (60.0, "guided", "V2", None),  # noqa: E731
-                                 (150.0, "guide", "V1", None), (200.0, "guided", "V1", None),
-                                 (300.0, "guide", "P1", None), (330.0, "guided", "P1", None)) if x[0] <= t]
+    did = lambda t: [x for x in ((2.0, "guide", "V2", None), (60.0, "guided", "V2", "AE_Handover"),  # noqa: E731
+                                 (150.0, "guide", "V1", None), (200.0, "guided", "V1", "AE_Handover"),
+                                 (300.0, "guide", "P1", None), (330.0, "guided", "P1", "AE_Handover")) if x[0] <= t]
     e, _ = _run("evacuation_guide", statuses=people,
                 view_kw=lambda t: {"robot_did": did(t), **_said({"V2": [0.5, 3.0], "V1": [0.5]}, t)})
     assert _node(e.tree(), EV_LOBBY)["state"] == "met"

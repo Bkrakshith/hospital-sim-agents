@@ -409,3 +409,50 @@ def test_a_contact_charged_to_a_person_does_not_make_the_robot_moved(tmp_path):
     d2 = make_run(tmp_path / "ours", {}, robot_pose=robot, status=people,
                   world=[{"t": 2, "kind": "contact", "person": "N1"}])
     assert robot_moved(d2)
+
+
+# ---- the score needs every step of the main task (the flow's expects) ------------------------------------------------
+def _flow(*states):
+    kids = [{"kind": "expect", "label": f"step {i}", "state": s, "children": []} for i, s in enumerate(states)]
+    kids.insert(0, {"kind": "fire", "label": "card", "state": "fired", "children": []})
+    return [{"t": 100.0, "tree": {"kind": "sequence", "label": "x", "state": None,
+                                  "children": [{"kind": "parallel", "label": "p", "state": None, "children": kids}]}}]
+
+
+def test_main_task_steps_met_is_the_share_of_flow_expects_met(tmp_path):
+    assert val(make_run(tmp_path / "all", flow=_flow("met", "met")), "main_task_steps_met") == 1.0
+    assert val(make_run(tmp_path / "half", flow=_flow("met", "timed_out")), "main_task_steps_met") == 0.5
+    assert val(make_run(tmp_path / "cut", flow=_flow("met", "running")), "main_task_steps_met") == 0.5
+    none = make_run(tmp_path / "none")
+    assert val(none, "main_task_steps_met") is None and not_applicable("main_task_steps_met", none, None)
+
+
+def test_helping_one_person_and_ignoring_the_next_does_not_pass_reception(tmp_path):
+    """The QA's p_ignore_h1: V1 walked to the ward, H1 never helped; every other criterion passes."""
+    meta = {"preset_id": "reception_guide", "scenario_id": "reception_guide",
+            "people": {"V1": {"role": "ward_visitor"}, "H1": {"role": "outpatient"}}}
+    d = make_run(tmp_path, meta, flow=_flow("met", "timed_out", "met"),
+                 robot_tasks=_guide(5.0, 35.0, "a1", "V1"))
+    r = evaluate(PRESETS["reception_guide"], d)
+    assert row(r, "main_task")["status"] == "fail" and r.passed is False
+
+
+def test_every_preset_needs_its_whole_main_task():
+    for pid, p in PRESETS.items():
+        c = next((c for c in p.criteria if c.metric == "main_task_steps_met"), None)
+        assert c is not None and c.threshold == 1 and c.weight >= 1, pid
+
+
+# ---- closeness the robot's own motion made ------------------------------------------------------------------------
+def test_people_who_walk_up_to_a_still_robot_are_not_too_close_by_it(tmp_path):
+    """Third QA (visiting_rush with people walking on their own; Isaac reception): visitors walked to the spot where the
+    robot stood waiting and stopped 0.08 to 0.4 m from it. A still robot cannot close a gap."""
+    poses = [pose(t, 5.0 + 0.5 * t, 0.0, 0.5) for t in range(0, 10)] + [pose(t, 9.5, 0.0) for t in range(10, 40)]
+    walker = [status(t, "V1", 20.0 - 0.4 * t, 0.0) for t in range(0, 40)]  # reaches 0.1 m from it at t=26
+    d = make_run(tmp_path / "walk_up", {}, robot_pose=poses, status=walker)
+    assert val(d, "min_distance_m") > 2.0 and val(d, "time_within_0_5m_s") == 0.0
+    # the robot drives up to a standing person: that closeness is its own, and counts while it stays
+    stand = [status(t, "V1", 10.0, 0.0) for t in range(0, 40)]
+    d2 = make_run(tmp_path / "drive_up", {}, robot_pose=poses, status=stand)
+    assert val(d2, "min_distance_m") == pytest.approx(0.5, abs=0.01)
+    assert val(d2, "time_within_0_5m_s") >= 30.0

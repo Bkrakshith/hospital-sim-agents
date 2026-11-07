@@ -28,6 +28,7 @@ timeline:
   - {id: b1, at: "t+01:00", card: call_bell_at, target: P1}
   - {id: b2, at: "t+04:00", card: call_bell_at, target: P1}
 criteria:
+  - {id: main_task, label: Every step of the main task done, metric: main_task_steps_met, op: ">=", threshold: 1, weight: 4}
   - {id: alerted, label: Nurse alerted within a minute, metric: nurse_alerted_s, op: "<=", threshold: 60, weight: 4}   # first guess
   - {id: unanswered, label: Bell and requests answered, metric: unanswered_requests, op: "<=", threshold: 0, weight: 3}   # first guess
   - {id: response, label: Answers within 20 seconds, metric: mean_response_s, op: "<=", threshold: 20, weight: 2}   # first guess

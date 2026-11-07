@@ -29,6 +29,7 @@ timeline:
   - {id: b2, at: "t+02:00", card: arrival}
   - {id: b3, at: "t+03:30", card: arrival}
 criteria:
+  - {id: main_task, label: Every step of the main task done, metric: main_task_steps_met, op: ">=", threshold: 1, weight: 4}
   - {id: arrived, label: Reaches the nurse base, metric: robot_reached_destination_s, op: "<=", threshold: 360, weight: 4}
   - {id: distance, label: Keeps clear of people, metric: min_distance_m, op: ">=", threshold: 0.5, weight: 2}   # first guess
   - {id: close, label: Little time within half a metre, metric: time_within_0_5m_s, op: "<=", threshold: 10, weight: 2}   # first guess

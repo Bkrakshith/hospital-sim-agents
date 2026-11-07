@@ -487,14 +487,14 @@ def test_a_check_in_in_the_same_turn_as_the_greeting_counts(tmp_path):
     assert node["state"] == "met"
 
 
-def _reception(robot_xy_at, robot_did_at=lambda t: [], until=200.0):
+def _reception(robot_xy_at, robot_did_at=lambda t: [], until=200.0, moves=lambda t: {}):
     """The reception flow: the robot greets V1 at t=4.8 and speaks to V1 again at t=10, after V1 gets lost."""
     p = PRESETS["reception_guide"]
     flow = load_flow(flows_dir(CONFIG) / "reception_guide.yaml")
-    people = {c.id: st(c.id, c.x, c.y) for c in p.characters}
     e = FlowEngine(flow, DECK)
     fired, t = {}, 0.0
     while t <= until:
+        people = {c.id: st(c.id, *moves(t).get(c.id, (c.x, c.y))) for c in p.characters}
         said = {"V1": [x for x in (4.8, 10.0) if x <= t]}
         said = {k: v for k, v in said.items() if v}
         for f in e.tick(FlowView(t=t, statuses=people, robot_xy=robot_xy_at(t), present=set(people), cast=set(people),
@@ -510,11 +510,12 @@ def test_reception_waits_until_the_robot_has_finished_with_v1():
     # it talks to V1 until t=70, then walks off; V1 stays in the lobby: the wait runs to its limit
     e, fired = _reception(lambda t: v1 if t < 70 else (5.0, 5.0), until=300.0)
     assert fired["lost_visitorV1"] == 5.0
-    help_t = _node_by_label(e.tree(), "The robot walks V1 where they need to go (the walk ends with V1 there)")["t"]
+    help_t = _node_by_label(e.tree(), "The robot walks V1 to the ward entrance (the walk ends with V1 there)")["t"]
     assert fired["hard_of_hearingH1"] == pytest.approx(help_t + 120.0, abs=0.6)
     # the end of a guide ends the wait, even with the robot still beside V1
-    e, fired = _reception(lambda t: v1, robot_did_at=lambda t: [(8.0, "guide", "V1")] +
-                          ([(40.0, "guided", "V1"), (40.0, "guide_ended", "V1")] if t >= 40 else []))
+    e, fired = _reception(lambda t: v1, moves=lambda t: {"V1": (13.2, 7.25)} if t >= 40 else {},
+                          robot_did_at=lambda t: [(8.0, "guide", "V1")] +
+                          ([(40.0, "guided", "V1", "Ward_Entrance"), (40.0, "guide_ended", "V1")] if t >= 40 else []))
     assert fired["hard_of_hearingH1"] == 40.0
 
 
@@ -547,8 +548,8 @@ def test_evacuation_credits_only_people_the_robot_got_out():
     assert _node_by_label(e.tree(), LOBBY)["state"] == "timed_out"
     assert _node_by_label(e.tree(), P1_OUT)["state"] == "timed_out"
     # after the alarm the robot walks V1, V2 and P1 out, and each walk ends with them there
-    did = lambda t: [x for x in ((20.0, "guide", "V1"), (30.0, "guided", "V1"), (31.0, "guide", "V2"),  # noqa: E731
-                                 (45.0, "guided", "V2"), (46.0, "guide", "P1"), (60.0, "guided", "P1")) if x[0] <= t]
+    did = lambda t: [x for x in ((20.0, "guide", "V1"), (30.0, "guided", "V1", "AE_Handover"), (31.0, "guide", "V2"),  # noqa: E731
+                                 (45.0, "guided", "V2", "AE_Handover"), (46.0, "guide", "P1"), (60.0, "guided", "P1", "AE_Handover")) if x[0] <= t]
     e = _evacuation_outcomes(moves=lambda t: {k: v for k, v in out.items() if t >= (60 if k == "P1" else 30)},
                              robot_did_at=did, said_at={"V1": [4.8], "V2": [25.0]})
     assert _node_by_label(e.tree(), LOBBY)["state"] == "met"
@@ -573,8 +574,8 @@ def test_evacuation_credits_only_people_the_robot_got_out():
 def test_evacuation_walks_that_end_inside_the_room_are_not_getting_people_out():
     """Guides with V1, V2 and P1 that all end arrived, but nobody has left their room (the robot walked V1 and V2 to
     the reception desk in the lobby): the evacuation expects are not met."""
-    did = lambda t: [x for x in ((20.0, "guide", "V1"), (30.0, "guided", "V1"), (31.0, "guide", "V2"),
-                                 (45.0, "guided", "V2"), (46.0, "guide", "P1"), (60.0, "guided", "P1")) if x[0] <= t]
+    did = lambda t: [x for x in ((20.0, "guide", "V1"), (30.0, "guided", "V1", "Lobby"), (31.0, "guide", "V2"),
+                                 (45.0, "guided", "V2", "Lobby"), (46.0, "guide", "P1"), (60.0, "guided", "P1", "AE_Waiting")) if x[0] <= t]
     e = _evacuation_outcomes(moves=lambda t: {}, robot_did_at=did, said_at={"V1": [4.8], "V2": [25.0]})
     assert _node_by_label(e.tree(), LOBBY)["state"] != "met"
     assert _node_by_label(e.tree(), P1_OUT)["state"] != "met"

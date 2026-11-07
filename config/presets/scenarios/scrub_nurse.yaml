@@ -41,6 +41,7 @@ timeline:
   - {id: b1, at: "t+00:30", card: instrument_request_batch, target: S1, params: {instruments: "scalpel, forceps, retractor"}}
   - {id: b2, at: "t+04:00", card: instrument_request_batch, target: S1, params: {instruments: "suture scissors, needle holder"}}
 criteria:
+  - {id: main_task, label: Every step of the main task done, metric: main_task_steps_met, op: ">=", threshold: 1, weight: 4}
   - {id: correct, label: Passes the instrument that was asked for, metric: instruments_correct_rate, op: ">=", threshold: 0.9, weight: 3}   # first guess
   - {id: latency, label: Instrument in hand within 3 seconds, metric: instrument_mean_latency_s, op: "<=", threshold: 3, weight: 3}   # first guess
   - {id: unanswered, label: No request ignored, metric: unanswered_requests, op: "<=", threshold: 0, weight: 2}   # first guess

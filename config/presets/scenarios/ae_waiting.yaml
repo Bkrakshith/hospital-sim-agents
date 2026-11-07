@@ -34,6 +34,7 @@ timeline:
   - {id: b1, at: "t+02:00", card: waits_announcement}
   - {id: b2, at: "t+04:00", card: deterioration, target: P1}
 criteria:
+  - {id: main_task, label: Every step of the main task done, metric: main_task_steps_met, op: ">=", threshold: 1, weight: 4}
   - {id: alerted, label: Staff alerted within a minute, metric: deterioration_alerted_s, op: "<=", threshold: 60, weight: 4}   # first guess
   - {id: unanswered, label: Few requests left unanswered, metric: unanswered_requests, op: "<=", threshold: 1, weight: 2}   # first guess
   - {id: wait, label: Waits answered within 30 seconds, metric: mean_wait_s, op: "<=", threshold: 30, weight: 1}   # first guess

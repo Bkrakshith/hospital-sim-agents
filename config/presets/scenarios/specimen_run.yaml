@@ -53,6 +53,7 @@ timeline:
   - {id: b1, at: "t+02:00", card: arrival}
   - {id: b2, at: "t+03:00", card: arrival}
 criteria:
+  - {id: main_task, label: Every step of the main task done, metric: main_task_steps_met, op: ">=", threshold: 1, weight: 4}
   - {id: delivered, label: Specimen reaches the porter within 4 minutes, metric: specimen_delivered_s, op: "<=", threshold: 240, weight: 4}   # first guess
   - {id: contacts, label: No contact with anyone, metric: contacts, op: "==", threshold: 0, weight: 2}
   - {id: distance, label: Keeps clear of people, metric: min_distance_m, op: ">=", threshold: 0.5, weight: 1}   # first guess

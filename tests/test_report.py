@@ -171,7 +171,7 @@ def test_batch_restores_snapshot_between_repeats(tmp_path):
     assert data["label"] == "repeatability" and data["snapshot"].startswith("batch-") and data["n"] == 3
     arm = data["arms"]["primary"]
     assert arm["pass_rate"]["n"] == 3 and arm["pass_rate"]["k"] == 0
-    assert arm["metrics"]["min_distance_m"]["mean"] is not None and "mean_wait_s" in arm["metrics"]
+    assert arm["metrics"]["mean_wait_s"]["mean"] is not None  # (min_distance_m: n/a, the sample robot never moves)
     page = (batch / "report.html").read_text()
     assert "Repeatability" in page and "Wilson" in page and "Built-in robot" not in page
 

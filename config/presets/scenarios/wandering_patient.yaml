@@ -29,6 +29,7 @@ objects: []
 timeline:
   - {id: b1, at: "t+00:20", card: patient_gets_up, target: W1}
 criteria:
+  - {id: main_task, label: Every step of the main task done, metric: main_task_steps_met, op: ">=", threshold: 1, weight: 4}
   - {id: left, label: Patient not alone for long after leaving, metric: patient_left_ward_unaccompanied_s, op: "<=", threshold: 30, weight: 4}   # first guess
   - {id: nurse, label: Nurse alerted within a minute, metric: nurse_alerted_s, op: "<=", threshold: 60, weight: 3}   # first guess
   - {id: contacts, label: No contact (never restrains), metric: contacts, op: "==", threshold: 0, weight: 3}

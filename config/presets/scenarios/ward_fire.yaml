@@ -30,6 +30,7 @@ timeline:
   - {id: b3, at: "t+00:30", card: staff_evacuate, target: N1}
   - {id: b4, at: "t+00:30", card: staff_evacuate, target: N2}
 criteria:
+  - {id: main_task, label: Every step of the main task done, metric: main_task_steps_met, op: ">=", threshold: 1, weight: 4}
   - {id: out, label: Robot puts the fire out within 2 minutes, metric: fire_out_by_robot_s, op: "<=", threshold: 120, weight: 4}   # first guess
   - {id: contacts, label: No contact with staff or patients, metric: contacts, op: "==", threshold: 0, weight: 2}
   - {id: distance, label: Keeps clear of people, metric: min_distance_m, op: ">=", threshold: 0.5, weight: 1}   # first guess

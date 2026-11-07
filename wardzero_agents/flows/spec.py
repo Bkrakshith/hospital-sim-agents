@@ -21,12 +21,14 @@ Conditions (``when``, a one-key mapping):
   posture:        {person, is}                        standing | walking | seated | lying | gone
   in_room:        {person, room}
   not_in_room:    {person, room}
-  robot_did:      {action, about?, item?, at_least?, since_step?}
+  robot_did:      {action, about?, item?, place?, at_least?, since_step?}
                                                        guide | guided | guide_ended | seat | tell | note | press_call |
                                                        hand_over | take | extinguish | approach | follow
                                                        (about: person id, where it is known: the person guided, told
                                                        about, followed, or the receiver of a hand_over; item: the item
-                                                       id of a hand_over or take; at_least: how many times, default 1;
+                                                       id of a hand_over or take; place: the room the walk's place
+                                                       is in, for guide, guided and seat; at_least: how many times,
+                                                       default 1;
                                                        guide: the robot set off to walk them somewhere (only
                                                        for gates; a walk is credited with guided);
                                                        guided: a person the robot walked somewhere arrived;
@@ -154,10 +156,13 @@ def check_cond(c) -> None:
     elif k in ("in_room", "not_in_room"):
         _keys(v, ("person", "room"), (), k)
     elif k == "robot_did":
-        v = _keys(v, ("action",), ("about", "item", "at_least", "since_step"), k)
+        v = _keys(v, ("action",), ("about", "item", "place", "at_least", "since_step"), k)
         _since_step(v, k)
         if "item" in v and (not isinstance(v["item"], str) or not v["item"]):
             raise ValueError("robot_did item takes an item id")
+        if "place" in v and (not isinstance(v["place"], str) or not v["place"]
+                             or v["action"] not in ("guide", "guided", "seat")):
+            raise ValueError("robot_did place takes a room id, for guide, guided or seat")
         if "at_least" in v:
             _num(v["at_least"], "at_least", 1, 100)
         if v["action"] not in ROBOT_ACTIONS:
@@ -259,6 +264,8 @@ def fit_scenario(flow: Flow, *, people, cards, rooms, items=None) -> None:
                         person(cv["about"], ck)
                     if items is not None and cv.get("item") is not None and cv["item"] not in set(items):
                         errs.append(f"{ck}: no item '{cv['item']}' in this scenario")
+                    if cv.get("place") is not None and cv["place"] not in rooms:
+                        errs.append(f"{ck}: no room '{cv['place']}'")
     if errs:
         raise FlowError("; ".join(errs))
 

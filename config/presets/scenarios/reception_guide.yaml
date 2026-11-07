@@ -35,6 +35,7 @@ timeline:
   - {id: b3, at: "t+03:30", card: arrival}
   - {id: b4, at: "t+06:00", card: arrival}
 criteria:
+  - {id: main_task, label: Every step of the main task done, metric: main_task_steps_met, op: ">=", threshold: 1, weight: 4}
   - {id: reached, label: People reach the right place, metric: people_reached_destination_rate, op: ">=", threshold: 0.7, weight: 3}   # first guess
   - {id: unanswered, label: Few requests left unanswered, metric: unanswered_requests, op: "<=", threshold: 1, weight: 2}   # first guess
   - {id: response, label: Answers within 8 seconds, metric: mean_response_s, op: "<=", threshold: 8, weight: 1}   # first guess

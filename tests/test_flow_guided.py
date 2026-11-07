@@ -75,7 +75,7 @@ def _expects(steps) -> list:
 
 
 # ---- reception: H1's walk, in process through the director ----------------------------------------------------
-REC_H1 = "The robot walks H1 where they need to go"
+REC_H1 = "The robot walks H1 to the clinic corridor"
 REC_V1_PREFIX = "The robot walks V1"
 
 
@@ -93,21 +93,25 @@ def _reception_to_h1(tmp_path, guide_end: str):
     while t < 3.0:
         d.tick(t)
         t += 0.5
-    d.ingest("robot_tasks", {"kind": "guide", "event": "start", "id": "a1", "person": "V1", "place": "ward_entrance",
+    d.ingest("robot_tasks", {"kind": "guide", "event": "start", "id": "a1", "person": "V1", "place": "ward_entrance", "x": 13.2, "y": 7.25,
                              "t": 3.0})
     d.ingest("robot_tasks", {"kind": "guide", "event": "end", "id": "a1", "person": "V1", "reason": "arrived",
                              "t": 20.0})
+    _status(d, "V1", 13.2, 7.25, 20.0)  # at the ward entrance
     h1_fired = None
     while t < 400.0:
         d.tick(t)
         if h1_fired is None and any(ev["text"].startswith("hard_of_hearing fired") for ev in d.events):
             h1_fired = t
-            d.ingest("robot_tasks", {"kind": "guide", "event": "start", "id": "a2", "person": "H1",
+            d.ingest("robot_tasks", {"kind": "guide", "event": "start", "id": "a2", "person": "H1", "x": 5.6, "y": 5.4,
                                      "place": "clinic_corridor", "t": t + 2.0})
             d.ingest("robot_tasks", {"kind": "guide", "event": "end", "id": "a2", "person": "H1",
                                      "reason": guide_end, "t": t + 30.0})
-            # H1 walks on to the clinics on his own after the robot gave up: not the robot's work
-            _status(d, "H1", 30.0, 4.0, t + 40.0, "walking")
+            if guide_end == "arrived":
+                _status(d, "H1", 5.6, 5.4, t + 30.0)  # in the clinic corridor with the robot
+            if guide_end != "arrived":
+                # H1 walks on to the clinics on his own after the robot gave up: not the robot's work
+                _status(d, "H1", 30.0, 4.0, t + 40.0, "walking")
         t += 0.5
     assert h1_fired is not None, "the hard_of_hearing card never fired"
     return d.engine.tree()
@@ -136,9 +140,10 @@ def test_v1_is_credited_only_for_a_walk_that_arrived(tmp_path):
             d.tick(t)
             if t == 3.0:
                 d.ingest("robot_tasks", {"kind": "guide", "event": "start", "id": "a1", "person": "V1",
-                                         "place": "ward_entrance", "t": 3.0})
+                                         "place": "ward_entrance", "x": 13.2, "y": 7.25, "t": 3.0})
                 d.ingest("robot_tasks", {"kind": "guide", "event": "end", "id": "a1", "person": "V1",
                                          "reason": end, "t": 12.0})
+                _status(d, "V1", 13.2, 7.25, 12.0)  # the walk's end at the ward entrance
                 d.ingest("audio", {"source_kind": "robot", "addressee": "V1", "text": "This way",
                                    "heard_by": ["V1"], "t": 3.0})
             if t == 30.0:  # V1 walks off to the wards on her own once the robot stopped
@@ -204,3 +209,28 @@ def test_night_call_bell_nurse_beside_a_robot_at_the_bed_stops_the_second_ring(t
         return fired
     assert run(1.75).count("ring_bell") == 1
     assert run(3.0).count("ring_bell") == 2  # she never came to the bed: P1 rings again
+
+
+def test_a_guide_to_the_wrong_place_does_not_credit_walking_v1(tmp_path):
+    """Third QA: V1 (needs the ward) walked to the toilets, or to the main entrance in the lobby; the walk arrived,
+    and the flow credited it as 'where they need to go'. The director records the room of the guide's place."""
+    for place, xy, want in (("toilets", (-11.5, 1.2), "timed_out"), ("entrance", (-1.05, -1.84), "timed_out"),
+                            ("Ward entrance", (13.2, 7.25), "met")):
+        d, loaded = _director(tmp_path / place.replace(" ", "_"), "reception_guide")
+        where = {c.id: (c.x, c.y) for c in PRESETS["reception_guide"].characters}
+        for pid, (x, y) in where.items():
+            _status(d, pid, x, y, 0.0)
+        d.robot_xy = (where["V1"][0] + 1.0, where["V1"][1])
+        d.ingest("audio", {"source_kind": "robot", "addressee": "V1", "text": "Hello", "heard_by": ["V1"], "t": 0.5})
+        t = 0.5
+        while t < 150.0:
+            d.tick(t)
+            if t == 3.0:
+                d.ingest("robot_tasks", {"kind": "guide", "event": "start", "id": "a1", "person": "V1",
+                                         "place": place, "x": xy[0], "y": xy[1], "t": 3.0})
+                d.ingest("robot_tasks", {"kind": "guide", "event": "end", "id": "a1", "person": "V1",
+                                         "reason": "arrived", "t": 12.0})
+            t += 0.5
+        v1 = next(e for e in _expects(yaml.safe_load((flows_dir(CONFIG) / "reception_guide.yaml").read_text())["steps"])
+                  if e["label"].startswith(REC_V1_PREFIX))
+        assert _node(d.engine.tree(), v1["label"])["state"] == want, place

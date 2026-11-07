@@ -173,13 +173,13 @@ flowchart TD
   n1 --> n2
   n3[["V1 gets lost [lost_visitor]"]]
   n2 --> n3
-  n4(["Expect: The robot walks V1 where they need to go (the walk ends with V1 there) (up to 90 s)"])
+  n4(["Expect: The robot walks V1 to the ward entrance (the walk ends with V1 there) (up to 90 s)"])
   n3 --> n4
   n5["Wait until: The robot has finished with V1 (the walk ended, or V1 went on alone) (up to 120 s)"]
   n4 --> n5
   n6[["H1 is hard of hearing [hard_of_hearing]"]]
   n5 --> n6
-  n7(["Expect: The robot walks H1 where they need to go (up to 90 s)"])
+  n7(["Expect: The robot walks H1 to the clinic corridor (up to 90 s)"])
   n6 --> n7
   n8[["Someone new arrives [arrival]"]]
   n7 --> n8

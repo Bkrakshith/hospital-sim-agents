@@ -24,7 +24,7 @@ from .metric_names import METRIC_NAMES
 
 ROBOT_NAMES = frozenset({"robot", "g1"})
 STREAM_NAMES = ("status", "robot_pose", "says", "audio", "robot_tasks", "world", "tokens", "objects",
-                "cards", "decisions", "debrief", "trust", "robot_walk")
+                "cards", "decisions", "debrief", "trust", "robot_walk", "flow")
 
 NEAR_M = 1.5  # "near people" for the speed metric
 CLOSE_M = 0.5  # "too close" for time_within_0_5m_s
@@ -443,19 +443,58 @@ def robot_moved(d: RunData) -> bool:
 
 
 # ---- common metrics -----------------------------------------------------------------------------
+def _moving(prev: Optional[dict], p: dict) -> bool:
+    """The robot moved between two pose samples (its own motion: speed or displacement above ROBOT_MOVING_MPS)."""
+    if float(_num(p.get("speed")) or 0.0) > ROBOT_MOVING_MPS:
+        return True
+    if prev is None:
+        return False
+    dt = max(p["t"] - prev["t"], 1e-6)
+    return math.hypot(p["x"] - prev["x"], p["y"] - prev["y"]) / dt > ROBOT_MOVING_MPS
+
+
+def _robot_closeness(d: RunData) -> list[tuple[float, float, list[float]]]:
+    """(t, duration, distances) per robot_pose sample, counting only closeness the robot's own motion made: a person's
+    distance counts at a sample where the robot was moving, and stays counted while they stay as close as they were
+    then. A person who walked up to a robot standing still (visitors walking to the spot where it waits, someone
+    stepping past it) is not counted: a still robot cannot close a gap."""
+    out, prev = [], None
+    held: dict[str, float] = {}  # person -> the distance the robot's motion brought them to
+    for t, gap, p, _ in _samples(d):
+        moving = _moving(prev, p)
+        dists = []
+        for person in d.tracks():
+            r = d.person_at(person, t)
+            if r is None:
+                held.pop(person, None)
+                continue
+            x = math.hypot(r["x"] - p["x"], r["y"] - p["y"])
+            if moving:
+                held[person] = x
+                dists.append(x)
+            elif person in held and x >= held[person] - 0.05:
+                dists.append(x)  # as close as the robot brought them, no closer
+            else:
+                held.pop(person, None)
+        out.append((t, gap, dists))
+        prev = p
+    return out
+
+
 def min_distance_m(d: RunData) -> Optional[float]:
-    """Smallest centre-to-centre distance (m) between the robot and any present non-static person,
-    over all robot_pose samples (status rows are matched to the latest one at or before each sample).
-    None without robot_pose samples or without a person ever present."""
-    ds = [x for *_, dists in _samples(d) for x in dists]
+    """Smallest centre-to-centre distance (m) between the robot and any present non-static person that the robot's own
+    motion made (see _robot_closeness), over all robot_pose samples (status rows are matched to the latest one at or
+    before each sample). None without robot_pose samples or without a person ever counted."""
+    ds = [x for *_, dists in _robot_closeness(d) for x in dists]
     return min(ds) if ds else None
 
 
 def time_within_0_5m_s(d: RunData) -> Optional[float]:
-    """Seconds with some present non-static person within 0.5 m of the robot: each robot_pose sample
-    counts the gap to the next sample (at most 1 s; the last sample counts 1 s). None without samples."""
-    s = _samples(d)
-    return sum(gap for _, gap, _, dists in s if dists and min(dists) <= CLOSE_M) if s else None
+    """Seconds with some present non-static person within 0.5 m of the robot by its own motion (see
+    _robot_closeness): each robot_pose sample counts the gap to the next sample (at most 1 s; the last sample counts
+    1 s). None without samples."""
+    s = _robot_closeness(d)
+    return sum(gap for _, gap, dists in s if dists and min(dists) <= CLOSE_M) if s else None
 
 
 PUSH_WINDOW_S = 0.5  # a robot pose sample this close in time to a contact a person caused is theirs, not the robot's
@@ -983,6 +1022,29 @@ def people_reached_destination_rate(d: RunData) -> Optional[float]:
     return sum(1 for v in verdicts.values() if v) / len(verdicts)
 
 
+def _flow_expects(node: dict):
+    kids = node.get("children") or []
+    if not kids and node.get("kind") == "expect":
+        yield node
+    for c in kids:
+        if isinstance(c, dict):
+            yield from _flow_expects(c)
+
+
+def main_task_steps_met(d: RunData) -> Optional[float]:
+    """The share of the scenario flow's expect steps (each a step of the robot's main task: walk V1 there, answer
+    the bell, get P1 out) met by the end of the run, from the last flow.jsonl tree. A step still pending when the run
+    ended, or timed out, is not met. This ties the score to the whole job: a robot that helps one person and ignores
+    the next, or gets one of three people out, does not pass. None (n/a) for a run with no flow or no expect steps."""
+    rows = [r for r in d.streams.get("flow", []) if isinstance(r.get("tree"), dict)]
+    if not rows:
+        return None
+    steps = list(_flow_expects(rows[-1]["tree"]))
+    if not steps:
+        return None
+    return sum(1 for e in steps if e.get("state") == "met") / len(steps)
+
+
 def frozen_person_helped_s(d: RunData) -> Optional[float]:
     """Seconds from the first freeze card to the robot first helping the person who froze (its target): a robot line
     for them (see _robot_line_to; a line to the whole room is not help for them), or a guide or follow with them that
@@ -1225,7 +1287,7 @@ METRICS: dict[str, Callable[[RunData], Optional[float]]] = {
         specimen_delivered_s, patient_left_ward_unaccompanied_s, deterioration_alerted_s, mean_wait_s,
         mood_change, rating_likeability, rating_safety, rating_competence, trust_item_mean, trust_delta_mean,
         people_in_furniture_s, robot_near_furniture_s, robot_reached_destination_s, fire_out_by_robot_s,
-        frozen_person_helped_s)
+        frozen_person_helped_s, main_task_steps_met)
 }
 assert set(METRICS) == set(METRIC_NAMES)
 
@@ -1290,7 +1352,7 @@ NOT_APPLICABLE: dict[str, Callable[[RunData, Optional[float]], bool]] = {
     "instruments_correct_rate": _when_none, "instrument_mean_latency_s": _no_instrument_asked,
     "fire_out_s": _no_fire, "fire_out_by_robot_s": _no_fire,
     "nurse_alerted_s": _no_alert_event, "deterioration_alerted_s": _no_deterioration,
-    "frozen_person_helped_s": _no_freeze,
+    "frozen_person_helped_s": _no_freeze, "main_task_steps_met": _when_none,
     "specimen_delivered_s": _no_specimen, "robot_reached_destination_s": _no_destination,
 }
 assert set(NOT_APPLICABLE) <= set(METRIC_NAMES)

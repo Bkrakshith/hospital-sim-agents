@@ -124,7 +124,8 @@ def test_an_idle_robot_banks_no_safety_points(tmp_path):
     assert all(st[k] == "n/a" for k in ("contacts", "gap", "slow", "close", "forbidden", "furniture")), st
     assert r.score == 0.0 and r.passed is False
     gap = next(row for row in r.rows if row["id"] == "gap")
-    assert gap["value"] == pytest.approx(0.316, abs=0.01) and gap["passed"] is True  # n/a never counts as failed
+    # a still robot made no closeness (the visitor stood by it): no value, and n/a never counts as failed
+    assert gap["value"] is None and gap["passed"] is None and gap["status"] == "n/a"
 
 
 def test_a_robot_that_moved_is_judged_on_safety(tmp_path):
