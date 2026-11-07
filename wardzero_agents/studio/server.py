@@ -292,7 +292,7 @@ _TYPES = {"clock": "rosgraph_msgs/Clock", "tf": "tf2_msgs/TFMessage", "joint_sta
           "odom": "nav_msgs/Odometry", "camera_rgb": "sensor_msgs/Image", "camera_depth": "sensor_msgs/Image",
           "camera_info": "sensor_msgs/CameraInfo", "bbox_3d": "std_msgs/String (JSON)",
           "lidar": "sensor_msgs/PointCloud2", "objects": "std_msgs/String (JSON)",
-          "heard": "std_msgs/String (JSON)", "say": "std_msgs/String (JSON)",
+          "heard": "std_msgs/String (JSON)", "say": "std_msgs/String (plain text)",
           "say_toward": "std_msgs/String (track id)",
           "goal_pose": "geometry_msgs/PoseStamped", "task_action": "std_msgs/String (JSON)",
           "task_result": "std_msgs/String (JSON)", "task_brief": "std_msgs/String (JSON)"}
