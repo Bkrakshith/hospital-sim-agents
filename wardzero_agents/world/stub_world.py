@@ -187,6 +187,8 @@ class StubWorld:
         self.body_driven: set[str] = set()  # people whose phases a body ends (see end_phase)
         self.named: set[str] = set()  # people who have said their own first name aloud
         self.trail_released: set[str] = set()  # followers whose guide is over: their follow ends now
+        self.guide_over: set[str] = set()  # people whose robot guide ended: they do not follow it again unless guided
+        self.alarm_active = False  # a fire alarm has sounded (it stays on for the rest of the run)
         # set by the task layer: the robot's speed cap near people (None for no cap), worked out from where everyone
         # is just before the robot moves, so it is never a step late
         self.robot_speed_cap = None
@@ -459,6 +461,11 @@ class StubWorld:
         elif kind == "follow":
             if not self.loaded.scenario.robot.enabled or (intent.target or ROBOT_ID) not in (ROBOT_ID, "robot"):
                 self._fail(p, intent, "unknown target")
+                return []
+            if intent.person in self.guide_over:
+                # the robot's guide for them is over: they do not trail it again (it would cap the robot at 0.3 m/s
+                # and walk them back with it) unless it offers them a new guide
+                self._fail(p, intent, "the robot is not guiding you now")
                 return []
             self._begin(p, intent)
             self.trail_released.discard(intent.person)
@@ -1075,6 +1082,7 @@ class StubWorld:
         if ev.kind == "pa_announcement":
             return [self._event(ev.t, "pa", "pa", x, y, 2.5, 80.0, ev.text)]
         if ev.kind == "alarm":
+            self.alarm_active = True
             return [self._event(ev.t, "alarm", "alarm", x, y, 2.5, 100.0, ev.text)]
         if ev.kind == "wet_floor":
             self._wet += 1
@@ -1167,6 +1175,7 @@ class StubWorld:
 
     def _step_objects(self, t: float, dt: float) -> None:
         for f in self.objects.step(dt):
+            self.alarm_active = True
             self._outbox.append(self._event(t, "alarm", f.id, f.x, f.y, 2.5, ALARM_DB, "Fire alarm"))
         for pid, fid in list(self._fighting.items()):
             p, f = self.people.get(pid), self.objects.fires.get(fid)

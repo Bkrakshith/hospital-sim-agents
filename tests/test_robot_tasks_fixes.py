@@ -319,3 +319,108 @@ def test_follow_an_unknown_track_is_no_person_and_a_goal_ends_it(staged, tmp_pat
     w.people["W1"].posture = "gone"
     s.on_task_action({"id": "f2", "action": "follow", "track": w.tracks.track("W1")})
     assert [(r["ok"], r["reason"]) for r in results(advance(s, 0.2), "f2", "action")] == [(False, "no_person")]
+
+
+# ---- guide mechanics ---------------------------------------------------------------------------------------------------
+def _follow_robot(s, pid):
+    s.on_intent(Intent(id=f"f-{pid}-{s.t}", person=pid, t=s.t, kind="follow", target="g1"))
+
+
+def _gap(w, pid):
+    p = w.people[pid]
+    return math.hypot(p.x - w.robot.x, p.y - w.robot.y)
+
+
+def test_a_guide_to_where_she_stands_keeps_clear_of_her(staged, tmp_path):
+    """ae_waiting run A: guide_start to AE_Waiting with Ava 0.43 m from the room centre; the guided person was exempt
+    from the robot's avoidance and the robot drove into her (contact at 0.3 m/s)."""
+    s = svc(staged("ae_waiting", auto=True), tmp_path)
+    w = s.world
+    w.robot.teleport(-8.6, -1.4, 1.5708)
+    put(w, "P2", -8.9, -0.3)
+    s.step(0.1)
+    s.on_task_action({"id": "gd", "action": "guide_start", "track": w.tracks.track("P2"), "place": "AE_Waiting",
+                      "seat": True})
+    s.step(0.1)
+    _follow_robot(s, "P2")
+    gaps = []
+    for _ in range(400):
+        s.step(0.1)
+        gaps.append(_gap(w, "P2"))
+    assert not [r for r in rows(tmp_path / "run", "world") if r.get("kind") == "contact"]
+    assert min(gaps) >= rt.PERSON_KEEP_M - 0.1
+    start = [r for r in _robot_rows(tmp_path, "guide") if r["event"] == "start"][0]
+    assert math.hypot(start["x"] + 8.9, start["y"] + 0.3) >= 1.0  # the walk's goal is placed clear of her
+
+
+def test_the_guided_person_standing_in_front_holds_the_robot(staged, tmp_path):
+    s = svc(staged("reception_guide", auto=True), tmp_path)
+    w = s.world
+    r = w.robot
+    put(w, "V2", r.x, r.y - 0.8)  # right in front of it (it faces -y), on its way to the ward entrance
+    s.step(0.1)
+    s.on_task_action({"id": "gd", "action": "guide_start", "track": w.tracks.track("V2"), "place": "Lobby"})
+    gaps = []
+    for _ in range(30):
+        s.step(0.1)
+        gaps.append(_gap(w, "V2"))
+    assert min(gaps) >= rt.PERSON_KEEP_M - 0.05
+
+
+def _guide_to_arrival(s, pid, place, **opts):
+    w = s.world
+    s.step(0.1)
+    s.on_task_action({"id": "gd", "action": "guide_start", "track": w.tracks.track(pid), "place": place, **opts})
+    s.step(0.1)
+    _follow_robot(s, pid)
+    outs = []
+    for _ in range(900):
+        o = s.step(0.1)
+        outs.append(o)
+        if s.tasks._guide is None and any(r.get("kind") == "goal" and r["id"] == "gd" for r in results(outs)):
+            break
+    outs += advance(s, 3.0)
+    return outs
+
+
+def test_return_to_post_false_leaves_the_robot_where_the_guide_ended(staged, tmp_path):
+    s = svc(staged("reception_guide", auto=True), tmp_path)
+    w = s.world
+    put(w, "V2", 1.6, 0.0)
+    outs = _guide_to_arrival(s, "V2", "ward_entrance", return_to_post=False)
+    ends = [r for r in _robot_rows(tmp_path, "guide") if r["event"] == "end"]
+    assert ends and ends[0]["reason"] == "arrived"
+    assert s.tasks.goal_id != "gd-return" and not w.robot.has_goal
+    post = s.tasks.post
+    assert math.hypot(w.robot.x - post[0], w.robot.y - post[1]) > 5.0
+
+
+def test_no_return_to_post_while_the_fire_alarm_sounds(staged, tmp_path):
+    s = svc(staged("reception_guide", auto=True), tmp_path)
+    w = s.world
+    put(w, "V2", 1.6, 0.0)
+    s.on_world_event(WorldEvent(id="al", t=0.0, kind="alarm", text="Fire alarm"))
+    outs = _guide_to_arrival(s, "V2", "ward_entrance")  # return_to_post defaults to true
+    assert [r["reason"] for r in _robot_rows(tmp_path, "guide") if r["event"] == "end"] == ["arrived"]
+    assert s.tasks.goal_id != "gd-return" and not w.robot.has_goal
+
+
+def test_a_person_released_from_a_guide_does_not_follow_the_robot_again(staged, tmp_path):
+    s = svc(staged("reception_guide", auto=True), tmp_path)
+    w = s.world
+    put(w, "V2", 1.6, 0.0)
+    _guide_to_arrival(s, "V2", "ward_entrance")
+    _follow_robot(s, "V2")  # the mind still has "follow g1" in hand
+    advance(s, 0.3)
+    p = w.people["V2"]
+    assert p.intent_kind == "follow" and p.state == "failed" and not s.world.is_trailing("V2")
+    at = (p.x, p.y)
+    advance(s, 30)  # it first edges past them (they stand behind it, on its way back) at the near-person speed
+    assert _gap(w, "V2") > 3.0  # the robot walked back to its post alone
+    assert math.hypot(p.x - at[0], p.y - at[1]) < 0.5
+    # a new guide for them: they may follow again
+    s.on_task_action({"id": "g2", "action": "guide_start", "track": w.tracks.track("V2"), "place": "Lobby"})
+    s.step(0.1)
+    _follow_robot(s, "V2")
+    s.step(0.1)
+    assert p.state == "running" and s.world.is_trailing("V2")
