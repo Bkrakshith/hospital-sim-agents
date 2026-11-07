@@ -289,6 +289,12 @@ def person_policy(req: LLMRequest) -> dict:
         return _decision("walk_to", lm, "Thank you") if lm else _decision("wait_standing", "", "Thank you")
     if "NUDGE:" in u:
         nudge = u.split("NUDGE:", 1)[1]
+        note = re.match(r" A note from the robot appears on your computer screen: \"([^\"]*)\" It is about person id "
+                        r"(\w+)", nudge)
+        if note is not None:  # a desk note: stay at the desk, unless it asks for a member of staff
+            if re.search(r"\b(nurse|staff|doctor|needs? help|come)\b", note.group(1), re.I):
+                return _decision("approach", note.group(2))
+            return _idle(req)
         lm = _place(nudge, card)
         if "help" in nudge or (_lost(card) and not _asked_the_way(u)):
             if _promised_staff(u):  # the robot already sent for staff: wait for them

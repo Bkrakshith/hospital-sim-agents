@@ -208,3 +208,18 @@ def test_someone_told_a_nurse_is_coming_waits_for_them(staged):
     d = ask(loaded, "V1", ["NUDGE: You can't work out from the signs how to get where you are going. Find someone who "
                            "can help."], told)
     assert kind(d) == "wait_standing"
+
+
+def test_the_receptionist_stays_at_her_desk_for_a_note_that_needs_no_one(tmp_path):
+    from wardzero_agents.studio import auto_staff
+    p = PRESETS["ae_waiting"]
+    loaded = preset_to_scenario(p, CONFIG, tmp_path, characters=auto_staff.with_auto(list(p.characters), p))
+    note = ('NUDGE: A note from the robot appears on your computer screen: "New arrival checked in by the robot in the '
+            'A&E waiting area; waiting to be seen." It is about person id P1 (George), now in A&E walk-in reception. '
+            'The robot is dealing with them. You do not need to get up unless the note says they need a member of '
+            'staff; carry on with your work.')
+    rcp = next(i.person_id for i in loaded.instances if i.person_id == "RCP")
+    assert kind(ask(loaded, rcp, [note])) in ("sit_idle", "wait_standing")
+    urgent = note.replace("New arrival checked in by the robot", "This patient needs a nurse now")
+    d = ask(loaded, rcp, [urgent])
+    assert kind(d) == "approach" and d["intent"]["target"] == "P1"
