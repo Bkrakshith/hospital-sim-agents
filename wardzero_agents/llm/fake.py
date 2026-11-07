@@ -120,15 +120,31 @@ _DIRECTION = re.compile(r"(?:^|[.!?;:,]\s*|\b(?:please|just|now|then|so|and)\s+)
                         r"(?:\s+[\w'-]+){0,6}?\s+(?:to|towards|into|through|via|by|down|along|onto)\b", re.I)
 
 
-# ... or a line that says where a place is ("clinic_corridor is down there", "the toilets are just past the lifts")
-_WHERE = re.compile(r"\b(?:is|are|it's)\s+(?:just\s+|right\s+|straight\s+)?(?:down|through|along|up|past|round|around|"
-                    r"over|ahead|behind|beside|next to|opposite|at the end|on (?:your|the) (?:left|right)|"
-                    r"to (?:your|the) (?:left|right)|that way|this way|by the|there\b)", re.I)
+# ... or a line that says where a place is, the place named as what "is" there ("clinic_corridor is down there", "the
+# toilets are just past the lifts"), and not where a person is ("the triage nurse is just behind the desk")
+_WHERE_TAIL = (r"\s+(?:just\s+|right\s+|straight\s+)?(?:down|through|along|up|past|round|around|over|ahead|behind|"
+               r"beside|next to|opposite|at the end|on (?:your|the) (?:left|right)|to (?:your|the) (?:left|right)|"
+               r"that way|this way|by the|there\b)")
+_WHERE_WORDS = r"\s+(?:is|are)" + _WHERE_TAIL
+_WHERE_IT = re.compile(r"\b(?:it's|it is)" + _WHERE_TAIL, re.I)
+# a line that tells them to stay where they are: where a place is is then no reason to go there
+_STAY = re.compile(r"\b(?:(?:take|have) a seat|stay (?:here|seated|put|where)|wait (?:here|for|until|where|in your)|"
+                   r"will (?:call|see|come to|fetch|be with) you|(?:is|are) coming|on (?:her|his|their) way)\b", re.I)
 
 
-def _directs(text: str) -> bool:
+def _says_where(text: str, card: str = "") -> bool:
+    """The line says where a place is (the place, or "it", is the subject), and does not tell them to stay put."""
+    if _STAY.search(text):
+        return False
+    low = text.lower()
+    names = {*LANDMARKS, *LABELS, *(label for label, _ in _card_places(card))}
+    return _WHERE_IT.search(text) is not None or any(
+        re.search(r"\b" + re.escape(n.lower()) + _WHERE_WORDS, low) for n in names)
+
+
+def _directs(text: str, card: str = "") -> bool:
     """The line sends the listener somewhere: a direction to go, or where the place is."""
-    return _DIRECTION.search(text or "") is not None or _WHERE.search(text or "") is not None
+    return _DIRECTION.search(text or "") is not None or _says_where(text or "", card)
 
 
 def _place(text: str, card: str) -> Optional[str]:
@@ -381,7 +397,7 @@ def person_policy(req: LLMRequest) -> dict:
             # they asked before and are still not where they need to be (their first ask went unheard: the robot was
             # a room away): offered help, they say again what they need
             return _decision("wait_standing", "", f"Yes please, I need to get to the {mine}.", "g1")
-        lm = _place(line, card) if _directs(line) else None  # only a direction sends them somewhere
+        lm = _place(line, card) if _directs(line, card) else None  # only a direction sends them somewhere
         return _decision("walk_to", lm, "Thank you") if lm else _decision("wait_standing", "", "Thank you")
     if "NUDGE:" in u:
         nudge = u.split("NUDGE:", 1)[1]

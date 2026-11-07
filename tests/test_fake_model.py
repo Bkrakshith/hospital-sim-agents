@@ -287,6 +287,17 @@ def test_a_robot_line_that_names_a_place_but_sends_nobody_there_is_not_a_walk(st
 
 
 @pytest.mark.parametrize("line", [
+    "Please take a seat; the triage nurse is just behind the desk and will call you.",
+    "Triage is just behind the desk; they will call you when it's your turn.",
+    "The triage nurse is by the desk, she will see you soon.",
+    "The nurse is just past the doors, she is on her way to you.",
+])
+def test_a_line_that_says_where_someone_is_or_to_stay_is_not_a_walk(staged, line):
+    """Where a person is, or where a place is while the line tells them to wait, sends nobody anywhere."""
+    assert kind(ask(staged("ae_waiting"), "P1", [f"ROBOT SAID TO YOU: {line}"])) != "walk_to"
+
+
+@pytest.mark.parametrize("line", [
     "Fire alarm. Please walk to the Ambulance handover bay now.",
     "We're nearly there. Please walk on into the Ambulance handover bay and wait there.",
     "The main entrance is blocked by fire. Please walk to the Ambulance handover bay now, away from the fire.",
