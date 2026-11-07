@@ -43,6 +43,12 @@ ends at least GUIDE_CLEAR_M from them (on its own side of them when they stand a
 sounded. It gives up if they never come within 2.5 m for 30 s. Once a guide is over, the person does not take up
 following the robot again unless it guides them again.
 
+Who is in the robot's way is judged along its planned path, not its heading (the walking G1, held, does not turn). A
+bystander in its way holds it, it routes round them after REPLAN_S, and gives the walk up (blocked_by_person) after
+GIVE_UP_S held. The person it guides (on the walk to the place), or has just guided (on its walk back to post), standing
+in its way is waited for and routed round in the same way, but given up on only after LET_PASS_GIVE_UP_S; and when the
+person it guides already stands at the place, the walk there is done (the guide ends arrived).
+
 A guide to a seat: when the robot reaches the place it picks the free seat nearest to it, among those its camera could
 see by turning its head (within its range, in line of sight; never a staff chair). It walks to a spot beside that seat,
 says SEAT_SAY and the person is told the seat (a nudge naming sit_down <seat>); they have arrived when they are near
@@ -114,6 +120,9 @@ LATERAL_M = 0.6  # ... "ahead" is within this of its line of travel
 REPLAN_S = 2.0  # held this long: it routes round the people in the way
 AVOID_R_M = 0.9  # the discs its new route keeps out of
 GIVE_UP_S = 8.0  # held this long in all: the walk is given up (a seat is shown from where it stands)
+PATH_LOOK_M = 0.6  # who is in its way is judged along its planned path: towards the point this far along it
+LET_PASS_GIVE_UP_S = 30.0  # held this long in all by the person it guides (or has just guided, on its walk back), whom
+# it waits for and routes round rather than give up on as on a bystander: the walk is given up
 BACK_OFF_M = 0.6  # standing still, someone this close for BACK_OFF_S: it steps back
 BACK_OFF_S = 0.5
 BACK_OFF_STEP_M = 0.7
@@ -185,12 +194,15 @@ class RobotTasks:
         self._spray: dict[str, str] = {}  # action id -> fire id
         self._to_fire: dict[str, str] = {}  # action id -> fire id, walking up to it before spraying
         self._guide: Optional[dict] = None
+        self._last_guided: Optional[tuple] = None  # (guide action id, person id) of the last guide that ended
         self._return_after: Optional[tuple] = None  # (goal id, t): the walk back to post after a guide, waiting to start
         self._following: Optional[dict] = None  # the follow action under way
         self._tell: Optional[dict] = None
         self._notes: list[dict] = []  # desk notes not read yet
         self._goal_xy: Optional[tuple] = None  # (x, y, yaw, exempt) of the goal in flight, for a re-route
         self._held_s = 0.0
+        self._held_total = 0.0  # held by bystanders on this walk (GIVE_UP_S) ...
+        self._let_pass_s = 0.0  # ... and by the person it walks somewhere with (LET_PASS_GIVE_UP_S)
         self._replanned_at = -1e9
         self._close_s = 0.0
         self._backed_at = -1e9
@@ -579,6 +591,7 @@ class RobotTasks:
             if p is not None and p.plan and p.plan[0].kind == "walk" and p.plan[0].trail:
                 self.world.trail_released.add(g["pid"])  # following ends with the guide
             self.world.guide_over.add(g["pid"])  # and they do not take it up again unless guided again
+            self._last_guided = (g["id"], g["pid"])
             self._log({"t": t, "kind": "guide", "event": "end", "id": g["id"], "person": g["pid"], "reason": reason})
 
     def _arrived(self, g: dict) -> bool:
@@ -626,6 +639,22 @@ class RobotTasks:
                 # it lets the person it brought (and anyone else close by) go on past first: turning back at once in a
                 # doorway walks it into them
                 self._return_after = (f"{g['id']}-return", t)
+
+    def _guide_walk_ended(self, g: dict, ev: str, t: float) -> None:
+        """A guide's walk ended (ev: the goal event): at the place it shows a seat or waits for the person; else the
+        guide is over."""
+        w = self.world
+        if ev == "arrived" and g["seat"] and g["seat_id"] is None and self._to_seat(g, t):
+            pass  # stepping aside of the seat it picked
+        elif ev == "arrived" and g.get("seat_id") and not g.get("shown"):
+            self._show_seat(g, t)  # aside now: show the seat
+            g["phase"], g["t_arrive"] = "waiting", t
+            w.robot.speed_scale = 1.0
+        elif ev == "arrived":
+            g["phase"], g["t_arrive"] = "waiting", t
+            w.robot.speed_scale = 1.0
+        else:
+            self._end_guide(t, ev)
 
     def free_seat(self, room: Optional[str]) -> Optional[str]:
         """The free seat nearest the robot that its camera could see from here, preferring one in the room."""
@@ -1017,11 +1046,33 @@ class RobotTasks:
         w = self.world
         return [(pid, q) for pid, q in w.people.items() if q.posture != "gone" and q.kind != "static"]
 
+    def _way(self) -> Optional[float]:
+        """The direction the robot's planned path leaves in from where it stands (towards the point PATH_LOOK_M along
+        it), or None when no route is left to walk (a turn on the spot at the end of a walk moves it into nobody). The
+        walking G1 held for someone does not turn, so its heading may face away from where it is going."""
+        r = self.world.robot
+        f = getattr(r, "follower", None)
+        pts = list(getattr(f, "path", None) or ()) if f is not None else list(getattr(r, "_path", None) or ())
+        x0, y0, left = r.x, r.y, PATH_LOOK_M
+        for x1, y1 in pts:
+            L = math.hypot(x1 - x0, y1 - y0)
+            if L >= left:
+                return math.atan2(y0 + (y1 - y0) * left / L - r.y, x0 + (x1 - x0) * left / L - r.x)
+            left -= L
+            x0, y0 = x1, y1
+        if math.hypot(x0 - r.x, y0 - r.y) < 1e-3:
+            return None
+        return math.atan2(y0 - r.y, x0 - r.x)
+
     def _blocker(self) -> Optional[str]:
-        """Someone ahead of the walking robot, nearer than its goal, or anyone inside PERSON_KEEP_M in front."""
+        """Someone ahead of the walking robot on its way (along its planned path, not its heading), nearer than its
+        goal, or anyone inside PERSON_KEEP_M in front."""
         w = self.world
         r = w.robot
-        c, s_ = math.cos(r.yaw), math.sin(r.yaw)
+        way = self._way()
+        if way is None:
+            return None
+        c, s_ = math.cos(way), math.sin(way)
         left = math.inf
         if self._goal_xy is not None:
             left = math.hypot(self._goal_xy[0] - r.x, self._goal_xy[1] - r.y)
@@ -1045,11 +1096,21 @@ class RobotTasks:
                 return pid
         return None
 
+    def _lets_pass(self, pid: str) -> bool:
+        """pid is the person the robot is walking somewhere with, standing in its way: the person it guides, on the
+        guide's walk to the place, or the person it has just guided, on its walk back to post. It does not give up on
+        them as on a bystander: it waits, routes round them, and lets them go first."""
+        g = self._guide
+        if g is not None:
+            return pid == g["pid"] and g["phase"] == "walking" and not g.get("seat_id") and self.goal_id == g["id"]
+        lg = self._last_guided
+        return lg is not None and pid == lg[1] and str(self.goal_id) == f"{lg[0]}{RETURN_SUFFIX}"
+
     def _give_up(self, t: float) -> None:
         """Held too long by someone who stays in the way: stop. A guide stepping aside to show a seat shows it from
         here; any other walk ends ``blocked_by_person`` so the brain can decide what to do."""
         w = self.world
-        self._held_total, self._held_s = 0.0, 0.0
+        self._held_total, self._held_s, self._let_pass_s = 0.0, 0.0, 0.0
         w.robot.cancel_goal()
         w.robot.speed_scale = 1.0
         g = self._guide
@@ -1085,14 +1146,26 @@ class RobotTasks:
                 # close to the staff member it walks to: stop and tell her now (no walking into her), but only where
                 # its body is clear of the furniture (stopped in the clearance band it could not walk off again)
                 r.cancel_goal()
-                r.speed_scale, self._holding, self._held_s, self._held_total = 1.0, False, 0.0, 0.0
+                r.speed_scale, self._holding, self._held_s = 1.0, False, 0.0
+                self._held_total = self._let_pass_s = 0.0
                 self._backing = False  # a step back under way ends here too
                 self._goal(tl["id"], True, "arrived", t)
                 self._speak_tell(t)
                 return
         held_by_guide = self._guide is not None and self._guide["phase"] == "walking" and self._guide["held"]
         moving = r.has_goal and r._had_goal and self.mobile
-        hold = moving and self._blocker() is not None
+        blocker = self._blocker() if moving else None
+        hold = blocker is not None
+        patient = hold and self._lets_pass(blocker)
+        g = self._guide
+        if patient and g is not None and blocker == g["pid"] and not getattr(self, "_backing", False) \
+                and self._arrived(g):
+            # the person it guides is at the place already, standing in its way: the walk there is done
+            r.cancel_goal()
+            r.speed_scale, self._holding, self._held_s, self._held_total, self._let_pass_s = 1.0, False, 0.0, 0.0, 0.0
+            self._goal(g["id"], True, "arrived", t)
+            self._guide_walk_ended(g, "arrived", t)
+            return
         if hold:
             r.speed_scale, self._holding = 0.0, True
         elif getattr(self, "_holding", False):  # release only a hold of its own (a guide holds the robot too)
@@ -1100,8 +1173,11 @@ class RobotTasks:
             r.speed_scale = 0.0 if held_by_guide else 1.0
         if hold:
             self._held_s += dt
-            self._held_total = getattr(self, "_held_total", 0.0) + dt
-            if self._held_total >= GIVE_UP_S:
+            if patient:  # the person it guides (or has just guided): it waits for them and routes round them
+                self._let_pass_s += dt
+            else:
+                self._held_total += dt
+            if self._held_total >= GIVE_UP_S or self._let_pass_s >= LET_PASS_GIVE_UP_S:
                 self._give_up(t)
                 return
             if self._held_s >= REPLAN_S and t - self._replanned_at >= REPLAN_S and self._goal_xy is not None:
@@ -1112,7 +1188,7 @@ class RobotTasks:
         else:
             self._held_s = 0.0
             if not moving:
-                self._held_total = 0.0
+                self._held_total = self._let_pass_s = 0.0
         if not self.mobile or getattr(self, "_backing", False) or (moving and not hold):
             self._close_s = 0.0
             return
@@ -1254,17 +1330,7 @@ class RobotTasks:
                     self._spray[gid] = fid  # in range now: the spraying above reports how it ends
             g = self._guide
             if g is not None and g["id"] == gid and g["phase"] == "walking":
-                if ev == "arrived" and g["seat"] and g["seat_id"] is None and self._to_seat(g, t):
-                    pass  # stepping aside of the seat it picked
-                elif ev == "arrived" and g.get("seat_id") and not g.get("shown"):
-                    self._show_seat(g, t)  # aside now: show the seat
-                    g["phase"], g["t_arrive"] = "waiting", t
-                    w.robot.speed_scale = 1.0
-                elif ev == "arrived":
-                    g["phase"], g["t_arrive"] = "waiting", t
-                    w.robot.speed_scale = 1.0
-                else:
-                    self._end_guide(t, ev)
+                self._guide_walk_ended(g, ev, t)
             if self._tell is not None and self._tell["id"] == gid:
                 if ev == "arrived":
                     self._speak_tell(t)
