@@ -84,6 +84,7 @@ FOLLOW_GAP_M = 1.25  # ... walking up to this far behind when they have fallen b
 FOLLOW_DONE_M = 1.75  # the robot has stopped and the follower is this close: the follow is done
 ROBOT_AVOID_M = 0.75  # people's routes keep this far from where the robot stands, when they can
 ARRIVAL_JITTER_M = 0.8  # people arriving mid-run appear up to this far from the entrance, so they do not stack
+ROBOT_SUBSTEP_S = 0.1  # the robot moves in steps no longer than this, its speed cap set before each one
 STAFF_ROLES = frozenset({"receptionist", "ward_nurse", "staff", "nurse", "porter", "surgeon"})
 ROLE_KINDS = ("give_item", "take_item", "call_for_help", "call_bell", "accept_item", "refuse_item",
               "request_instrument", "reject_item", "take_instrument_self", "use_extinguisher",
@@ -186,6 +187,9 @@ class StubWorld:
         self.body_driven: set[str] = set()  # people whose phases a body ends (see end_phase)
         self.named: set[str] = set()  # people who have said their own first name aloud
         self.trail_released: set[str] = set()  # followers whose guide is over: their follow ends now
+        # set by the task layer: the robot's speed cap near people (None for no cap), worked out from where everyone
+        # is just before the robot moves, so it is never a step late
+        self.robot_speed_cap = None
         taken_beds: set[str] = set()
         for inst in loaded.instances:
             if inst.seat is not None:
@@ -903,10 +907,14 @@ class StubWorld:
         if self.loaded.scenario.robot.enabled:
             # people lying in a bed are never "contacts"; passing a bed is bed_contact (below)
             near = [(pid, p.x, p.y) for pid, p in self.people.items() if p.posture not in ("gone", "lying")]
-            for pid in self.robot.step(dt, self.site.grid, near):
-                self._log.append(("world", {"t": t, "kind": "contact", "person": pid,
-                                            "x": round(self.robot.x, 3), "y": round(self.robot.y, 3),
-                                            "speed": round(self.robot.speed, 3)}))
+            n = max(1, math.ceil(dt / ROBOT_SUBSTEP_S - 1e-9))
+            for _ in range(n):  # people have moved: the cap for where they are now, before each part of the move
+                if self.robot_speed_cap is not None:
+                    self.robot.speed_cap = self.robot_speed_cap(dt / n) if self.robot.has_goal else None
+                for pid in self.robot.step(dt / n, self.site.grid, near):
+                    self._log.append(("world", {"t": t, "kind": "contact", "person": pid,
+                                                "x": round(self.robot.x, 3), "y": round(self.robot.y, 3),
+                                                "speed": round(self.robot.speed, 3)}))
             touching = set()
             if self.robot.speed > 0.05:
                 touching = {b.id for b in self.site.beds.values()

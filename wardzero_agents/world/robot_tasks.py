@@ -112,6 +112,7 @@ GUIDE_ARRIVE_WAIT_S = 20.0  # at the place, wait this long for the person to arr
 NEAR_PLACE_M = 2.0  # a person this close to the place (or in the named room) has arrived
 NEAR_PERSON_M = 1.5  # another person this close slows the robot ...
 NEAR_PERSON_SPEED = 0.3  # ... to this (m/s)
+CAP_MARGIN_M = 0.02  # coming up to NEAR_PERSON_M of someone, the robot keeps this short of it at full speed
 PERSON_AVOID_M = 0.7  # the robot's routes keep this far from people standing in the way, when they can
 TELL_RANGE_M = 5.0  # a staff member further than this from the robot is "not at the desk"
 TELL_NEAR_M = 1.5  # walking to tell a staff member, it stops and speaks once she is this close and in sight
@@ -164,6 +165,7 @@ class RobotTasks:
         rc = getattr(getattr(getattr(world, "loaded", None), "scenario", None), "robot", None)
         self.post = (rc.x, rc.y, rc.yaw) if rc is not None else tuple(world.robot.pose)
         self._hazards_seen = (getattr(world, "_hazards", ()), self._router_version())
+        world.robot_speed_cap = self._near_cap  # the world sets the cap just before it moves the robot
 
     def _result(self, aid, action, ok, reason, t) -> None:
         self._out.results.append({"id": aid, "action": action, "ok": ok, "reason": reason, "t": t})
@@ -929,14 +931,20 @@ class RobotTasks:
                                   "reason": reason, "t": t})
 
     # ---- time ----------------------------------------------------------------------------
-    def _near_cap(self) -> Optional[float]:
-        """0.3 m/s while someone other than the guided person is within 1.5 m, else no cap."""
+    def _near_cap(self, dt: float = 0.0) -> Optional[float]:
+        """0.3 m/s while someone other than the guided person is within 1.5 m, else no cap. With dt (the move about
+        to be made), someone just outside 1.5 m caps it too, so that it reaches 1.5 m from them no faster than it
+        could stop to 0.3 m/s there: it never comes within 1.5 m of anyone faster than 0.3 m/s."""
         w = self.world
         exempt = self._guide["pid"] if self._guide is not None else None
+        nearest = math.inf
         for pid, q in w.people.items():
-            if pid != exempt and q.posture != "gone" and q.kind != "static" \
-                    and math.hypot(q.x - w.robot.x, q.y - w.robot.y) <= NEAR_PERSON_M:
-                return NEAR_PERSON_SPEED
+            if pid != exempt and q.posture != "gone" and q.kind != "static":
+                nearest = min(nearest, math.hypot(q.x - w.robot.x, q.y - w.robot.y))
+        if nearest <= NEAR_PERSON_M:
+            return NEAR_PERSON_SPEED
+        if dt > 0 and nearest - NEAR_PERSON_M < w.robot.max_speed * dt:
+            return max(NEAR_PERSON_SPEED, (nearest - NEAR_PERSON_M - CAP_MARGIN_M) / dt)
         return None
 
     def step(self, t: float, dt: float) -> TaskOutputs:
