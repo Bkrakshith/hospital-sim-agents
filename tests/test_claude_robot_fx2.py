@@ -57,12 +57,11 @@ def test_a_bell_shows_as_a_call_bell_in_the_situation_not_as_someone_speaking():
     m = RobotMind(V1.site, {"job": "x"}, None, lambda: 0.0, known_places=[], pose=(1.0, 1.0, 0.0))
     asyncio.run(m.on_heard(_bell("call bell, bed B3", 47.0, bearing=30.0), 92.0))
     asyncio.run(m.on_heard(_bell("staff call chime", 55.0), 93.0))
-    asyncio.run(m.on_heard(_bell("call bell, bed B3", 44.0, kind="person"), 94.0))  # tolerated: the old wording
     s = m._situation(95.0)
     heard = s.split("Heard recently, newest last:")[1].split("People your camera sees")[0]
     assert "someone nearby" not in heard and '"call bell' not in heard, heard
     lines = [ln for ln in heard.splitlines() if ln.startswith("- ")]
-    assert "a call bell (bed B3)" in lines[0] and "your staff call chime" in lines[1] and "a call bell (bed B3)" in lines[2]
+    assert "a call bell (bed B3)" in lines[0] and "your staff call chime" in lines[1]
     assert "degrees to your left" in lines[0]  # the bell at the bed still says where it came from
 
 
@@ -84,8 +83,8 @@ def test_the_places_it_knows_are_listed_by_name_not_by_id(reception):
 
 
 def test_a_person_who_mentions_a_call_bell_is_heard_speaking_not_as_a_chime():
-    """Only an old run's chime row (a person sound whose whole text is the chime's words, not said to the robot) is
-    read as a chime: a patient saying something about their call bell, to the robot or near it, keeps their words."""
+    """A person sound with words is speech, even the chime's exact words: a patient saying something about their
+    call bell, to the robot or near it, keeps their words. Only source_kind bell is a chime."""
     m = RobotMind(V1.site, {"job": "x"}, None, lambda: 0.0, known_places=[], pose=(1.0, 1.0, 0.0))
     said = "I pressed my call bell, bed B3, twenty minutes ago and nobody came"
     asyncio.run(m.on_heard({"source_kind": "person", "source_id": "unknown", "text": said, "received_db": 60.0,
@@ -99,3 +98,11 @@ def test_a_person_who_mentions_a_call_bell_is_heard_speaking_not_as_a_chime():
     assert "someone speaking to you" in lines[0] and said in lines[0] and "a call bell" not in lines[0], lines
     assert "someone speaking to you" in lines[1] and '"staff call chime"' in lines[1], lines
     assert '"Is that a call bell, bed B4?"' in lines[2] and "a call bell (bed" not in lines[2], lines
+
+
+def test_a_person_saying_the_chimes_exact_words_is_still_speech():
+    m = RobotMind(V1.site, {"job": "x"}, None, lambda: 0.0, known_places=[], pose=(1.0, 1.0, 0.0))
+    asyncio.run(m.on_heard({"source_kind": "person", "source_id": "unknown", "text": "call bell, bed B2",
+                            "received_db": 56.0, "partial": False, "addressed_to_me": False}, 10.0))
+    heard = m._situation(11.0).split("Heard recently, newest last:")[1].split("People your camera sees")[0]
+    assert '"call bell, bed B2"' in heard and "a call bell (bed B2)" not in heard, heard
