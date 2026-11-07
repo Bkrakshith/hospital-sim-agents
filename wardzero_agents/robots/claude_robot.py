@@ -103,9 +103,10 @@ def rules(first_contact: bool = True, desk_staffed: bool = True) -> str:
 
 
 SYSTEM_RULES = rules()
-# Brief keys that are not shown to the robot: forbidden_areas (rendered as "Do not enter"), destination (a key the score
-# reads; its words for the robot are in the job or another key) and staff_line (what the staff are told).
-HIDDEN_BRIEF_KEYS = frozenset({"forbidden_areas", "destination", "staff_line"})
+# Brief keys that are not shown to the robot as they stand: forbidden_areas (rendered as "Do not enter"), destination (a
+# key the score reads; shown only with the brief's robot-facing destination_line, else its words are in the job) and
+# staff_line (what the staff are told).
+HIDDEN_BRIEF_KEYS = frozenset({"forbidden_areas", "destination", "destination_line", "staff_line"})
 
 NO_WALK_RULE = ("You are standing at a fixed post and cannot walk in this build; to help someone get "
                 "somewhere, give clear directions or press the call button for staff. tell_staff speaks to the "
@@ -603,6 +604,11 @@ class RobotMind:
                 lines.append("No task brief was given. Be a polite, helpful presence and ask people what they need.")
             else:
                 for k, v in b.items():
+                    if k == "destination" and isinstance(v, str) and v.strip() \
+                            and isinstance(b.get("destination_line"), str) and b["destination_line"].strip():
+                        # the place on a line of its own, then what it is for the robot (not its own walk)
+                        lines += [f"Destination: {self._brief_words(v)}", b["destination_line"].strip()]
+                        continue
                     if k in HIDDEN_BRIEF_KEYS or isinstance(v, (bool, int, float)):
                         continue  # the areas are rendered below; flags and numbers are not part of the job's words
                     name = k.replace('_', ' ').capitalize()
@@ -634,7 +640,9 @@ class RobotMind:
         unblocked = robot_router(base, areas) if areas else base
         if not self._signs:
             return unblocked, None
-        blocked = Router(self.site.grid)
+        core = getattr(base, "base", base)  # the robot's own router settings, under its forbidden areas if any
+        blocked = Router(getattr(core, "grid", self.site.grid), **({"clearance": core.clearance, "hard": core.hard}
+                                                                   if isinstance(core, Router) else {}))
         for x, y in self._signs.values():
             blocked.block(x, y, SIGN_BLOCK_M)
         return (robot_router(blocked, areas) if areas else blocked), unblocked

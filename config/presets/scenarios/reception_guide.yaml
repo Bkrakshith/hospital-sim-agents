@@ -12,7 +12,10 @@ robot_brief:
     Greet people who come to reception, give short clear directions, and walk them to where they are going if they
     cannot find it. If someone needs a member of staff, leave a note on the desk computer for the receptionist; if they
     need someone in person, walk to the reception desk and tell the receptionist.
-  destination: ward_entrance  # read by the score; not shown to the robot (it is one visitor's goal, not the robot's walk)
+  destination: ward_entrance  # read by the score; shown to the robot only with destination_line
+  destination_line: >-
+    That is where people who ask for the ward go: walk them there when they ask. It is not a walk for you to make on
+    your own.
 staff_line: >-
   The reception robot greets people at reception, gives directions and walks people where they need to go. It leaves
   you a note on the desk computer, or tells you, when someone needs a member of staff.

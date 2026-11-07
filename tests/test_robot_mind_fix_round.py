@@ -94,12 +94,39 @@ async def test_a_blocked_route_the_robot_saw_changes_its_routes(staged):
     assert after != before and "blocked" in after
 
 
+def test_routes_round_a_sign_keep_the_robots_own_router_settings(staged):
+    from wardzero_agents.site.routing import Router
+    ev = staged("evacuation_guide")
+    r = ev.scenario.robot
+    own = Router(ev.site.grid, clearance=0.6, hard=0.3)
+    m = RobotMind(ev.site, ev.scenario.robot_brief, Recorder(), lambda: 0.0, profile=WALKING,
+                  known_places=ev.scenario.known_places, pose=(r.x, r.y, r.yaw), router=own)
+    m.on_objects({"blocked": [{"id": "route_blocked_1", "x": -1.2, "y": -2.6, "text": "Route blocked"}]})
+    blocked, unblocked = m._router_now()
+    for router in (blocked, unblocked):
+        core = getattr(router, "base", router)
+        assert (core.clearance, core.hard) == (0.6, 0.3)
+
+
 # ---- the brief ----------------------------------------------------------------------------------------------------------
 def test_the_destination_key_is_not_shown_to_the_robot(staged):
-    card = mind_for(staged("reception_guide")).card()
-    assert "Destination" not in card
     card = mind_for(staged("evacuation_guide")).card()
     assert "Destination" not in card and "Ambulance handover bay" in card.split("YOUR JOB", 1)[1]
+    m = mind_for(staged("reception_guide"))
+    bare = RobotMind(m.site, {k: v for k, v in m.brief.items() if k != "destination_line"}, Recorder(), lambda: 0.0,
+                     profile=WALKING, known_places=m.known_places, pose=m.pose)
+    assert "Destination" not in bare.card()
+
+
+def test_a_destination_with_a_robot_facing_line_is_shown_with_that_line(staged):
+    """reception_guide: the place people who ask for the ward are walked to, said as such (not the robot's own walk);
+    the place is on a line of its own so a reader can take it as a place name."""
+    m = mind_for(staged("reception_guide"))
+    job = m.card().split("YOUR JOB", 1)[1].split("YOUR BODY", 1)[0]
+    lines = job.splitlines()
+    i = lines.index("Destination: Ward entrance")
+    assert "ask" in lines[i + 1] and "not a walk" in lines[i + 1]
+    assert "destination_line" not in job.lower().replace(" ", "_") and m.place_id("Ward entrance") == "ward_entrance"
 
 
 def test_ward_fetch_rule_defers_to_the_job():
@@ -204,6 +231,37 @@ async def test_an_asleep_track_is_shown_asleep(staged):
     line1 = next(ln for ln in tracks.splitlines() if ln.startswith("- t1"))
     line2 = next(ln for ln in tracks.splitlines() if ln.startswith("- t2"))
     assert "asleep" in line1 and "asleep" not in line2
+
+
+async def test_a_sleeping_person_in_the_sims_own_bbox_3d_is_shown_asleep(staged, tmp_path):
+    """End to end on the wire the robot reads: the stub world's camera/bbox_3d message, from beside M2 (asleep from
+    the start in meal_round), gives a track the robot shows as asleep. Skipped on a sim without sleep."""
+    from wardzero_agents.ros.stub_sim_node import StubSimService
+    from wardzero_agents.runlog import RunLog
+    from wardzero_agents.world.perception import bbox_3d
+    meal = staged("meal_round")
+    w = StubSimService(meal, RunLog(tmp_path / "run"), 1.0, wait_for=()).world
+    q = w.people["M2"]
+    if not hasattr(q, "asleep"):
+        pytest.skip("this sim has no sleep yet")
+    q.asleep = True
+    b = w.site.beds[q.bed]
+    for k in range(24):  # a clear spot 1.5 m from her, looking at her
+        a = 2 * math.pi * k / 24
+        x, y = q.x + 1.5 * math.cos(a), q.y + 1.5 * math.sin(a)
+        if w.robot.router.is_clear(x, y):
+            w.robot.teleport(x, y, math.atan2(q.y - y, q.x - x))
+            break
+    msg = bbox_3d(w, w.robot, 0.0)
+    track = w.tracks.track("M2")
+    assert any(str(d.get("id")) == track for d in msg["detections"]), "M2 is not in view"
+    gw = Recorder()
+    m = mind_for(meal, gw, pose=(w.robot.x, w.robot.y, w.robot.yaw))
+    m.on_people(msg, 0.0)
+    await m.tick(0.0)
+    tracks = gw.reqs[0].user.split("People your camera sees", 1)[1].split("Objects in view", 1)[0]
+    line = next(ln for ln in tracks.splitlines() if ln.startswith(f"- {track}:"))
+    assert "asleep" in line, f"bbox_3d carries no asleep for {track} ({b.id}): {msg['detections']}"
 
 
 async def test_a_person_at_a_known_spot_is_said_to_be_there(staged):
