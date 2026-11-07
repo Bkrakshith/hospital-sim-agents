@@ -12,16 +12,22 @@ robot_brief:
     Notice a patient who gets up and starts to leave the ward. Stay beside them, speak calmly, and press the staff call
     button to call a nurse; do not walk away to the nurse base or the desk. Never offer to take them off the ward or to
     the ward doors. Gently suggest going back to bed in B4 and walk them there if they will come. If they keep going,
-    walk beside them until a nurse arrives. Never block, hold or restrain them.
+    walk beside them (follow, with their track) until a nurse arrives. If you walk them back to bed, stay with them there
+    rather than going back to your post. Never block, hold or restrain them.
+  first_contact: false
 # In the ward corridor, north of bay B4, facing south-east: it sees her leave B4, and she does not pass close by it.
+staff_line: >-
+  At night the ward robot watches the corridor. If a patient gets up and wanders, it stays with them and presses the
+  staff call for a nurse.
 robot_start: {x: 19.0, y: 11.5, yaw: -1.0}
 characters:
   - {id: W1, name: Patricia Smith, sex: female, age_band: 71+, role: patient, mood: anxious, room: B4, x: 25.101, y: 8.015, yaw: -1.571, bed: B4,
      role_prompt: "It is the middle of the night and you are confused. You think you are at home and need to get to your daughter. You do not want to bother the staff, and you overestimate what you can do. If someone speaks kindly and calmly, you may stay with them. [Carroll 2010; Naithani 2008]"}
-  - {id: N1, name: Rebecca Green, sex: female, age_band: 31-50, role: ward_nurse, mood: stressed, room: Ward_WS1, x: 21.6, y: 23.2, yaw: 0.0}
+  - {id: N1, name: Rebecca Green, sex: female, age_band: 31-50, role: ward_nurse, mood: stressed, room: Ward_WS1, x: 21.6, y: 23.2, yaw: 0.0,
+     role_prompt: "You are the night nurse at the nurse base, writing up the night's notes and checking the drug chart for the morning. The ward robot watches the corridor at night, so carry on with your notes until the robot calls you or tells you a patient needs you; then go straight to that patient. [inferred]"}
 objects: []
 timeline:
-  - {id: b1, at: "t+02:00", card: patient_gets_up, target: W1}
+  - {id: b1, at: "t+00:20", card: patient_gets_up, target: W1}
 criteria:
   - {id: left, label: Patient not alone for long after leaving, metric: patient_left_ward_unaccompanied_s, op: "<=", threshold: 30, weight: 4}   # first guess
   - {id: nurse, label: Nurse alerted within a minute, metric: nurse_alerted_s, op: "<=", threshold: 60, weight: 3}   # first guess

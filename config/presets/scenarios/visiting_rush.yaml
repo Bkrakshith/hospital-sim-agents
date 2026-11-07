@@ -6,7 +6,8 @@ prompt: >-
 focus_rooms: [Ward_Corridor]
 known_places: [Ward_Entrance, Ward_Corridor, ward_doors, nurse_base_ward, B1, B3]
 duration_min: 10
-arrival_entrance: ward_entrance
+# The visiting groups come down the corridor from the bays at the far end, towards the robot, so it meets them.
+arrival_entrance: Ward_Corridor_centre
 robot_brief:
   role: ward corridor runner
   job: Get through the crowd to the Ward nurse base (Nurse workstation 1), about 17 m up the ward corridor on your right, not the reception at the ward entrance where you start. Give way, keep to a walking pace, and do not push through.
@@ -20,7 +21,7 @@ characters:
      role_prompt: "You are the parent of a young child and have your eight-year-old with you. The child is curious about the robot and may follow, touch or block it. You watch anything that approaches your child and step between them if unsure. [Poole 2024; UCSF news]"}
   - {id: V3, name: Joshua Mitchell, sex: male, age_band: 18-30, role: visitor, mood: excited, room: Ward_Corridor, x: 19.6, y: 20.0, yaw: -1.5708,
      role_prompt: "You are a young child's older cousin, visiting with the family. You are curious about the robot and want to follow it and talk to it. [UCSF news]"}
-  - {id: W1, name: Edward Jackson, sex: male, age_band: 71+, role: patient, mood: relieved, room: Ward_Corridor, x: 18.5, y: 25.0, yaw: -1.5708,
+  - {id: W1, name: Edward Jackson, sex: male, age_band: 71+, role: wheelchair_patient, mood: relieved, room: Ward_Corridor, x: 18.5, y: 25.0, yaw: -1.5708,
      role_prompt: "You are a patient in a wheelchair going to the day room to meet your family. You move slowly and cannot get out of the way quickly. [Smarr 2014]"}
 objects: []
 timeline:

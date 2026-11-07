@@ -8,12 +8,20 @@ known_places: [Ward_Corridor, Ward_Entrance, nurse_base_ward, B2, B5]
 duration_min: 8
 robot_brief:
   role: night ward assistant
-  job: Answer a call bell while the nurses are busy. Reassure the patient, fetch a nurse, and never lift or move the patient.
+  job: >-
+    Answer a call bell while the nurses are busy. Go to the patient and reassure them. To fetch a nurse, stay with the
+    patient and press the staff call button (press_call, with their track), which calls the nurse to the bed; only if no
+    nurse comes, go and tell one. Never lift or move the patient.
+  first_contact: false
+staff_line: >-
+  At night the ward robot answers the call bells while you are busy. When a patient needs a nurse it presses the staff
+  call for them, or comes to tell you.
 robot_start: {x: 19.0, y: 15.0, yaw: 1.2}   # facing up the corridor: the B2 door call light is in view
 characters:
   - {id: P1, name: Margaret Wilson, sex: female, age_band: 71+, role: patient, mood: anxious, room: B2, x: 25.101, y: 19.098, yaw: -1.571, bed: B2}
   - {id: P2, name: Noah Robinson, sex: male, age_band: 51-70, role: patient, mood: sad, room: B5, x: 25.101, y: 5.086, yaw: 1.571, bed: B5}
-  - {id: N1, name: Sophie Johnson, sex: female, age_band: 31-50, role: ward_nurse, mood: stressed, room: B6, x: 13.5, y: 23.4, yaw: 0.0}
+  - {id: N1, name: Sophie Johnson, sex: female, age_band: 31-50, role: ward_nurse, mood: stressed, room: B6, x: 13.5, y: 23.4, yaw: 0.0,
+     role_prompt: "You are the night nurse doing the 2 a.m. observations in bay B6 on the far side of the ward: blood pressure, pulse and the chart for each patient there. The ward robot answers call bells at night, so carry on with the observations until the robot calls you or tells you a patient needs you; then go straight to that patient. [inferred]"}
 objects:
   - {kind: call_bell, bed: B2}
 timeline:

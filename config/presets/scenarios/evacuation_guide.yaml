@@ -12,7 +12,13 @@ robot_brief:
     When the alarm sounds, get everyone out by a safe open way. Watch and listen for blocked routes, tell people which
     way is blocked and send or walk them the other way. Once the people near you are on their way out, check the A&E
     waiting area and walk anyone still there out. Stay calm and give short instructions.
-  destination: AE_Handover
+  safe_exit: >-
+    With a fire at the main entrance, the safe way out is the Ambulance handover bay in A&E (the ambulance doors). Take
+    people there, and once they are through, stay there with them rather than walking back into the building.
+  destination: AE_Handover  # read by the score (people reach the right exit); the robot is told the safe exit above
+staff_line: >-
+  When the fire alarm sounds, the robot guides the visitors and patients in the lobby and the A&E waiting room out by
+  the safe way.
 robot_start: {x: 2.5, y: -0.5, yaw: 3.1416}
 characters:
   - {id: V1, name: Susan Jones, sex: female, age_band: 31-50, role: visitor, mood: stressed, room: Lobby, x: -2.0, y: 1.0, yaw: 0.0}

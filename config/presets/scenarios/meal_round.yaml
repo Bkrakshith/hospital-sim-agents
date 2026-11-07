@@ -9,18 +9,27 @@ known_places: [Ward_Entrance, Ward_Corridor, B1, B2, B3, B4, B5, B6, nurse_base_
 duration_min: 10
 robot_brief:
   role: ward meal assistant
-  job: Bring each patient the right tray, and put it where they can reach it. Skip anyone who is asleep and tell a nurse. Do not feed or lift anyone.
+  job: >-
+    Bring each patient the right tray, and put it where they can reach it. Skip anyone who is asleep and tell a nurse.
+    If a call bell rings during the round, answer it: go to the patient, see what they need, and fetch a nurse if they
+    need one. Do not feed or lift anyone.
+  first_contact: false
   meals:
     - {patient_bed: B1, tray_label: "Margaret Hall - soft diet"}
     - {patient_bed: B2, tray_label: "George Wright - diabetic"}
     - {patient_bed: B3, tray_label: "Joan Mason - vegetarian"}
+staff_line: >-
+  During the lunch round the robot brings the meal trays to the patients, answers any call bell that rings during the
+  round, and tells you when a patient is asleep or needs a nurse.
 robot_start: {x: 19.0, y: 6.0, yaw: 1.5708}
 characters:
   - {id: M1, name: Margaret Hall, sex: female, age_band: 71+, role: patient, mood: happy, room: B1, x: 25.109, y: 27.29, yaw: 1.571, bed: B1}
-  - {id: M2, name: George Wright, sex: male, age_band: 71+, role: patient, mood: relieved, room: B2, x: 25.101, y: 19.098, yaw: -1.571, bed: B2}
+  - {id: M2, name: George Wright, sex: male, age_band: 71+, role: patient, mood: relieved, room: B2, x: 25.101, y: 19.098, yaw: -1.571, bed: B2,
+     start_asleep: true}
   - {id: M3, name: Joan Mason, sex: female, age_band: 51-70, role: patient, mood: anxious, room: B3, x: 25.109, y: 16.204, yaw: 1.571, bed: B3,
      role_prompt: "After your operation it hurts to sit up, but you can sit up in bed when someone asks you to. You can only reach what is placed on the over-bed table close beside you. If a tray is out of reach, you cannot eat it and you say so. [Naithani 2008]"}
-  - {id: N1, name: Hannah Taylor, sex: female, age_band: 31-50, role: ward_nurse, mood: stressed, room: Ward_WS2, x: 21.5, y: 12.1, yaw: 0.0}
+  - {id: N1, name: Hannah Taylor, sex: female, age_band: 31-50, role: ward_nurse, mood: stressed, room: Ward_WS2, x: 21.5, y: 12.1, yaw: 0.0,
+     role_prompt: "You are the nurse on the lunchtime drug round: you give each patient their medicines from the trolley at nurse workstation 2 and sign the drug chart. The robot serves the meal trays and answers call bells during the round, so leave the trays and the bells to it. Go to a patient when the robot tells you or calls you, or when someone is in danger. [inferred from Westbrook 2010]"}
 objects:
   - {kind: tray, id: tray_M1, label: "Margaret Hall - soft diet", owner: M1, holder: g1, x: 19.0, y: 6.0, z: 1.0}
   - {kind: tray, id: tray_M2, label: "George Wright - diabetic", owner: M2, holder: g1, x: 19.0, y: 6.0, z: 1.0}
