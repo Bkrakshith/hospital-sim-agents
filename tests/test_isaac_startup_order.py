@@ -124,3 +124,18 @@ def test_people_without_an_agent_are_a_problem_in_the_run_record(tmp_path, caplo
     rows = [r for r in _host_rows(tmp_path) if r.get("kind") == "problem"]
     assert rows and rows[0]["what"] == "people_not_animated" and rows[0]["missing"] == ["N1", "S1"]
     assert any("0 of 2" in r.getMessage() and "N1, S1" in r.getMessage() for r in caplog.records)
+
+
+# ---- a recording problem (a full disk cutting follow.mp4 short) reaches the run record -----------------------
+def test_recording_problems_are_problems_in_the_run_record(tmp_path):
+    from wardzero_agents.runlog import RunLog
+
+    h = A.IsaacHost.__new__(A.IsaacHost)
+    h.runlog, h.bag = RunLog(tmp_path), None
+    problem = {"what": "disk_full", "message": "the disk is nearly full: follow.mp4 may be cut short"}
+    h.recorder = SimpleNamespace(finish=lambda: {"frames": 3, "problems": [problem]})
+    h.finish_recording()
+    rows = _host_rows(tmp_path)
+    assert [r for r in rows if r.get("kind") == "problem"] == [{"kind": "problem", **problem}]
+    rec = [r for r in rows if r.get("kind") == "recording"]
+    assert rec and "problems" not in rec[0] and rec[0]["frames"] == 3

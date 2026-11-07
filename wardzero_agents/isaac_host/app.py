@@ -568,7 +568,10 @@ class IsaacHost:
         if self.recorder is not None:
             try:
                 stats = self.recorder.finish()
+                problems = stats.pop("problems", [])
                 self.runlog.write("host", {"kind": "recording", **stats})
+                for pr in problems:  # the launcher copies these into meta.json (isaac_problems)
+                    self.runlog.write("host", {"kind": "problem", **pr})
             except Exception:
                 log.exception("could not finish the recording")
             self.recorder = None
