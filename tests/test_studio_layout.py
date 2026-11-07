@@ -116,7 +116,7 @@ def _live_state(page):
     sp, other = chars[0], chars[1]
     other = {**other, "x": sp["x"] + 1.6, "y": sp["y"] + 1.2}  # right where the first bubble spot is
     people = [sp, other] + chars[2:]
-    return {"running": True, "run_id": "r1", "project_id": None, "t": 30.0, "cost_usd": 12.34, "budget_usd": 25.0,
+    return {"running": True, "run_id": "r1", "project_id": page.evaluate("() => WZ.project.id"), "t": 30.0, "cost_usd": 12.34, "budget_usd": 25.0,
             "tokens": {"input": 1234567, "output": 123456, "cache_read": 9876543, "cache_write": 0},
             "people": people, "robot": {"x": sp["x"] - 1.0, "y": sp["y"] + 0.6, "yaw": 0.0}, "objects": [],
             "says_tail": [{"t": 29.0, "person": sp["id"], "text": "Excuse me, can you help me find the ward where my "
@@ -187,3 +187,68 @@ def test_one_step_branches_get_no_extra_in_order_row(page):
         .filter((li) => li.querySelectorAll(':scope > ul > li').length === 1).length;
       return { single, extra }; }""")
     assert res["extra"] == 0
+
+
+# ---- the Run page shows the open project's run only (re-QA bug 17) and names newcomers (bug 18) -------------
+def _push(page, st, times=2):
+    for _ in range(times):
+        page.evaluate("(s) => window.__push(s)", st)
+        page.wait_for_timeout(500)
+
+
+def _finished_state(page, project_id):
+    sp = page.evaluate("() => WZ.project.characters[0].id")
+    return {"running": False, "run_id": "r-other", "project_id": project_id, "t": 60.0, "cost_usd": 0.5,
+            "budget_usd": 25.0, "tokens": {}, "people": [], "robot": {}, "objects": [],
+            "says_tail": [{"t": 50.0, "person": sp, "text": "A line from the other project's run"}],
+            "flow": {"kind": "sequence", "label": "Other scenario flow", "state": "met", "children": []},
+            "phase": "done", "has_report": True}
+
+
+def test_the_run_page_hides_another_projects_finished_run(page, studio_url):
+    page.goto(studio_url + "#/run")
+    page.wait_for_timeout(1000)
+    _push(page, _finished_state(page, "some-other-project"))
+    assert page.evaluate("() => document.querySelectorAll('.tail li').length") == 0
+    assert "Other scenario flow" not in page.evaluate("() => document.querySelector('.flow-live').textContent")
+    assert page.evaluate("() => document.querySelector('.phases').hidden")
+    assert page.evaluate("() => document.querySelector('.runstate').textContent") == ""
+    assert page.evaluate("() => [...document.querySelectorAll('button')].find((b) => b.textContent === 'Open the report').hidden")
+    assert page.evaluate("() => document.querySelector('.map-chip').textContent") == "Start layout"
+    pid = page.evaluate("() => WZ.project.id")
+    _push(page, _finished_state(page, pid))  # the same state for the open project: shown
+    assert page.evaluate("() => document.querySelectorAll('.tail li').length") == 1
+    assert page.evaluate("() => document.querySelector('.map-chip').textContent") == "Run finished"
+    assert not page.errors
+
+
+def test_another_projects_live_run_leaves_start_disabled_and_says_so(page, studio_url):
+    page.goto(studio_url + "#/run")
+    page.wait_for_timeout(1000)
+    st = _live_state(page)
+    st["project_id"] = "some-other-project"
+    _push(page, st)
+    assert page.evaluate("() => document.querySelectorAll('.run-page svg .bub').length") == 0
+    assert page.evaluate("() => document.querySelectorAll('.tail li').length") == 0
+    start = page.locator("button:has-text('Start run')")
+    assert start.is_visible() and start.is_disabled()
+    assert not page.locator("button:has-text('Stop run')").is_visible()
+    assert "another project" in page.evaluate("() => document.querySelector('.runstate').textContent").lower()
+    st["running"], st["phase"] = False, "done"
+    _push(page, st)
+    assert not start.is_disabled()
+
+
+def test_a_person_who_arrives_mid_run_is_named_not_shown_by_id(page, studio_url):
+    page.goto(studio_url + "#/run")
+    page.wait_for_timeout(1000)
+    st = _live_state(page)
+    sp = st["people"][0]
+    st["people"] = st["people"] + [{"id": "N1", "x": sp["x"] + 3.0, "y": sp["y"] - 2.0, "posture": "standing"}]
+    st["says_tail"] = [{"t": 29.5, "person": "N1", "text": "Thank you"}]
+    _push(page, st)
+    who = page.evaluate("() => [...document.querySelectorAll('.tail li b')].map((b) => b.textContent)")
+    assert who == ["Newcomer"]
+    labels = page.evaluate("() => [...document.querySelectorAll('.run-page svg text')].map((t) => t.textContent)")
+    assert "N1" not in labels and "Newcomer" in labels
+    assert not page.errors

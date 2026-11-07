@@ -37,8 +37,12 @@
 
     // ---- settings (left) ----
     const set = {};
-    const live = () => !!(WZ.state && WZ.state.running);
-    const finished = () => WZ.state && WZ.state.run_id && !WZ.state.running && WZ.state.phase === "done";
+    // One runner serves every project: its state (live map, transcript, flow, phases) belongs on the Run page of the
+    // project that started the run, and nowhere else.
+    const mine = (s) => !!s && !!s.run_id && s.project_id === P().id;
+    const view = () => { const s = WZ.state || {}; return mine(s) ? s : {}; };
+    const elsewhere = () => { const s = WZ.state || {}; return !!s.running && !mine(s); };
+    const live = () => !!view().running;
     async function save(patch, input, back) {
       try { await WZ.saveProject(patch); }
       catch (e) { WZ.toast(e.message, "bad"); if (input) input.value = back; }
@@ -132,7 +136,7 @@
       if (P().scenario_prompt) { startBtn.textContent = "Adapting the flow to your prompt…"; }
       try {
         const r = await API.post("/api/run/start", { project_id: P().id });
-        WZ.state = Object.assign({}, WZ.state, { running: true, phase: "running", run_id: r.run_id, has_report: false });
+        WZ.state = Object.assign({}, WZ.state, { running: true, phase: "running", run_id: r.run_id, project_id: P().id, has_report: false });
       } catch (e) { errBox.textContent = e.message; }
       S.starting = false; startBtn.textContent = "Start run"; refresh();
     }
@@ -157,9 +161,9 @@
     }
 
     function refresh() {
-      const s = WZ.state || {}, running = !!s.running;
+      const s = view(), running = !!s.running, other = elsewhere();
       startBtn.hidden = running; stopBtn.hidden = !running;
-      startBtn.disabled = S.starting || running;
+      startBtn.disabled = S.starting || running || other;
       const canStop = running && (s.phase === "running" || !s.phase) && !S.stopping;
       stopBtn.disabled = !canStop;
       stopBtn.textContent = S.stopping || (running && s.phase && s.phase !== "running") ? (s.phase === "debrief" ? "Debrief in progress" : s.phase === "report" ? "Writing the report" : "Stopping…") : "Stop run";
@@ -169,15 +173,17 @@
       const show = !!s.run_id && (running || ph === "done" || S.stopping);
       phases.hidden = !show;
       phases.replaceChildren(...PHASES.map(([id, label], i) => h("li.phase" + (i < idx ? ".past" : i === idx ? ".now" : ""), { "aria-current": i === idx ? "step" : false }, h("i"), label)));
-      stateBox.textContent = running ? (ph === "debrief" ? "The people are being asked how it went." : ph === "report" ? "Writing the report. This takes a moment." : "Time " + clock(s.t) + " of " + clock(P().duration_min * 60))
+      stateBox.textContent = other ? "Another project's run is going. You can start this one when it ends."
+        : running ? (ph === "debrief" ? "The people are being asked how it went." : ph === "report" ? "Writing the report. This takes a moment." : "Time " + clock(s.t) + " of " + clock(P().duration_min * 60))
         : ph === "done" && s.run_id ? (s.error ? "The run ended with a problem (exit code " + s.exit_code + ")." : "The run is finished.") : "";
       if (!running && ph === "done" && s.error) drawProblems(s);
       reportBtn.hidden = !(!running && s.has_report);
       chip.textContent = running ? (ph === "running" || !ph ? "Live · " + clock(s.t) : "Run ending") : (ph === "done" && s.run_id ? "Run finished" : "Start layout");
       // transcript
-      if (s.says_tail && s.says_tail.length) { WZ.lastSays = { run: s.run_id, says: s.says_tail }; }
+      if (s.says_tail && s.says_tail.length) { WZ.lastSays = { run: s.run_id, project: P().id, says: s.says_tail }; }
       else if (s.running && WZ.lastSays && WZ.lastSays.run !== s.run_id) WZ.lastSays = null;
-      const says = ((WZ.lastSays && WZ.lastSays.says) || []).slice(-8);
+      const kept = WZ.lastSays && s.run_id && WZ.lastSays.project === P().id ? WZ.lastSays.says : [];
+      const says = kept.slice(-8);
       tail.replaceChildren(...says.map((e) => h("li", h("time", clock(e.t)), h("b", nameOf(e.person)), h("span", e.text || ""))));
       tailBox.querySelector(".empty-tail").hidden = says.length > 0;
       if (s.flow) { flowTree.replaceChildren(WZ.flowTree(s.flow)); }
@@ -188,16 +194,21 @@
     }
 
     // ---- map ----
+    // someone the project has no character for: a person who arrived during the run (N1, N2, ...) is a newcomer;
+    // never a raw id
     const nameOf = (id) => {
       if (id === "robot") return "Robot";
       const c = P().characters.find((x) => x.id === id || x.name === id);
-      return c ? c.name.split(" ")[0] : String(id || "?");
+      if (c) return c.name.split(" ")[0];
+      const m = /^N([1-9][0-9]*)$/.exec(String(id || ""));
+      if (m) return m[1] === "1" ? "Newcomer" : "Newcomer " + m[1];
+      return "Someone";
     };
-    const charOf = (id) => P().characters.find((x) => x.id === id || x.name === id) || { id, name: String(id || "?"), role: "visitor" };
+    const charOf = (id) => P().characters.find((x) => x.id === id || x.name === id) || { id, name: nameOf(id), role: "visitor" };
     const startRobot = () => P().robot_start || { x: 0, y: 0, yaw: 0 };
     function frame(animate) {
       const pts = P().characters.map((c) => ({ x: c.x, y: c.y })).concat([startRobot()]);
-      const s = WZ.state || {};
+      const s = view();
       if (s.running && s.people && s.people.length) for (const q of s.people) if (Number.isFinite(q.x)) pts.push({ x: q.x, y: q.y });
       S.map.frame([], pts, 0.18, 16, !!animate);
     }
@@ -263,13 +274,14 @@
     function draw(now) {
       S.raf = requestAnimationFrame(draw);
       if (S.dead || now - S.lastDraw < 40) return;
-      const s = WZ.state || {};
+      const s = view();
       if (!s.running || !S.live) return;
       S.lastDraw = now;
       const list = [], extras = [];
       for (const q of s.people || []) {
         if (!Number.isFinite(q.x)) continue;
-        if (!P().characters.some((x) => x.id === q.id || x.name === q.id)) { extras.push({ id: q.id, x: q.x, y: q.y }); continue; }   // lying patients
+        const known = P().characters.some((x) => x.id === q.id || x.name === q.id);
+        if (!known && (!q.posture || q.posture === "lying")) { extras.push({ id: q.id, x: q.x, y: q.y }); continue; }   // lying patients
         const c = glide(S.pos, q.id, q.x, q.y), ch = charOf(q.id);
         list.push({ id: q.id, name: ch.name, role: ch.role, x: c.x, y: c.y });
       }
@@ -299,6 +311,7 @@
     }
     function onState(s) {
       if (S.dead) return;
+      s = mine(s) ? s : {};
       if (s.running && !S.wasRunning) { S.framed = false; S.pos.clear(); S.extraKey = null; S.live = true; S.stopping = false; }
       if (s.running && !S.framed && s.people && s.people.length) { S.framed = true; frame(false); }
       if (!s.running && S.wasRunning) { S.live = false; S.stopping = false; S.map._clear(S.gBubbles); }
