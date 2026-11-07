@@ -188,27 +188,28 @@ def _requests(d: RunData) -> list[dict]:
 
 
 def _task_people(d: RunData, r: dict) -> set[str]:
-    """The people a robot_tasks row is about: its person or about, or for an action row the person of its track (see
-    _track_people)."""
-    out = {str(r[k]) for k in ("person", "about") if isinstance(r.get(k), str) and r[k]}
-    if r.get("kind") == "action":
-        trk = r.get("track") or r.get("to")
-        if isinstance(trk, str) and trk:
-            who = _track_people(d).get(trk)
-            if who:
-                out.add(who)
+    """The people a robot_tasks row is about: its person or about, or for an action row the person of the track it
+    names in track, about or to (see _track_people; an action's about is a track id, not a person)."""
+    if r.get("kind") != "action":
+        return {str(r[k]) for k in ("person", "about") if isinstance(r.get(k), str) and r[k]}
+    out = {str(r["person"])} if isinstance(r.get("person"), str) and r["person"] else set()
+    for k in ("track", "about", "to"):
+        who = _track_people(d).get(r.get(k)) if isinstance(r.get(k), str) and r[k] else None
+        if who:
+            out.add(who)
     return out
 
 
 def _answers(d: RunData) -> dict[str, list[float]]:
     """Per person, sorted times the robot answered them: a robot line for them (see _robot_line_to: addressed to
-    them and heard, or with no addressee heard by them within 4.0 m, or to the room they heard) or a robot task
-    row about them (cached)."""
+    them and heard, or with no addressee heard by them within 4.0 m; a line to the whole room is no answer) or a
+    robot task row about them (cached)."""
     cached = getattr(d, "_answers_cache", None)
     if cached is None:
         cached = {}
         for a in d.audio:
-            if a.get("source_kind") == "robot" and a.get("text") and _num(a.get("t")) is not None:
+            if (a.get("source_kind") == "robot" and a.get("text") and _num(a.get("t")) is not None
+                    and not (a.get("to_room") or a.get("addressee") == "room")):
                 for p in _robot_line_to(d, a):
                     cached.setdefault(p, []).append(float(a["t"]))
         for r in d.robot_tasks:
@@ -911,50 +912,51 @@ def robot_reached_destination_s(d: RunData) -> Optional[float]:
     return next((p["t"] for p in d.poses() if math.hypot(p["x"] - xy[0], p["y"] - xy[1]) <= ARRIVE_M), None)
 
 
-RESTART_S = 0.5  # a guide superseded by another guide with the same person this soon after was restarted
-
-
-def _guide_ends(d: RunData) -> Optional[list[bool]]:
-    """One verdict per guide the robot led, from the sim's own guide rows (robot_tasks kind guide): True when its end
-    row (same id) says arrived, the person it walked at the place; False for any other end (blocked_by_person,
-    left_behind, timeout, superseded by something else). A guide still under way when the run ended is not judged,
-    nor one superseded by a new guide with the same person (that one is judged). None for a run recorded before
-    guide end rows were logged."""
+def _guided_people(d: RunData) -> Optional[dict[str, bool]]:
+    """One verdict per person the robot led, from the sim's own guide rows (robot_tasks kind guide): True when any
+    guide with them ended arrived (its end row, same id, says arrived: the person it walked was at the place), so a
+    walk that was held up and then retried counts once; False when none did (blocked_by_person, left_behind, timeout,
+    superseded, or still under way when the run ended). None for a run with no guide start rows (recorded before
+    they were logged, or no guide at all)."""
     rows = [r for r in d.robot_tasks if r.get("kind") == "guide" and _num(r.get("t")) is not None]
     starts = [r for r in rows if r.get("event") == "start" and isinstance(r.get("person"), str) and r["person"]]
-    ends = {r.get("id"): r for r in rows if r.get("event") == "end"}
-    if not starts or not ends:
+    if not starts:
         return None
-    out = []
+    ends = {r.get("id"): r for r in rows if r.get("event") == "end"}
+    out: dict[str, bool] = {}
     for g in starts:
         e = ends.get(g.get("id"))
-        if e is None:
-            continue
-        if e.get("reason") == "superseded" and any(
-                o is not g and o.get("person") == g["person"] and 0.0 <= o["t"] - e["t"] <= RESTART_S
-                for o in starts):
-            continue
-        out.append(e.get("reason") == "arrived" and e.get("person", g["person"]) == g["person"])
+        ok = e is not None and e.get("reason") == "arrived" and e.get("person", g["person"]) == g["person"]
+        out[g["person"]] = out.get(g["person"], False) or ok
+    return out
+
+
+def _per_person(hits) -> dict[str, bool]:
+    out: dict[str, bool] = {}
+    for h in hits:
+        out[h[1]] = out.get(h[1], False) or h[2] == "success"
     return out
 
 
 def people_reached_destination_rate(d: RunData) -> Optional[float]:
-    """Of the people the robot sent somewhere, the share it got there:
-    - a guide counts only when the sim ended it arrived, with the person it walked at the place (see _guide_ends);
-      a guide that started and stopped short counts as a miss even if the person then walked there alone, and a
-      person who got there with no guide is not counted at all;
+    """Of the people the robot sent somewhere, the share it got there (one verdict per person):
+    - a person it guided counts only when a guide with them ended arrived, the person it walked at the place (see
+      _guided_people); a guide that stopped short, or was still under way when the run ended, is a miss even if the
+      person then walked there alone, and a person who got there with no guide is not counted at all;
     - spoken directions count when the person they were for reached the place they named within 120 s (the
       campaign's spoken-directions rule; a person also offered a guide is judged by the guide).
-    A run recorded before guide end rows were logged judges its guides as before (the person reached the place in
-    time). None if the robot neither guided nor directed anyone."""
+    A run recorded before guide start and end rows were logged judges its guides as before (the guide's goal or the
+    person reaching the place in time). None if the robot neither guided nor directed anyone."""
     from ..campaign.experiences import _Run, rule_directions_nowhere, rule_spoken_directions
     run = _Run(d.run_dir)
-    guides = _guide_ends(d)
-    hits = [h[2] == "success" for h in rule_spoken_directions(run)]
-    hits += guides if guides is not None else [h[2] == "success" for h in rule_directions_nowhere(run)]
-    if not hits:
+    guided = _guided_people(d)
+    if guided is None:
+        guided = _per_person(rule_directions_nowhere(run))
+    spoken = _per_person(rule_spoken_directions(run))
+    verdicts = {**spoken, **guided}
+    if not verdicts:
         return None
-    return sum(1 for h in hits if h) / len(hits)
+    return sum(1 for v in verdicts.values() if v) / len(verdicts)
 
 
 def frozen_person_helped_s(d: RunData) -> Optional[float]:

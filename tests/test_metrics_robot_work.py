@@ -95,6 +95,36 @@ def test_a_guide_restarted_for_the_same_person_is_judged_once(tmp_path):
     assert val(d, "people_reached_destination_rate") == pytest.approx(0.5)
 
 
+_H1_HELD = [{"t": 76.4, "kind": "action", "id": "rb17", "action": "guide_start", "track": "t2",
+             "place": "clinic_corridor"},
+            {"t": 76.4, "kind": "guide", "event": "start", "id": "rb17", "person": "H1", "place": "clinic_corridor",
+             "x": 30.0, "y": 4.0, "room": None, "route_m": 20.0},
+            {"t": 76.4, "kind": "result", "id": "rb17", "action": "guide_start", "ok": True, "reason": "started"}]
+
+
+def test_a_guide_still_under_way_at_the_end_does_not_count_when_the_person_walks_there_alone(tmp_path):
+    # a short run: the only guide never ended (held behind someone) and H1 walked to the clinics on her own
+    d = make_run(tmp_path / "noend", REC_META, robot_tasks=list(_H1_HELD),
+                 status=_walk("H1", (-2.0, -2.6), (30.0, 4.0), 80.0, 120.0) + [status(150.0, "H1", 30.0, 4.0)])
+    assert val(d, "people_reached_destination_rate") == 0.0
+    assert evaluate(PRESETS["reception_guide"], d).passed is False
+    # the same with another guide (V1) that did end arrived: H1 is still a miss
+    tasks = _guide(10.0, 40.0, "rb2", "V1") + list(_H1_HELD)
+    d = make_run(tmp_path / "one_end", REC_META, robot_tasks=tasks,
+                 status=_walk("H1", (-2.0, -2.6), (30.0, 4.0), 80.0, 120.0) + [status(150.0, "H1", 30.0, 4.0)])
+    assert val(d, "people_reached_destination_rate") == pytest.approx(0.5)
+
+
+def test_a_person_walked_out_on_a_retry_counts_once(tmp_path):
+    # V2's first guide is held by a bystander and the robot walks her out on a retry 20 s later; V1 and P1 arrive
+    tasks = (_guide(40.0, 80.0, "a1", "V2", "blocked_by_person") + _guide(100.0, 140.0, "a2", "V2")
+             + _guide(150.0, 200.0, "a3", "V1") + _guide(210.0, 260.0, "a4", "P1"))
+    d = make_run(tmp_path, EVAC_META, robot_tasks=tasks,
+                 status=[status(300.0, p, -29.0, 6.6) for p in ("V1", "V2", "P1")])
+    assert val(d, "people_reached_destination_rate") == 1.0
+    assert row(evaluate(PRESETS["evacuation_guide"], d), "reached")["status"] == "pass"
+
+
 # ---- item 3: the frozen person is helped in time ------------------------------------------------------------------
 EVAC_META = {"preset_id": "evacuation_guide", "scenario_id": "evacuation_guide",
              "people": {"V1": {"role": "ward_visitor"}, "V2": {"role": "ward_visitor"}, "P1": {"role": "patient"}}}
@@ -195,6 +225,21 @@ def test_reception_oracle2_a_goodbye_to_someone_else_is_not_the_answer(tmp_path)
                           _say(19.0, None, "The clinics are down the corridor.", heard=["H1"])],
                    robot_pose=[pose(19.0, 0.0, 0.0)], status=[status(19.0, "H1", 6.0, 0.0)])
     assert val(far, "unanswered_requests") == 1.0
+
+
+def test_a_room_announcement_is_not_the_answer_to_a_request(tmp_path):
+    # V1 asks the way out and the robot's next line is the alarm announcement to the whole room, which she hears
+    audio = [_ask(10.0, "V1", "Which way out?", heard=True),
+             _say(11.0, None, "Fire alarm, please leave by the A&E doors", heard=["V1", "V2"], to_room=True)]
+    d = make_run(tmp_path, EVAC_META, audio=audio)
+    assert val(d, "unanswered_requests") == 1.0
+    # a tell_staff action names her track in about: it answers her when it is sent, not when the tell lands
+    tasks = [{"t": 12.0, "kind": "action", "id": "a2", "action": "tell_staff", "about": "t2"},
+             {"t": 30.0, "kind": "tell", "id": "a2", "about": "V1", "staff": "N1", "heard": True}]
+    d = make_run(tmp_path / "act", EVAC_META, audio=[_ask(10.0, "V1", "Can you get a nurse?", heard=True)],
+                 robot_tasks=tasks)
+    assert val(d, "unanswered_requests") == 0.0
+    assert val(d, "mean_response_s") == pytest.approx(2.0)
 
 
 def test_requests_the_robot_never_heard_are_na(tmp_path):
@@ -304,7 +349,8 @@ def test_a_person_walking_into_the_robot_is_not_its_speed(tmp_path):
 
 
 def test_a_shove_with_no_robot_command_is_left_out(tmp_path):
-    # Isaac meal_round t=136.2: N1 brushes past and shoves the robot 0.4 m while its walker is turning on the spot
+    # poses and N1 from Isaac meal_round t=135.6-137.4; the walker rows are made up (in that run the walker was
+    # following at 0.6 m/s): N1 brushes past and shoves the robot 0.4 m while its walker holds still
     robot = [pose(135.6, 20.407, 12.311, 0.0, 1.228), pose(136.2, 20.031, 12.315, 1.126, 1.638),
              pose(136.8, 19.556, 12.747, 1.409, 1.803), pose(137.4, 19.282, 12.887, 0.163, 0.939)]
     walk = [{"t_phys": t, "speed": s, "mode": 0, "status": st}
