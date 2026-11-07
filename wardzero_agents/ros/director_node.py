@@ -228,6 +228,9 @@ class DirectorService:
             elif kind == "tell" and rec.get("heard"):
                 self._did(t, "tell", rec.get("about"))
             elif kind == "note":
+                left = rec.get("left_at")  # read when the receptionist is back at her desk: count it from when it was left
+                if isinstance(left, (int, float)) and not isinstance(left, bool) and left <= t:
+                    t = float(left)
                 self._did(t, "note", rec.get("about"))
             elif kind == "result" and rec.get("ok") and rec.get("action") in ROBOT_ACTIONS:
                 if rec["action"] == "press_call" and rec.get("reason") == "unanswered":

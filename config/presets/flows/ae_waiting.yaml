@@ -2,7 +2,8 @@ id: ae_waiting
 title: A&E waiting room
 summary: Patients arrive and the robot checks them in and seats them. Once the room has settled the waits are
   announced and the robot should tell the room; then George gets worse where the robot can see him, and the robot
-  should alert staff.
+  should alert staff. A check-in note read late (the receptionist away from her desk) still counts, and does not hold
+  the room back.
 steps:
 - wait_until: {label: The robot greets Ava, when: {robot_spoke_to: P2}, timeout_s: 90}
 - parallel:
@@ -12,27 +13,35 @@ steps:
           label: The robot checks Ava in (a desk note, a walk to a seat or a word with staff)
           when: {any: [{robot_did: {action: note, about: P2}}, {robot_did: {action: guide, about: P2}},
                        {robot_did: {action: tell, about: P2}}]}
-          timeout_s: 120
+          timeout_s: 300
     - - expect:
           label: The robot checks George in (a desk note, a walk to a seat or a word with staff)
           when: {any: [{robot_did: {action: note, about: P1}}, {robot_did: {action: guide, about: P1}},
                        {robot_did: {action: tell, about: P1}}]}
+          timeout_s: 300
+    - - wait_until:
+          label: Ava and George are checked in (or two minutes have passed)
+          when: {all: [{any: [{robot_did: {action: note, about: P2}}, {robot_did: {action: guide, about: P2}},
+                              {robot_did: {action: tell, about: P2}}]},
+                       {any: [{robot_did: {action: note, about: P1}}, {robot_did: {action: guide, about: P1}},
+                              {robot_did: {action: tell, about: P1}}]}]}
           timeout_s: 120
-- wait: {seconds: 15, label: The room settles}
-- fire: {id: b1, card: waits_announcement, label: The waits are announced}
-- parallel:
-    label: The robot keeps the room informed and watches George
-    branches:
-    - - expect:
-          label: The robot tells the waiting room about the waits
-          when: {all: [{robot_spoke_to: {person: P1, since_step: true}}, {robot_spoke_to: {person: P2, since_step: true}}]}
-          timeout_s: 90
-    - - wait_until: {label: The robot is within sight of George, when: {robot_near: {person: P1, within_m: 6}},
-          timeout_s: 90}
-      - wait: {seconds: 10}
-      - fire: {id: b2, card: deterioration, target: P1, label: George gets worse}
-      - expect:
-          label: The robot alerts staff about George
-          when: {any: [{robot_did: {action: tell, about: P1, since_step: true}},
-                       {robot_did: {action: press_call, since_step: true}}]}
-          timeout_s: 120
+      - wait: {seconds: 15, label: The room settles}
+      - fire: {id: b1, card: waits_announcement, label: The waits are announced}
+      - parallel:
+          label: The robot keeps the room informed and watches George
+          branches:
+          - - expect:
+                label: The robot tells the waiting room about the waits
+                when: {all: [{robot_spoke_to: {person: P1, since_step: true}},
+                             {robot_spoke_to: {person: P2, since_step: true}}]}
+                timeout_s: 90
+          - - wait_until: {label: The robot is within sight of George, when: {robot_near: {person: P1, within_m: 6}},
+                timeout_s: 90}
+            - wait: {seconds: 10}
+            - fire: {id: b2, card: deterioration, target: P1, label: George gets worse}
+            - expect:
+                label: The robot alerts staff about George
+                when: {any: [{robot_did: {action: tell, about: P1, since_step: true}},
+                             {robot_did: {action: press_call, since_step: true}}]}
+                timeout_s: 120

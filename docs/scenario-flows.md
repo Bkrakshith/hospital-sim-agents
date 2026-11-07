@@ -8,7 +8,7 @@ This file is made by `python scripts/flows_doc.py`; a test fails when it is out 
 
 ## A&E waiting room (`ae_waiting`)
 
-Patients arrive and the robot checks them in and seats them. Once the room has settled the waits are announced and the robot should tell the room; then George gets worse where the robot can see him, and the robot should alert staff.
+Patients arrive and the robot checks them in and seats them. Once the room has settled the waits are announced and the robot should tell the room; then George gets worse where the robot can see him, and the robot should alert staff. A check-in note read late (the receptionist away from her desk) still counts, and does not hold the room back.
 
 ```mermaid
 flowchart TD
@@ -17,13 +17,12 @@ flowchart TD
   n1 --> n2
   n3{{"At the same time: Ava and George are looked after"}}
   n2 --> n3
-  n4(["Expect: The robot checks Ava in (a desk note, a walk to a seat or a word with staff) (up to 120 s)"])
+  n4(["Expect: The robot checks Ava in (a desk note, a walk to a seat or a word with staff) (up to 300 s)"])
   n3 --> n4
-  n5(["Expect: The robot checks George in (a desk note, a walk to a seat or a word with staff) (up to 120 s)"])
+  n5(["Expect: The robot checks George in (a desk note, a walk to a seat or a word with staff) (up to 300 s)"])
   n3 --> n5
-  n6(("All done"))
-  n4 --> n6
-  n5 --> n6
+  n6["Wait until: Ava and George are checked in (or two minutes have passed) (up to 120 s)"]
+  n3 --> n6
   n7["The room settles"]
   n6 --> n7
   n8[["The waits are announced [waits_announcement]"]]
@@ -43,6 +42,10 @@ flowchart TD
   n15(("All done"))
   n10 --> n15
   n14 --> n15
+  n16(("All done"))
+  n4 --> n16
+  n5 --> n16
+  n15 --> n16
 ```
 
 ## Evacuation guide (`evacuation_guide`)

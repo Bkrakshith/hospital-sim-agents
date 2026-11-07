@@ -402,3 +402,28 @@ def test_every_preset_flow_names_items_that_exist():
         flow = load_flow(flows_dir(CONFIG) / f"{pid}.yaml")
         fit_scenario(flow, people=[c.id for c in p.characters], cards=DECK, rooms=SITE.rooms,
                      items=[o["id"] for o in (p.objects or []) if "id" in o])
+
+
+def test_a_desk_note_counts_from_when_the_robot_left_it(tmp_path):
+    # the receptionist reads a note when she is back at her desk; the robot did its part when it left the note
+    d = _director(tmp_path)
+    d.ingest("robot_tasks", {"kind": "note", "id": "a1", "about": "P1", "staff": "RCP", "read": True,
+                             "left_at": 48.6, "t": 273.4})
+    assert [(t, a, p) for t, a, p, _ in d.robot_did] == [(48.6, "note", "P1")]
+    assert holds({"robot_did": {"action": "note", "about": "P1", "since_step": True}}, d.view(274.0), 40.0)
+    assert not holds({"robot_did": {"action": "note", "about": "P1", "since_step": True}}, d.view(274.0), 100.0)
+    # an older row without left_at keeps the time it was read
+    d.ingest("robot_tasks", {"kind": "note", "id": "a2", "about": "P2", "read": True, "t": 9.0})
+    assert d.robot_did[-1][:3] == (9.0, "note", "P2")
+
+
+def test_ae_waiting_credits_a_late_read_check_in_without_holding_the_room():
+    # George's note is left at 48.6 s but the receptionist reads it only at 273 s (she was away from her desk)
+    seated = lambda t: {c.id: st(c.id, c.x, c.y, "seated" if c.id == "P1" else "standing")  # noqa: E731
+                        for c in PRESETS["ae_waiting"].characters}
+    e, fired = _run("ae_waiting", statuses=seated, view_kw=lambda t: {
+        "robot_did": [(8.5, "note", "P2", None)] + ([(48.6, "note", "P1", None)] if t >= 273.4 else []),
+        **_said({"P2": [2.0]}, t)})
+    ann = next(t for t, c, _ in fired if c == "waits_announcement")
+    assert ann <= 2.0 + 120.0 + 15.0 + 1.0  # the waits are not held back for the late note
+    assert _node(e.tree(), AE_GEORGE)["state"] == "met"
