@@ -3,7 +3,7 @@
     hhumans run SCENARIO [--sim isaac|stub] [--headed|--headless] [--record] [--full-site]
                 [--time-scale F] [--lockstep] [--no-robot] [--no-panel]
                 [--panel-port 8765] [--bot claude|reception|none] [--ready-timeout 600]
-                [--repeat N] [--carry-memory] [--baseline] [--no-report]
+                [--duration S] [--repeat N] [--carry-memory] [--baseline] [--no-report]
     hhumans rerun RUN_DIR [same flags]
     hhumans debrief RUN_DIR [--force]
     hhumans voice RUN_DIR [--models-dir DIR]
@@ -166,6 +166,21 @@ def _load(path) -> "LoadedScenario":  # noqa: F821
         return load_scenario(path)
     except ConfigError as exc:
         raise CliError(f"Scenario error: {exc}") from None
+
+
+MAX_DURATION_S = 3600.0  # a scenario lasts at most 60 minutes
+
+
+def _with_duration(args, loaded):
+    """The scenario with its length capped by --duration (seconds), or as it is without the flag. The run then ends at
+    that time through the normal end of a run: the sim stops at the scenario's length."""
+    d = getattr(args, "duration", None)
+    if d is None:
+        return loaded
+    if not (math.isfinite(d) and 0 < d <= MAX_DURATION_S):
+        raise CliError(f"--duration must be a number of seconds above 0 and at most {MAX_DURATION_S:g}")
+    import dataclasses
+    return dataclasses.replace(loaded, scenario=loaded.scenario.model_copy(update={"duration_min": d / 60.0}))
 
 
 def _positive(value: float, flag: str) -> float:
@@ -460,6 +475,8 @@ def _start_live(args, loaded, overrides: dict, meta: dict, out: Optional[dict] =
     _refuse_if_active()
     rb = split(loaded.scenario.budget_usd if run_usd is None else run_usd)
     overrides = {**overrides, **_robot_override(loaded, args), "budget_usd": round(rb.people, 6)}
+    if getattr(args, "duration", None) is not None:  # the staged copy lasts what --duration says
+        overrides["duration_min"] = loaded.scenario.duration_min
     meta = {**meta, "run_budget_usd": round(rb.total, 6), "post_budget_usd": round(rb.post, 6),
             "robot_budget_usd": round(rb.robot, 6)}
     sim = getattr(args, "sim", None) or "stub"
@@ -721,7 +738,7 @@ def _cmd_batch(args, loaded) -> int:
 
 def cmd_run(args) -> int:
     _resolve_sim(args)
-    loaded = _load(args.scenario)
+    loaded = _with_duration(args, _load(args.scenario))
     _check_isaac_start(args, loaded)
     with _hold_run_lock(f"{loaded.scenario.id}-{datetime.now():%H%M%S}"):
         return _run_locked(args, loaded)
@@ -848,7 +865,7 @@ def cmd_rerun(args) -> int:
         raise CliError(f"Memory snapshot {snap} is missing from {data_dir() / 'snapshots'}; "
                        "it cannot be rerun with the memories it started with.")
     with tempfile.TemporaryDirectory(prefix="hhumans-rerun-") as tmp:
-        loaded = _load_recorded(src, meta, Path(tmp))
+        loaded = _with_duration(args, _load_recorded(src, meta, Path(tmp)))
         _check_isaac_start(args, loaded)
         source = meta.get("scenario_source") or meta.get("scenario_path")
         return _start_live(args, loaded, {"memory_snapshot": snap},
@@ -1156,6 +1173,9 @@ def _live_flags() -> argparse.ArgumentParser:
     p.add_argument("--full-site", action="store_true",
                    help="Isaac: load the whole hospital instead of the scenario's areas (needs a large GPU)")
     p.add_argument("--time-scale", type=float, default=1.0, help="sim seconds per wall second")
+    p.add_argument("--duration", type=float, default=None, metavar="S",
+                   help="end the run after S seconds of sim time instead of at the scenario's length (a short check "
+                        "that still ends the normal way)")
     p.add_argument("--lockstep", action="store_true", help="hold the sim clock while a decision is pending")
     p.add_argument("--no-robot", action="store_true", help="run the scenario without the robot")
     p.add_argument("--no-panel", action="store_true")

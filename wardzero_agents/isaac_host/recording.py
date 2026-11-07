@@ -151,8 +151,8 @@ ROTATE_GAIN = 1.1  # turn the camera only when that brings it at least this much
 
 
 def overhead_view(rects: Sequence[tuple], aspect: float) -> OverheadView:
-    """A camera straight above the kept rooms that sees all of them, as large as the frame allows: the rooms' bounding
-    box (up to the wall tops at the cut height) fills the image's width or its height, with a small margin. An area
+    """A camera straight above the scenario's places that sees all of their floor, as large as the frame allows: the
+    places' bounding box on the floor fills the image's width or its height, with a small margin. An area
     much longer in y than in x (a ward along its corridor) would be a thin strip down the middle of a wide frame, so
     the camera then turns 90 degrees about the vertical and the long side runs across the image. The near plane cuts
     the ceiling away (S1b) so the floor is visible from above."""
@@ -165,9 +165,10 @@ def overhead_view(rects: Sequence[tuple], aspect: float) -> OverheadView:
     need_rot = max(h, w * aspect)  # ... with y across it
     rotated = need_rot * ROTATE_GAIN < need_w
     span = (need_rot if rotated else need_w) * OVERHEAD_MARGIN
-    # the box is fitted at the cut height, not the floor: the outer walls' tops (the highest thing the near plane
-    # leaves) are nearer the camera, so they reach further out in the image than the floor does
-    height = max(span * OVERHEAD_FOCAL_MM / APERTURE_MM + CEILING_CUT_M, CEILING_CUT_M + 1.0)
+    # the box is fitted on the floor, where the people are. Fitted at the cut height (the outer walls' tops, nearer the
+    # camera) it left 10 to 20 % of empty floor round the lobby and A&E; now only the tops of the outermost walls may
+    # reach past the frame's edge
+    height = max(span * OVERHEAD_FOCAL_MM / APERTURE_MM, CEILING_CUT_M + 1.0)
     cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
     # straight down; the tiny offset of the target sets which floor direction is the image's top: +y, or -x when turned
     # (then +y runs left to right)

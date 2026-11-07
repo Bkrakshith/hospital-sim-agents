@@ -44,10 +44,11 @@ def project(v: R.OverheadView, p, aspect=ASPECT):
 
 def bbox_in_image(v, rects, aspect=ASPECT, z=0.0):
     """(width, height) of the rooms' bounding box at height z as a fraction of the image, after checking that every
-    corner of the box, from the floor up to the wall tops the near plane leaves, is inside the image."""
+    corner of the box on the floor is inside the image (the camera fits the floor, where the people are: only the
+    tops of the outermost walls may reach past the edge)."""
     x0, y0 = min(r[0] for r in rects), min(r[1] for r in rects)
     x1, y1 = max(r[2] for r in rects), max(r[3] for r in rects)
-    for zz in (0.0, R.CEILING_CUT_M):
+    for zz in (0.0,):
         for x in (x0, x1):
             for y in (y0, y1):
                 u, w = project(v, (x, y, zz), aspect)
@@ -60,7 +61,7 @@ def bbox_in_image(v, rects, aspect=ASPECT, z=0.0):
 def test_a_ward_taller_than_wide_turns_so_it_fills_the_frame():
     v = R.overhead_view(MEAL_ROUND, ASPECT)
     assert v.rotated
-    fw, fh = bbox_in_image(v, MEAL_ROUND, z=R.CEILING_CUT_M)
+    fw, fh = bbox_in_image(v, MEAL_ROUND, )
     assert max(fw, fh) == pytest.approx(1 / R.OVERHEAD_MARGIN, rel=1e-3)  # tight: only the margin on the long side
     fw, fh = bbox_in_image(v, MEAL_ROUND)  # the floor
     assert min(fw, fh) >= 0.75 and fw * fh >= 0.65  # the ward covers most of the frame, not a thin strip
@@ -82,7 +83,7 @@ def test_wide_area_is_not_turned_and_fills_the_width():
     rects = [(-12.0, -3.5, 11.2, 9.0), (11.2, -4.5, 27.5, 29.0)]  # wider than tall in 16:9 terms
     v = R.overhead_view(rects, ASPECT)
     assert not v.rotated
-    fw, fh = bbox_in_image(v, rects, z=R.CEILING_CUT_M)
+    fw, fh = bbox_in_image(v, rects, )
     assert max(fw, fh) == pytest.approx(1 / R.OVERHEAD_MARGIN, rel=1e-3)
 
 
@@ -90,7 +91,7 @@ def test_a_wide_corridor_fills_the_width():
     rects = [(-35.5, 4.15, 11.21, 14.45)]
     v = R.overhead_view(rects, ASPECT)
     assert not v.rotated
-    fw, _ = bbox_in_image(v, rects, z=R.CEILING_CUT_M)
+    fw, _ = bbox_in_image(v, rects, )
     assert fw == pytest.approx(1 / R.OVERHEAD_MARGIN, rel=1e-3)
     assert bbox_in_image(v, rects)[0] > 0.85  # the floor too
 
@@ -106,7 +107,7 @@ def test_nearly_square_area_stays_unturned():
 def test_every_shape_is_fully_inside_the_frame(w, h):
     rects = [(5.0, -3.0, 5.0 + w, -3.0 + h)]
     v = R.overhead_view(rects, ASPECT)
-    fw, fh = bbox_in_image(v, rects, z=R.CEILING_CUT_M)
+    fw, fh = bbox_in_image(v, rects, )
     if v.eye[2] > R.CEILING_CUT_M + 1.0 + 1e-9:  # not held up by the ceiling cut: tight on one side
         assert max(fw, fh) == pytest.approx(1 / R.OVERHEAD_MARGIN, rel=1e-3)
 
@@ -163,3 +164,23 @@ def test_rooms_given_by_hand_are_framed_as_given(tmp_path_factory):
     ld = staged("ward_fire", tmp_path_factory)
     plan = S.cull_plan(ld, rooms=["Main_Corridor", "Lobby"])
     assert sorted(S.frame_rects(ld, plan)) == sorted(plan.rects.values())
+
+
+# ---- the lobby and A&E previews fit the floor the cast uses (re-QA bug 21) -------------------------------------
+def floor_fill(v, rects, aspect=ASPECT):
+    """(width, height) of the places' floor box as a fraction of the image, after checking all of it is inside."""
+    x0, y0, x1, y1 = _bbox(rects)
+    pts = [project(v, (x, y, 0.0), aspect) for x in (x0, x1) for y in (y0, y1)]
+    for u, w in pts:
+        assert -1.0 <= u <= 1.0 and -1.0 <= w <= 1.0  # none of the floor is cut off
+    us, ws = [p[0] for p in pts], [p[1] for p in pts]
+    return (max(us) - min(us)) / 2, (max(ws) - min(ws)) / 2
+
+
+@pytest.mark.parametrize("pid", ["ae_waiting", "reception_guide", "evacuation_guide", "meal_round"])
+def test_the_places_floor_fills_the_frame_on_its_limiting_side(pid, tmp_path_factory):
+    ld = staged(pid, tmp_path_factory)
+    rects = S.frame_rects(ld, S.cull_plan(ld))
+    v = R.overhead_view(rects, ASPECT)
+    fw, fh = floor_fill(v, rects)
+    assert max(fw, fh) >= 0.95, (pid, fw, fh)  # the margin is the small fixed one, not 10 to 20 % of empty floor

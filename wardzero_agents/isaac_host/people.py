@@ -16,7 +16,10 @@ What the Behavior System does badly, and what is done about it (from spike S1, Q
   a walk that ended short is re-issued, up to ``WALK_RETRIES`` times, then the intent fails with "blocked";
 - a seated character who is given any new task stands up: look_at and idle are never sent to a seated person;
 - the LookAround clip shows a T-pose: "looking around" is a short sweep of look_at targets;
-- a sit effector is a point on the chair: the walk before a sit stops on the floor in front of the seat.
+- a sit effector is a point on the chair: the walk before a sit stops on the floor in front of the seat;
+- a character who stands up from a seat stands inside the seat row, off the NavMesh, and every MoveTo from there fails
+  at once: the first failed walk steps them out to the floor in front of the seat (``teleport``), and a walk that still
+  fails for good while they stand in furniture puts them back in the seat they left, or on the nearest free floor.
 """
 from __future__ import annotations
 
@@ -47,6 +50,7 @@ SIT_RETRIES = 2
 TRAIL_NEAR_M = 0.3  # a led person within this of their trail point stands
 TRAIL_REISSUE_S = 0.4  # at most one new move_to this often
 TRAIL_SPEED = 1.5
+RESEAT_M = 1.5  # a person stuck in furniture within this of the seat they left sits back down in it
 WALKING = ("MoveTo", "GoTo", "Dodge", "MoveAlong", "Follow")
 
 
@@ -64,6 +68,7 @@ class BehaviorApi(Protocol):
     def set_speed(self, speed: float) -> None: ...
     def hide(self) -> None: ...
     def show(self) -> None: ...
+    # optional: def teleport(self, x: float, y: float, yaw: float) -> None  (puts the character there at once)
 
 
 class BedProp(Protocol):
@@ -105,6 +110,8 @@ class PersonController:
         self._goal: Optional[tuple[float, float]] = None
         self._wps: list = []  # route waypoints still to pass before the goal (the world's route, round the robot)
         self._retries = 0
+        self._stepped = False  # this walk already stepped the character out of furniture
+        self._left_seat: Optional[str] = None  # the seat this person last stood up from
         self._elapsed = 0.0
         self._timeout = 0.0
         self._anchor: Optional[tuple[float, float]] = None
@@ -229,14 +236,17 @@ class PersonController:
         self._phase = ph
         self._sweep = []
         self._retries = 0
+        self._stepped = False
         self._elapsed = 0.0
         self._still = 0.0
         pose = self.api.pose()
         self._anchor = (pose[0], pose[1]) if pose else None
         if ph.kind == "stand":
+            self._left_seat = p.seat or self._left_seat
             self._left = max(ph.left, STAND_MIN_S)
             self._task = self.api.idle()  # an Idle task is how a sitter stands up
         elif ph.kind == "sit":
+            self._left_seat = None
             self._left = max(ph.left, SIT_MIN_S)
             self._task = self.api.sit(self.seat_prim(p.claim))
         else:
@@ -325,6 +335,12 @@ class PersonController:
             self._still += dt
         stuck = st == "running" and self._still >= STUCK_S
         if st in ("failed", "none", "succeeded") or stuck:
+            if not self._stepped and self._in_furniture(world, x, y) and self._step_out(world, p, x, y):
+                self._still = 0.0
+                self._anchor = None
+                self._issue_walk(self._target())  # from the free floor now: not a re-issue of a walk that ended short
+                self._set_posture(p)
+                return False
             if self._retries >= WALK_RETRIES:
                 return self._block(world, p)
             if stuck:
@@ -345,7 +361,63 @@ class PersonController:
         world.fail_intent(self.pid, "blocked")
         self._phase = None
         self.events.append(("blocked", ""))
+        pose = self.api.pose()
+        if pose is not None and self._in_furniture(world, pose[0], pose[1]):
+            self._recover(world, p, pose[0], pose[1])
         return False
+
+    # ---- never left standing in furniture --------------------------------------------------------
+    @staticmethod
+    def _in_furniture(world, x: float, y: float) -> bool:
+        grid = getattr(getattr(world, "site", None), "grid", None)
+        return grid is not None and bool(grid.blocked(x, y))
+
+    def _free_floor(self, world, x: float, y: float) -> Optional[tuple[float, float]]:
+        """Where a character stuck in furniture can stand: the floor in front of the seat they left (the seat rows'
+        own way out), else the nearest free spot the world finds; None when there is none."""
+        seat = self._seat_left(world, x, y)
+        tries = [seat_approach(world.seat(seat))] if seat is not None else []
+        tries.append((x, y))
+        free = getattr(world, "free_spot", None)
+        for tx, ty in tries:
+            fx, fy = free(tx, ty, self.pid) if free is not None else (tx, ty)
+            if not self._in_furniture(world, fx, fy):
+                return fx, fy
+        return None
+
+    def _seat_left(self, world, x: float, y: float) -> Optional[str]:
+        sid = self._left_seat
+        if sid is None or sid not in getattr(world.site, "seats", {}):
+            return None
+        seat = world.seat(sid)
+        return sid if math.hypot(seat.x - x, seat.y - y) <= RESEAT_M else None
+
+    def _step_out(self, world, p, x: float, y: float) -> bool:
+        """Put the character on the free floor at once (a short step out of a seat row). False when it cannot."""
+        tp = getattr(self.api, "teleport", None)
+        spot = self._free_floor(world, x, y) if tp is not None else None
+        self._stepped = True
+        if spot is None:
+            return False
+        yaw = math.atan2(spot[1] - y, spot[0] - x) if math.hypot(spot[0] - x, spot[1] - y) > 1e-6 else (p.yaw or 0.0)
+        tp(spot[0], spot[1], yaw)
+        self.events.append(("step_out", f"{spot[0]:.2f},{spot[1]:.2f}"))
+        log.info("%s: stepped out of furniture at (%.2f, %.2f) to (%.2f, %.2f)", self.pid, x, y, spot[0], spot[1])
+        return True
+
+    def _recover(self, world, p, x: float, y: float) -> None:
+        """A walk failed for good with the character inside furniture: back in the seat they left when it is still
+        free, else onto the nearest free floor."""
+        sid = self._seat_left(world, x, y)
+        taken = getattr(world, "_seat_taken", None)
+        if sid is not None and not (taken is not None and taken(sid, self.pid)):
+            self._task = self.api.sit(self.seat_prim(sid))
+            p.posture, p.seat = "seated", sid
+            self._left_seat = None
+            self.events.append(("reseat", sid))
+            log.info("%s: back in seat %s after the failed walk", self.pid, sid)
+            return
+        self._step_out(world, p, x, y)
 
     def _set_posture(self, p) -> None:
         """Posture comes from what the character's behavior is doing."""

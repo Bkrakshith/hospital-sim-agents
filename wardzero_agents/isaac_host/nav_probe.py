@@ -8,6 +8,10 @@ nearest corridor room. Points the site's own grid blocks (furniture) are not tar
 a ``NAVFREED`` line per NavMesh exclude volume that the stage fixes switched off with the rooms it covers, and a
 ``NAVSUM`` line; the exit code is 1 when a target could not be reached. The Isaac test
 ``tests/isaac/test_isaac_navmesh_smoke.py`` runs it on the ward and the A&E bays; ``test_isaac_bedsides_smoke.py`` walks real characters.
+
+It also asks a path from the floor in front of every kept seat to every place (landmark) in the kept rooms and prints
+``NAVPAIR <seat> <place> OK|NO`` with where the path ends: a person who stands up from a seat walks from there (the
+A&E seat rows to AE_Triage, re-QA bug 11). These lines do not change the exit code.
 """
 from __future__ import annotations
 
@@ -43,6 +47,21 @@ def targets(site, kept) -> list[tuple[str, tuple[float, float]]]:
     return out
 
 
+def seat_pairs(site, kept) -> list[tuple[str, str, tuple[float, float], tuple[float, float]]]:
+    """(seat, place, from, to): the floor in front of each kept public seat, to each landmark in a kept room."""
+    from .people import seat_approach
+    places = [(lid, (lm.x, lm.y)) for lid, lm in site.landmarks.items()
+              if any(r.contains(lm.x, lm.y) for rid, r in site.rooms.items() if rid in kept)]
+    out = []
+    for sid, seat in site.seats.items():
+        if getattr(seat, "staff_only", False) or not any(r.contains(seat.x, seat.y) for rid, r in site.rooms.items()
+                                                            if rid in kept):
+            continue
+        a = seat_approach(seat)
+        out += [(sid, lid, a, pt) for lid, pt in places]
+    return out
+
+
 def main(argv=None) -> int:
     args = app_mod.parse_args(sys.argv[1:] if argv is None else argv)
     from ..config.loader import load_scenario
@@ -65,6 +84,12 @@ def main(argv=None) -> int:
                        if min(x1, max(p[0] for p in r.poly)) - max(x0, min(p[0] for p in r.poly)) > 0.3
                        and min(y1, max(p[1] for p in r.poly)) - max(y0, min(p[1] for p in r.poly)) > 0.3]
             print("NAVFREED", path.rsplit("/", 1)[-1], ", ".join(covered), flush=True)
+        freed = set(fixes.nav_volumes_off(volumes, site, plan))
+        kept_rects = list(plan.rects.values())
+        for path, (kind, ((x0, y0), (x1, y1))) in sorted(volumes.items()):
+            if kind == "Exclude" and path not in freed and any(
+                    min(x1, r[2]) - max(x0, r[0]) > 0.3 and min(y1, r[3]) - max(y0, r[1]) > 0.3 for r in kept_rects):
+                print("NAVEXCL", path.rsplit("/", 1)[-1], [round(c, 2) for c in (x0, y0, x1, y1)], flush=True)
         host.open_stage()
         host.physics()
         host.bake_navmesh()
@@ -80,6 +105,13 @@ def main(argv=None) -> int:
             ok = bool(pts) and math.hypot(pts[-1][0] - pt[0], pts[-1][1] - pt[1]) < REACH_M
             print("NAVPROBE", label, "OK" if ok else "NO", "from", (round(start[0], 1), round(start[1], 1)), flush=True)
             results[label] = ok
+        for sid, lid, a, pt in seat_pairs(site, kept):
+            path = navmesh.query_shortest_path((a[0], a[1], 0.0), (pt[0], pt[1], 0.0))
+            pts = path.get_points() if path is not None and hasattr(path, "get_points") else path
+            end = (round(pts[-1][0], 2), round(pts[-1][1], 2)) if pts else None
+            ok = bool(pts) and math.hypot(pts[-1][0] - pt[0], pts[-1][1] - pt[1]) < REACH_M
+            print("NAVPAIR", sid, lid, "OK" if ok else "NO", "from", (round(a[0], 2), round(a[1], 2)), "to",
+                  (round(pt[0], 2), round(pt[1], 2)), "ends", end, flush=True)
         failed = [k for k, v in results.items() if not v]
         print("NAVSUM ok", len(results) - len(failed), "/", len(results), "fail:", ",".join(failed), flush=True)
         code = 1 if failed or not results else 0
