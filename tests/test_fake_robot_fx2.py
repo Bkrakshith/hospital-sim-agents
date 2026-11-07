@@ -266,3 +266,24 @@ def test_after_walking_one_out_it_goes_back_for_the_person_it_left_in_the_lobby_
     d = r.decide(_EVAC_CARD, _evac_sit(82.0, x=-29.1, y=6.7, room="Ambulance handover bay", results=done),
                  _EVAC_ACTIONS)
     assert d["action"] == "approach" and d["target"] == "t1", d
+
+
+def test_in_an_evacuation_someone_who_never_came_along_is_not_gone_back_for_or_sent_on():
+    """The guide is given up when the person never comes within 2.5 m for 30 s (a staff member who stays at their
+    post): on the wire its goal ends "failed (cancelled)". The robot neither turns back to them nor tells them they
+    are nearly there; it walks the next person out."""
+    from test_fake_robot import card, decide, situation, track
+    r = ScriptedRobot()
+    c = card("When the alarm sounds, get everyone out by a safe open way.", "Role: fire evacuation guide",
+             "Safe exit: the safe way out is the Ambulance handover bay in A&E.")
+    alarm = ["- 1 s ago, an alarm, 85 dB"]
+    both = [track("t1", 1.5, 1.5, 0.0), track("t2", 3.0, 3.0, 0.0)]
+    decide(r, c, situation(t=2.0, heard=alarm, tracks=both))
+    d = decide(r, c, situation(t=3.0, heard=alarm, tracks=both))
+    assert d["action"] == "guide" and d["target"] == "t1", d
+    res = ["- rb1 guide_start: ok (started)", "- rb1 walking to a goal: failed (cancelled)"]
+    ev = ["- t=3.0s You started guide as rb1 for track t1."]
+    d = decide(r, c, situation(t=40.0, x=5, y=0, heard=alarm, results=res, events=ev,
+                               tracks=[track("t1", 1.0, 6.0, 0.0), track("t2", 3.0, 3.0, 0.0)]))
+    assert d["action"] == "guide" and d["target"] == "t2", d
+    assert "nearly there" not in (d["say"] or "")

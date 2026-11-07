@@ -541,7 +541,9 @@ class ScriptedRobot:
         if p.action == "take" and (r is None or not r.ok):
             self.mem.pop("take_then_offer", None)
         if p.action == "guide" and r is not None and p.track:
-            self.mem[("guide_end", p.track)] = r.reason
+            # the wire shows a guide given up (they never came within reach: staff at their post) as its goal ending
+            # "cancelled" (this robot never stops a guide itself)
+            self.mem[("guide_end", p.track)] = "left_behind" if r.reason == "cancelled" else r.reason
         if p.action == "guide" and r is not None and not r.ok and p.track:
             tries = self.mem.get(("reguided", p.track), 0)
             if r.reason == "blocked_by_person" and tries < self.REGUIDE_TRIES and self.mem.get(("guide_to", p.track)):
