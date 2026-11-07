@@ -61,10 +61,25 @@ def test_where_the_hard_band_route_is_reasonable_it_is_still_used(evac):
     the hard band's route."""
     w = StubWorld(evac, 7)
     rr = w.robot.router
-    a, b = (-26.2, 6.6), (-10.0, 0.0)
+    a, b = (2.5, -0.5), (19.0, 15.0)  # the lobby to the ward
     hard_only = Router(w.site.grid, hard=rr.hard, tight=0.0)
     assert hard_only._tight is None
+    ca, cb = rr._snap(rr.grid.to_cell(*a)), rr._snap(rr.grid.to_cell(*b))
+    assert hard_only._strict(ca, cb, ()) is not None  # the hard band has a route here
     assert rr.route(a, b) == hard_only.route(a, b)
+
+
+def test_where_the_hard_band_has_no_route_the_tight_band_comes_before_the_soft_one(evac):
+    """From the bay out to A&E the hard band has no route at all; the soft band's route (the old fallback) hugs the
+    walls, the tight band's keeps the body off them."""
+    w = StubWorld(evac, 7)
+    g = w.site.grid
+    route = w.robot.router.route((-26.2, 6.6), (-10.0, 0.0))
+    assert route is not None
+    for x, y in samples(route):
+        if math.dist((x, y), route[0]) < 1.0 or math.dist((x, y), route[-1]) < 1.0:
+            continue
+        assert not _near_blocked(g, x, y, NEAR_FURNITURE_M - 1e-6), (x, y)
 
 
 def test_a_route_blocked_seal_keeps_the_robot_out_of_the_blocked_way(evac):
