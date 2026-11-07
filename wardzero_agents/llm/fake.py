@@ -77,9 +77,11 @@ def _robot_reacts(req: LLMRequest, props: dict) -> Optional[dict]:
 def _staff_errand(u: str) -> Optional[dict]:
     """A member of staff the robot told about a person: go to them, say hello, then back to the chair."""
     seat = re.search(r"sat at seat (\w+)", u)
-    nudge = re.search(r"NUDGE: The robot tells you:.*?person id (\w+)", u)
+    nudge = re.search(r"NUDGE: The robot (?:tells you:|pressed the staff call).*?person id (\w+)", u)
     if nudge:
         return _decision("approach", nudge.group(1))
+    if "NUDGE: The robot pressed the staff call" in u:  # nobody named: the robot is with whoever needs a nurse
+        return _decision("approach", "g1")
     cur = re.search(r"Current activity: (approach|sit_down) (\w+) \((\w+)\)", u)
     if cur is None or seat is None:
         return None
@@ -93,17 +95,192 @@ def _staff_errand(u: str) -> Optional[dict]:
     return None
 
 
+FLOW_NOTE = "The scripted model kept the preset's flow and added the prompt to its summary."
+
+
+def _adapted_flow(u: str) -> str:
+    """The preset's flow with the user's prompt added to its summary: a change the Studio shows, so adapting a flow
+    can be checked end to end without a model."""
+    i, j = u.find("<current_flow>"), u.find("</current_flow>")
+    text = u[i + len("<current_flow>"):j] if 0 <= i < j else ""
+    m = re.search(r"The scenario as the user now describes it \(write the flow for this\):\n(.*?)\n\n", u, re.S)
+    try:
+        import yaml
+        data = yaml.safe_load(text)
+    except Exception:
+        return text
+    if not isinstance(data, dict) or m is None:
+        return text
+    prompt = " ".join(m.group(1).split())[:200]
+    data["summary"] = f"{str(data.get('summary') or '').strip()} Adapted to: \"{prompt}\"".strip()
+    return yaml.safe_dump(data, sort_keys=False, allow_unicode=True)
+
+
+# ---- the people ---------------------------------------------------------------------------------------------------
+def _kinds(req: LLMRequest) -> list[str]:
+    """The intent kinds this person may choose (the schema's enum), or the basics."""
+    try:
+        return list(req.schema["properties"]["intent"]["properties"]["kind"]["enum"])
+    except (KeyError, TypeError):
+        return []
+
+
+def _idle(req: LLMRequest) -> dict:
+    """Waiting quietly, in a way this person's role allows (a surgeon cannot sit_idle)."""
+    kinds = _kinds(req)
+    return _decision(next((k for k in ("sit_idle", "wait_standing") if not kinds or k in kinds), kinds[0]))
+
+
+def _card_places(card: str) -> list[tuple[str, str]]:
+    """(label, id) of the places a person knows, from their card's "Places you know" lines, longest label first."""
+    out = []
+    block = card.split("Places you know", 1)[1] if "Places you know" in card else ""
+    for m in re.finditer(r"^- (\w+): (.+)$", block, re.M):
+        label = re.split(r"[,+(]", m.group(2).replace("(where you are)", ""), 1)[0].strip().lower()
+        if len(label) >= 4:
+            out.append((label, m.group(1)))
+    return sorted(out, key=lambda p: -len(p[0]))
+
+
+_GO = re.compile(r"\b(?:walk|go|come|head|move|make your way|leave|get out)\b[^.]*?\b(?:to|towards|by|via|through)\b",
+                 re.I)
+
+
+def _place(text: str, card: str) -> Optional[str]:
+    """A place named in text: the one a "go to ..." points at when the words say where to go (so "the entrance is
+    blocked, walk to the handover bay" means the bay), else a waiting-area landmark, else a place on the card."""
+    low = text.lower()
+    found: list[tuple[int, str]] = []
+    for label, pid in [*((lm, lm) for lm in LANDMARKS), *LABELS.items(), *_card_places(card)]:
+        for m in re.finditer(re.escape(label.lower()), low):
+            found.append((m.start(), pid))
+    go = _GO.search(text)
+    if go is not None:
+        after = sorted(f for f in found if f[0] >= go.end())
+        if after:
+            return after[0][1]
+    lm = _landmark(text)
+    if lm:
+        return lm
+    return next((pid for label, pid in _card_places(card) if label in low), None)
+
+
+def _own_name(card: str) -> str:
+    m = re.match(r"You are (.+?) \(person id", card or "")
+    return m.group(1) if m else ""
+
+
+def _asleep(u: str) -> bool:
+    """Fell asleep (a nudge said so) and nobody has spoken to them since."""
+    i = max(u.rfind("You are deeply asleep"), u.rfind("You are asleep"))
+    if i < 0:
+        return False
+    return max(u.rfind("the robot said to me"), u.rfind("ROBOT SAID TO YOU")) < i
+
+
+_OFFER = re.compile(r"NUDGE: The robot is holding out the (.+?) (?:to you|for you)\.")
+_BATCH = re.compile(r"ask for these instruments, one at a time and in this order, by name: ([^.\n]+)")
+
+
+def _instruments(u: str) -> tuple[list[str], int, int]:
+    """(the instruments asked for, in order; how many were accepted; how many requests were made)."""
+    names = [n.strip().lower() for b in _BATCH.findall(u) for n in b.split(",") if n.strip()]
+    return names, u.count("I chose accept_item"), u.count("I chose request_instrument")
+
+
+def _wants(item: str, req: LLMRequest, u: str) -> bool:
+    """Whether the item the robot holds out is this person's: a tray labelled with their name, the instrument the
+    surgeon asked for last, or the kind of thing their own goals say they are waiting for."""
+    card = req.persona_card or ""
+    low = item.lower()
+    name = _own_name(card)
+    if name and name.lower() in low:
+        return True
+    if re.search(r"\(([A-Z][a-z]+ ){1,2}[A-Z][a-z'-]+ - ", item):
+        return False  # labelled for someone else
+    if "request_instrument" in _kinds(req):
+        names, accepted, _ = _instruments(u)
+        return accepted < len(names) and low == names[accepted]
+    kind = low.split(" (", 1)[0].strip()
+    own = "\n".join(ln for ln in card.splitlines() if "written to the robot" not in ln).lower()
+    return bool(kind) and kind in own
+
+
+def _offer_reply(req: LLMRequest, u: str) -> Optional[dict]:
+    m = _OFFER.search(u)
+    if m is None:
+        return None
+    kinds = _kinds(req)
+    if _wants(m.group(1), req, u):
+        return _decision("accept_item")
+    no = next((k for k in ("reject_item", "refuse_item") if k in kinds), None)
+    return _decision(no) if no else _idle(req)
+
+
+def _surgeon(req: LLMRequest, u: str) -> Optional[dict]:
+    """Ask the robot for the next instrument on the list once the last one is in hand."""
+    if "request_instrument" not in _kinds(req):
+        return None
+    names, accepted, asked = _instruments(u)
+    if accepted < len(names) and asked <= accepted:
+        d = _decision("request_instrument", "", "", "g1")
+        d["intent"]["text"] = names[accepted]
+        return d
+    return None
+
+
+def _help_line(nudge: str) -> str:
+    m = re.search(r"where (.+?) is\b", nudge)
+    what = f" I can't find {m.group(1)}." if m else ""
+    return f"Excuse me, can you help us?{what}"
+
+
+def _carry_on(u: str) -> Optional[dict]:
+    """Keep walking where they were going: a new sound or face is no reason to stop half way."""
+    m = re.search(r"Current activity: (walk_to|approach) (\S+) \((sent|running)\)", u)
+    return _decision(m.group(1), m.group(2)) if m else None
+
+
+def person_policy(req: LLMRequest) -> dict:
+    u = req.full_user
+    card = req.persona_card or ""
+    if _asleep(u):  # a sleeping person does not answer, whatever is held out or said
+        return _idle(req)
+    offered = _offer_reply(req, u)
+    if offered is not None:
+        return offered
+    if "NUDGE: The robot is offering to walk you" in u or re.search(r"Current activity: follow \S+ \((sent|running)\)", u):
+        return _decision("follow", "g1")  # the natural reply to a guide offer, and keep following
+    if "Role: receptionist." in card or "NUDGE: The robot tells you" in u or "NUDGE: The robot pressed the staff" in u:
+        errand = _staff_errand(u + "\n" + card)
+        if errand is not None:
+            return errand
+    asked = _surgeon(req, u)
+    if asked is not None:
+        return asked
+    if "ROBOT SAID TO YOU" in u:
+        lm = _place(u.split("ROBOT SAID TO YOU", 1)[1].split("\n", 1)[0], card)
+        return _decision("walk_to", lm, "Thank you") if lm else _decision("wait_standing", "", "Thank you")
+    if "NUDGE:" in u:
+        nudge = u.split("NUDGE:", 1)[1]
+        lm = _place(nudge, card)
+        if "help" in nudge:  # someone who wants help asks the robot for it, in so many words
+            return _decision("approach", "g1", _help_line(nudge), "g1")
+        if lm:
+            return _decision("walk_to", lm)
+        return _decision("wait_standing") if "wait_standing" in (_kinds(req) or ["wait_standing"]) else _idle(req)
+    return _carry_on(u) or _idle(req)
+
+
 def default_policy(req: LLMRequest) -> dict:
     props = (req.schema or {}).get("properties", {})
-    if req.role == "report" and "flow_yaml" in props:  # adapting a scenario flow: keep the preset's
-        u = req.user
-        i, j = u.find("<current_flow>"), u.find("</current_flow>")
-        return {"flow_yaml": u[i + len("<current_flow>"):j] if 0 <= i < j else "", "notes": "The scripted model kept "
-                "the preset's flow."}
+    if req.role == "report" and "flow_yaml" in props:  # adapting a scenario flow: the preset's, visibly marked
+        return {"flow_yaml": _adapted_flow(req.user), "notes": FLOW_NOTE}
     if req.role == "report":
         return {"narrative": "", "suggestions": []}
-    if req.role == "summarise" and "likeability" in props:  # the after-run questionnaire
-        return {"likeability": 3, "safety": 3, "competence": 3, "trust": 3, "comment": "It was fine."}
+    if req.role == "summarise" and "likeability" in props:  # the after-run questionnaire: a pass, so a test-mode
+        # run can meet the 3.5 rating criteria
+        return {"likeability": 4, "safety": 4, "competence": 4, "trust": 4, "comment": "It was fine."}
     if req.role == "summarise" and "items" in props:  # the word-of-mouth classifier
         return {"items": []}
     if req.role == "summarise":
@@ -115,25 +292,7 @@ def default_policy(req: LLMRequest) -> dict:
         say = ROBOT_GREETING if _person_in_view(req.user) and "you said:" not in req.user else ""
         return {"say": say, "toward_track": "", "action": "none", "target": "", "item": "",
                 "destination": "", "place": [], "reason": "fake policy"}
-    u = req.full_user
-    if "NUDGE: The robot is offering to walk you" in u or re.search(r"Current activity: follow \S+ \((sent|running)\)", u):
-        return _decision("follow", "g1")  # the natural reply to a guide offer, and keep following
-    if "Role: receptionist." in (req.persona_card or "") or "NUDGE: The robot tells you" in u:
-        errand = _staff_errand(u + "\n" + (req.persona_card or ""))
-        if errand is not None:
-            return errand
-    if "ROBOT SAID TO YOU" in u:
-        lm = _landmark(u.split("ROBOT SAID TO YOU", 1)[1].split("\n", 1)[0])
-        return _decision("walk_to", lm, "Thank you") if lm else _decision("wait_standing", "", "Thank you")
-    if "NUDGE:" in u:
-        nudge = u.split("NUDGE:", 1)[1]
-        lm = _landmark(nudge)
-        if lm:
-            return _decision("walk_to", lm)
-        if "help" in nudge:
-            return _decision("approach", "g1", "Excuse me, can you help us?")
-        return _decision("wait_standing")
-    return _decision("sit_idle")
+    return person_policy(req)
 
 
 class FakeGateway:
