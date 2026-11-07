@@ -26,6 +26,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable, Optional
 
+import numpy as np
+
 from ..config.loader import LoadedScenario
 from ..contracts import (
     AudioEvent, Control, Heard, Intent, Nudge, Observation, Roster, Say, Status, WorldEvent,
@@ -34,7 +36,7 @@ from ..runlog import RunLog
 from ..world import audio
 from ..world.bodies import Bodies, StubBodies
 from ..world.oracle import Pose
-from ..world.perception import _in_view, bbox_3d, perceive_objects
+from ..world.perception import bbox_3d, perceive_objects
 from ..world.robot_tasks import RECEPTION_ROLES, RobotTasks, wire_result
 from ..world.stub_world import ROBOT_ID as ROBOT_ADDRESSEE, StubWorld
 from . import topics
@@ -49,11 +51,13 @@ ODOM_PERIOD_S = 0.05  # 20 Hz
 PERCEPTION_PERIOD_S = 0.2  # 5 Hz
 OBS_WINDOW_S = 2.0
 MAX_WALL_DT = 0.5  # a stalled loop does not make the sim jump further than this
-REPLY_WINDOW_S = 20.0  # a robot reply goes to whoever it last heard speak, if that was this recent ...
-LAST_LISTENER_M = 3.0  # ... and is still this close to the robot
-ROBOT_ADDRESS_M = 2.5  # else robot speech is addressed to the nearest person within this distance
+REPLY_WINDOW_S = 20.0  # with no toward, a robot line goes to whoever it last heard speak, if that was this recent ...
+LAST_LISTENER_M = 3.0  # ... and is still this close to the robot; else it has no addressee
+# No longer used for addressing (a line with no toward and no recent speaker near has no addressee); kept because
+# stub_sim_node re-exports it.
+ROBOT_ADDRESS_M = 2.5
 TOWARD_WINDOW_S = 2.0  # a speech/toward waits this long (sim time) for its speech/say, then is dropped
-TOWARD_M = 4.0  # a named track is the addressee when that person is in the robot's view and this close
+TOWARD_M = 4.0  # a named track is the addressee when that person is this close to the robot and hears the line
 READY_TIMEOUT_S = 600.0  # the first knowledge base build can be slow
 PENDING_SILENT_S = 5.0  # wall seconds without a pending heartbeat before lockstep stops waiting
 WAIT_TOKENS = ("agents", "director")
@@ -143,6 +147,7 @@ class SimService:
         self._last_robot_listener: Optional[tuple[float, str]] = None
         # <ns>/speech/toward, a FIFO of (sim time, track or "room" or "" for no name): each is the next say's
         self._towards: deque[tuple[float, str]] = deque()
+        self._toward_rng = np.random.default_rng(0)  # only for checking a named person can hear the line
         # Robot lines wait for the next step: over ROS the say callback can run before the toward sent just ahead
         # of it, so a line takes the toward that has arrived by then.
         self._robot_lines: list[str] = []
@@ -188,7 +193,8 @@ class SimService:
 
     def _emit(self, events: Iterable[AudioEvent], to_room: bool = False) -> None:
         """Route each event to everyone who can hear it and log it. A robot line's row also carries ``heard_by``
-        (who got it) and, for a line to the whole room, ``to_room``."""
+        (who got it) and, for a line to the whole room, ``to_room``; a person's row carries ``robot_heard`` (whether
+        the robot's microphone got it)."""
         for ev in events:
             heard: dict[str, Heard] = {}
             for pid, p in self.world.people.items():
@@ -200,13 +206,15 @@ class SimService:
                     heard[pid] = h
             self._recent.append((self.t, ev, heard))
             self._audio_out.append(ev)
+            rh = self.world.robot_heard(ev) if self.robot else None
             row = ev.model_dump(mode="json", by_alias=True)
             if ev.source_kind == "robot":
                 row["heard_by"] = sorted(heard)
                 if to_room:
                     row["to_room"] = True
+            elif ev.source_kind == "person":
+                row["robot_heard"] = rh is not None
             self.runlog.write("audio", row)
-            rh = self.world.robot_heard(ev) if self.robot else None
             if rh is not None:
                 self._heard_out.append(rh)
                 if ev.source_kind == "person" and ev.text and ev.addressee in (None, ROBOT_ADDRESSEE):
@@ -256,21 +264,27 @@ class SimService:
             t, track = self._towards.popleft()
             log.info("speech/toward %s had no speech/say within %.0f s; dropped", track or "(none)", TOWARD_WINDOW_S)
 
-    def _toward_person(self, track: str) -> Optional[str]:
-        """The person the robot named for this line: seen by the robot, present and close enough to be spoken to.
-        None otherwise."""
+    def _toward_person(self, track: str, ev: AudioEvent) -> Optional[str]:
+        """The person the robot named for this line, when they can be spoken to: present, within TOWARD_M of the robot
+        (in the camera's view or not: someone it has just walked somewhere may stand behind it) and within hearing of
+        the line (no walls in the way). None otherwise."""
         pid = self.world.tracks.person(track)
         p = self.world.people.get(pid) if pid else None
         body = self.world.robot
-        if p is None or p.posture == "gone" or math.hypot(p.x - body.x, p.y - body.y) > TOWARD_M \
-                or not _in_view(self.world, body, p.x, p.y):
+        if p is None or p.posture == "gone" or p.kind == "static" \
+                or math.hypot(p.x - body.x, p.y - body.y) > TOWARD_M:
+            return None
+        # its own random stream, so asking does not shift the world's draws
+        if audio.route(ev, Pose(p.x, p.y, p.yaw), pid, p.inst.hearing_loss_db, self._toward_rng,
+                       walls_between=self._walls_for(ev)) is None:
             return None
         return pid
 
     def on_robot_say(self, text: str, addressee: "Optional[str]" = _AUTO) -> None:
-        """``addressee``: left out, the robot's speech goes to the track named by its speech/toward (if seen and near),
-        to the whole room for the toward ``room``, else to who it last heard (within LAST_LISTENER_M), or the nearest
-        person; a person id, or None for nobody (test hook only: nobody then answers)."""
+        """``addressee``: left out, the robot's speech goes to the track named by its speech/toward (if near and within
+        hearing, else to nobody), to the whole room for the toward ``room``, and with no toward to who it last heard
+        (within LAST_LISTENER_M), else to nobody; a person id, or None for nobody (test hook only: nobody then
+        answers)."""
         text = (text or "").strip()
         if not text:
             return
@@ -296,23 +310,19 @@ class SimService:
         if toward == topics.TOWARD_ROOM:  # everyone in the room: no addressee, and not an answer to anyone
             self._emit([ev], to_room=True)
             return
-        named = self._toward_person(toward) if toward else None
-        if named is not None:
+        if toward:  # a line for one named person: them, or nobody (never someone else)
             self._last_robot_listener = None
+            named = self._toward_person(toward, ev)
             self._emit([ev.model_copy(update={"addressee": named})])
             return
-        # The reply goes to the person the robot just heard, if still near, not to whoever stands nearest.
+        # No toward: the reply goes to the person the robot just heard, if still near; else to nobody in particular
+        # (not to whoever stands nearest).
         last, self._last_robot_listener = self._last_robot_listener, None
         if last is not None and self.t - last[0] <= REPLY_WINDOW_S:
             p = self.world.people.get(last[1])
             if p is not None and p.posture != "gone" and math.hypot(p.x - r.x, p.y - r.y) <= LAST_LISTENER_M:
                 self._emit([ev.model_copy(update={"addressee": last[1]})])
                 return
-        near = [(math.hypot(p.x - r.x, p.y - r.y), pid) for pid, p in self.world.people.items()
-                if p.posture != "gone"]
-        near = [x for x in near if x[0] <= ROBOT_ADDRESS_M]
-        if near:
-            ev = ev.model_copy(update={"addressee": min(near)[1]})
         self._emit([ev])
 
     # ---- the robot's body and tasks --------------------------------------------------------

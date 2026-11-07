@@ -6,7 +6,7 @@ import pytest
 
 from wardzero_agents.config.loader import load_scenario
 from wardzero_agents.contracts import Control, Intent, Say, WorldEvent
-from wardzero_agents.ros.stub_sim_node import OBS_WINDOW_S, ROBOT_ADDRESS_M, StubSimService
+from wardzero_agents.ros.stub_sim_node import OBS_WINDOW_S, StubSimService
 from wardzero_agents.runlog import RunLog
 
 V1 = Path(__file__).resolve().parents[1] / "config" / "scenarios" / "waiting_area_v1.yaml"
@@ -104,7 +104,7 @@ def test_observation_keeps_audio_for_2s_with_identical_heard(tmp_path):
     assert all(o.heard == [] for o in s.step(0.5).observations)
 
 
-def test_robot_hears_and_speech_is_addressed_to_the_nearest_person(tmp_path):
+def test_robot_hears_and_speech_is_addressed_only_by_name_or_reply(tmp_path):
     s = svc(tmp_path)
     s.step(0.01)
     s.on_intent(Intent(id="c", person="P1", t=0.0, kind="cough", overlay=True))
@@ -121,9 +121,12 @@ def test_robot_hears_and_speech_is_addressed_to_the_nearest_person(tmp_path):
         s.step(0.05)
     st = {x.person: x for x in s.world.statuses()}["P5"]
     assert st.state == "done"
+    s.on_robot_say("Hello there.")  # P5 stands at the robot but never spoke to it, and it named nobody
+    assert s.step(0.01).audio[0].addressee is None
+    s.on_robot_toward(s.world.tracks.track("P5"))
     s.on_robot_say("The clinics are down the clinic_corridor.")
     out = s.step(0.01)
-    assert out.audio[0].addressee == "P5" and ROBOT_ADDRESS_M >= 1.0
+    assert out.audio[0].addressee == "P5"
     p5 = {o.person: o for o in out.observations}["P5"]
     assert p5.heard[-1].source_kind == "robot" and p5.heard[-1].addressed_to_me
     assert out.robot_heard == []  # the robot does not hear itself
@@ -214,15 +217,15 @@ def test_robot_reply_goes_to_the_person_it_heard_not_the_nearest(tmp_path):
     assert [h.source_id for h in out.robot_heard if h.text] == ["unknown"]  # the robot cannot tell who
     s.on_robot_say("Head for the wards.")
     assert s.step(0.01).audio[0].addressee == "P2"
-    # one reply per utterance: the next line falls back to the nearest person
+    # one reply per utterance: the next line, with no name, is for nobody in particular (not the nearest person)
     s.on_robot_say("Anything else?")
-    assert s.step(0.01).audio[0].addressee == "P5"
+    assert s.step(0.01).audio[0].addressee is None
     # a stale utterance is not answered by name
     s.on_say(Say(person="P2", t=s.t, text="Hello again", addressee="g1"))
     s.step(0.01)
     s.t += REPLY_WINDOW_S + 1
     s.on_robot_say("Hello")
-    assert s.step(0.01).audio[0].addressee == "P5"
+    assert s.step(0.01).audio[0].addressee is None
 
 
 def test_objects_stream_and_alarm_audio(tmp_path):
@@ -299,9 +302,10 @@ def test_robot_speech_goes_to_the_named_track(tmp_path):
     assert s.step(0.01).audio[0].addressee == "P2"
     robot_rows = [r for r in lines(tmp_path, "audio") if r["source_kind"] == "robot"]
     assert robot_rows[-1]["addressee"] == "P2"
-    # one name per line: the next line without a name goes by the usual rule (nearest within reach)
+    # one name per line: the next line without a name goes by the usual rule (P3's question was answered by the
+    # named line, so nobody in particular; never the nearest person)
     s.on_robot_say("Anything else?")
-    assert s.step(0.01).audio[0].addressee == "P3"
+    assert s.step(0.01).audio[0].addressee is None
 
 
 def test_a_name_that_arrives_after_its_words_still_addresses_them(tmp_path):
@@ -314,8 +318,8 @@ def test_a_name_that_arrives_after_its_words_still_addresses_them(tmp_path):
     s.on_robot_say("Hello, can I help you?")
     s.on_robot_toward(w.tracks.track("P2"))
     assert s.step(0.01).audio[0].addressee == "P2"
-    s.on_robot_say("Over there.")  # no name: nearest within reach
-    assert s.step(0.01).audio[0].addressee == "P3"
+    s.on_robot_say("Over there.")  # no name, and P3's question was answered by the named line: nobody in particular
+    assert s.step(0.01).audio[0].addressee is None
     s.on_robot_toward(w.tracks.track("P2"))  # after "Over there." went out: the next line's
     s.step(0.01)
     s.on_robot_say("Anything else?")
@@ -335,21 +339,21 @@ def test_overheard_speech_does_not_capture_the_reply(tmp_path):
     assert s._last_robot_listener[1] == "P2"
 
 
-def test_a_far_or_unseen_track_falls_back_to_the_heuristic(tmp_path):
+def test_a_far_track_goes_to_nobody_not_the_nearest(tmp_path):
     s, w = _staged_people(tmp_path)
     _put(w, "P2", 1.05, -3.4)  # 5 m ahead: in view, but too far to be spoken to
-    _put(w, "P5", 1.05, 6.0)  # behind the robot: not in view
+    _put(w, "P5", 1.05, 6.0)  # 4.4 m behind the robot: too far as well
     s.step(0.01)
     for pid in ("P2", "P5"):
         s.on_robot_toward(w.tracks.track(pid))
         s.on_robot_say("Hello there.")
-        assert s.step(0.01).audio[0].addressee == "P3", pid  # nearest within ROBOT_ADDRESS_M
+        assert s.step(0.01).audio[0].addressee is None, pid  # never P3, who stands nearest
     _put(w, "P2", 1.05, -1.38)
     s.step(0.01)
     s.on_robot_toward(w.tracks.track("P2"))
     s.t += 3.5  # a stale name
     s.on_robot_say("Hello there.")
-    assert s.step(0.01).audio[0].addressee == "P3"
+    assert s.step(0.01).audio[0].addressee is None
 
 
 def test_brief_carries_desk_staffed(tmp_path):
