@@ -265,10 +265,12 @@ main { flex: 1; min-height: 0; display: flex; }
 .thumb .hmap .doors { stroke-width: 1.6px; }
 .thumb .hmap .room.focus { stroke-width: 1.5px; }
 
-/* top bar cost and tokens */
-.cost { gap: 14px; }
-.cost #cost-text { color: var(--text); font-weight: 600; }
-.cost .tokens { font-size: 13px; color: var(--muted); }
+/* top bar cost and tokens: one line at 1440 px (the token counts give way first, then the meter narrows) */
+.cost { gap: 14px; min-width: 0; white-space: nowrap; }
+.cost #cost-text { color: var(--text); font-weight: 600; flex: none; }
+.cost .tokens { font-size: 13px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.cost .meter { flex: 0 1 120px; min-width: 48px; }
+@media (max-width: 1500px) { .cost .tokens { display: none; } }
 .cost.warn #cost-text { color: var(--bad); }
 .cost.warn .meter i { background: var(--bad); }
 

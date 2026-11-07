@@ -358,6 +358,7 @@ class IsaacPeople:
         self._bed_paths: dict[str, str] = {}
         self.bedsides: dict[str, tuple[float, float, float, float]] = {}
         self.pending: dict[str, int] = {}  # runtime joiners waiting for their agent -> frames waited
+        self.unbound: list[str] = []  # characters spawned at the start that got no Behavior agent (bind)
         self._motion_lib: Optional[str] = None
 
     # ---- spawning ---------------------------------------------------------------------------
@@ -573,6 +574,7 @@ class IsaacPeople:
             if len(agents) == len(self.skelroots):
                 break
         missing = sorted(set(self.skelroots) - set(agents))
+        self.unbound = missing  # the host checks it: agents bound must equal the characters spawned
         if missing:
             log.error("no Behavior agent for %s after %d frames; they stay kinematic", ", ".join(missing), k + 1)
         seated = []

@@ -74,7 +74,9 @@
     wait: "Wait", wait_until: "Wait until", expect: "Expect from the robot", fire: "Event" };
   WZ.flowTree = function (node, root = true) {
     if (!node) return h("p.muted", "No flow.");
-    const kids = (node.children || []).map((c) => WZ.flowTree(c, false));
+    // a branch of one step under "At the same time" is that step: no extra "In order" row repeating the parent's label
+    const unwrap = (c) => (node.kind === "parallel" && c.kind === "sequence" && (c.children || []).length === 1) ? c.children[0] : c;
+    const kids = (node.children || []).map((c) => WZ.flowTree(unwrap(c), false));
     const st = node.state ? h("span.fstate.s-" + node.state, FLOW_STATE[node.state] || node.state) : null;
     const tip = node.reason ? h("div.freason", node.reason) : null;
     const row = h("div.frow", h("span.fkind.k-" + node.kind, FLOW_KIND[node.kind] || node.kind),
@@ -195,7 +197,9 @@
     if (show) {
       const c = Number(s.cost_usd || 0), b = Number(s.budget_usd || 0), t = s.tokens || {};
       document.getElementById("cost-text").textContent = (s.running ? "" : "Final ") + "$" + c.toFixed(2) + (b ? " of $" + b.toFixed(2) + " limit" : "");
-      document.getElementById("cost-tokens").textContent = kfmt(t.input) + " in · " + kfmt(t.output) + " out · " + kfmt(t.cache_read) + " cached";
+      const tok = kfmt(t.input) + " in · " + kfmt(t.output) + " out · " + kfmt(t.cache_read) + " cached";
+      document.getElementById("cost-tokens").textContent = tok;
+      box.title = "Tokens: " + tok;  // on a narrow window the counts are hidden from the bar, not lost
       document.getElementById("cost-bar").style.width = (b ? Math.min(100, (c / b) * 100) : 0) + "%";
       box.classList.toggle("warn", b > 0 && c / b > 0.85);
     }

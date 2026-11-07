@@ -233,9 +233,10 @@ class IsaacHost:
 
         off = stage_mod.compute_cull(self.plan, self.args.stage, self.args.collision)
         self.swinging = route_doors(self.loaded.site, None if self.plan.full else self.plan.rects)
-        fix_off, authored = fixes.stage_fixes(self.loaded.site, self.plan, self.args.stage, self.args.collision,
-                                              self.swinging)
-        wrapper = stage_mod.write_wrapper(self.run_dir / "stage.usda", off + fix_off, self.args.stage, authored)
+        fix_off, authored, nav_include = fixes.stage_fixes(self.loaded.site, self.plan, self.args.stage,
+                                                           self.args.collision, self.swinging)
+        wrapper = stage_mod.write_wrapper(self.run_dir / "stage.usda", off + fix_off, self.args.stage, authored,
+                                          nav_include=nav_include)
         self.stage = stage_mod.open_stage(self.app, wrapper)
         self.startup["culled_prims"] = len(off)
         self.startup["kept"] = self.plan.describe()
@@ -298,7 +299,25 @@ class IsaacHost:
         self.people.bind(self.app, self.bodies, self.svc.world, fps=self.args.fps)
         if getattr(self, "doors", None) is not None:
             self.doors.bind_agents(self.bodies.controllers)
+        self._check_people_bound()
         self._mark("people_bound")
+
+    def _check_people_bound(self) -> None:
+        """Every character spawned at the start must have a Behavior agent: one without stays frozen (a T-pose) and
+        never walks. A shortfall is logged and written to the run record (host.jsonl, kind "problem"); the launcher
+        copies it into meta.json."""
+        expected = sorted(self.people.skelroots)
+        missing = sorted(getattr(self.people, "unbound", []) or [])
+        self.startup["people_expected"] = len(expected)
+        self.startup["people_agents"] = len(expected) - len(missing)
+        if not missing:
+            log.info("people bound: all %d characters have a Behavior agent", len(expected))
+            return
+        msg = (f"people bound: {len(expected) - len(missing)} of {len(expected)} characters have a Behavior agent; "
+               f"{', '.join(missing)} will not walk or animate (no NavMesh over their rooms?)")
+        log.error("%s", msg)
+        self.runlog.write("host", {"kind": "problem", "what": "people_not_animated", "missing": missing,
+                                   "bound": len(expected) - len(missing), "expected": len(expected), "message": msg})
 
     def bake_navmesh(self) -> None:  # 6
         import omni.anim.navigation.core as nav
@@ -401,13 +420,21 @@ class IsaacHost:
         log.info("the G1 walks (GEAR-SONIC): routes with %.2f m clearance, at most %.1f m/s", G1_CLEARANCE_M,
                  self.profile.max_speed)
 
+    def _frame_rects(self) -> list:
+        """What the overhead camera fits: the scenario's places (stage.frame_rects), not every kept room."""
+        try:
+            return stage_mod.frame_rects(self.loaded, self.plan)
+        except Exception as exc:  # a nicety only: the kept rooms, as before
+            log.warning("could not work out the camera framing: %s", exc)
+            return list(self.plan.rects.values())
+
     def frame_view(self) -> None:
         if not self.args.headed:
             return
         if self.robot is not None:  # the follow camera, behind and above the robot; desk and overhead stay selectable
             try:
                 r = self.loaded.scenario.robot
-                self.cams = recording.HeadedCameras(self.stage, list(self.plan.rects.values()) or
+                self.cams = recording.HeadedCameras(self.stage, self._frame_rects() or
                                                     [tuple(self.loaded.site.bounds[i] for i in (0, 2, 1, 3))],
                                                     self.robot.pose, (1280, 720), post=(r.x, r.y, r.yaw))
                 self.cams.start()
@@ -466,7 +493,7 @@ class IsaacHost:
         cfg = recording.RecordConfig.from_args(self.args, self.run_dir)
         if cfg is None:
             return
-        self.recorder = recording.Recorder(cfg, self.app, self.timeline, self.stage, list(self.plan.rects.values()) or
+        self.recorder = recording.Recorder(cfg, self.app, self.timeline, self.stage, self._frame_rects() or
                                            [tuple(self.loaded.site.bounds[i] for i in (0, 2, 1, 3))],
                                            robot_pose=self.robot.pose if self.robot is not None else None,
                                            clock=lambda: float(self.svc.t) if getattr(self, "svc", None) is not None else 0.0)
@@ -541,7 +568,10 @@ class IsaacHost:
         if self.recorder is not None:
             try:
                 stats = self.recorder.finish()
+                problems = stats.pop("problems", [])
                 self.runlog.write("host", {"kind": "recording", **stats})
+                for pr in problems:  # the launcher copies these into meta.json (isaac_problems)
+                    self.runlog.write("host", {"kind": "problem", **pr})
             except Exception:
                 log.exception("could not finish the recording")
             self.recorder = None

@@ -249,6 +249,45 @@ def _base_plan(loaded: "LoadedScenario", hints: Optional[Mapping] = None, rooms:
     return CullPlan(ordered, rects, "hints" if hint else "placements")
 
 
+FRAME_BIG_ROOM_M = 15.0  # a placement in a room longer than this (a corridor) frames only its stretch of the room
+FRAME_POINT_M = 5.0  # ... this far round the placement
+
+
+def frame_rects(loaded: "LoadedScenario", plan: CullPlan, hints: Optional[Mapping] = None) -> list[Rect]:
+    """What the overhead and preview cameras fit: the scenario's places, not every room kept for it. The preset's
+    focus rooms, plus where the cast, the robot and the objects start (a long room, such as the main corridor, only
+    round the placement). Rooms kept for the route in and the robot's view are left out: the 47 m main corridor kept
+    for ward_fire's route squeezed the ward into a third of the frame. Rooms given by hand (``--rooms``), the full
+    site, or nothing to go on: the kept rooms as they are."""
+    kept = list(plan.rects.values())
+    if plan.full or plan.source == "rooms":
+        return kept
+    site = loaded.site
+    if hints is None:
+        hints = read_hints(Path(loaded.root) / "site" / "navmesh_hints.json")
+    scen = loaded.scenario
+    hint = hints.get(scen.preset_id or "") or hints.get(scen.id) or {}
+    out: dict[str, Rect] = {r: room_rect(site.rooms[r]) for r in hint.get("focus_rooms", []) if r in site.rooms}
+    for i, (x, y) in enumerate(placements(loaded)):
+        rid = next((k for k, rm in site.rooms.items() if rm.contains(x, y)), None)
+        if rid is None:
+            out[f"near_{i}"] = (x - POINT_BOX_M, y - POINT_BOX_M, x + POINT_BOX_M, y + POINT_BOX_M)
+            continue
+        r = room_rect(site.rooms[rid])
+        if rid in out or max(r[2] - r[0], r[3] - r[1]) <= FRAME_BIG_ROOM_M:
+            out.setdefault(rid, r)
+        else:
+            out[f"near_{i}"] = (max(r[0], x - FRAME_POINT_M), max(r[1], y - FRAME_POINT_M),
+                                min(r[2], x + FRAME_POINT_M), min(r[3], y + FRAME_POINT_M))
+    if not out:
+        return kept
+    if kept:  # never wider than what is kept (a camera that sees culled space sees black)
+        kx0, ky0 = min(r[0] for r in kept), min(r[1] for r in kept)
+        kx1, ky1 = max(r[2] for r in kept), max(r[3] for r in kept)
+        out = {k: (max(r[0], kx0), max(r[1], ky0), min(r[2], kx1), min(r[3], ky1)) for k, r in out.items()}
+    return list(out.values())
+
+
 def intersects(box: Box, rects: Mapping[str, Rect], margin: float = MARGIN_M) -> bool:
     (bx0, by0), (bx1, by1) = box
     for x0, y0, x1, y1 in rects.values():
@@ -325,9 +364,28 @@ def compute_cull(plan: CullPlan, stage_path: Path = STAGE_USD, collision_path: O
     return off
 
 
+NAV_Z_CENTER_M, NAV_Z_SIZE_M = -0.033, 0.5  # the stage's own include slab: 0.5 m thick about the floor
+
+
+def nav_include_attrs(box: Box) -> dict[str, tuple[str, object]]:
+    """The attributes of an Include NavMeshVolume over an xy box, as the stage's own include slab has them
+    ({name: (Sdf value type name, value)}; a unit cube scaled and moved over the box)."""
+    (x0, y0), (x1, y1) = box
+    return {
+        "extent": ("Float3Array", [(-0.5, -0.5, -0.5), (0.5, 0.5, 0.5)]),
+        "nav:area": ("String", "Walkable"),
+        "nav:volume:type": ("Token", "Include"),
+        "xformOp:translate": ("Double3", ((x0 + x1) / 2, (y0 + y1) / 2, NAV_Z_CENTER_M)),
+        "xformOp:scale": ("Float3", (x1 - x0, y1 - y0, NAV_Z_SIZE_M)),
+        "xformOpOrder": ("TokenArray", ["xformOp:translate", "xformOp:scale"]),
+    }
+
+
 def write_wrapper(out_path: Path, off: Iterable[str], stage_path: Path = STAGE_USD,
-                  authored: Optional[Mapping[str, Mapping[str, object]]] = None) -> Path:
-    """A root layer that sublayers the real stage, deactivates ``off`` and authors ``authored`` ({prim: {attribute: bool or float}})."""
+                  authored: Optional[Mapping[str, Mapping[str, object]]] = None,
+                  nav_include: Optional[Box] = None) -> Path:
+    """A root layer that sublayers the real stage, deactivates ``off``, authors ``authored`` ({prim: {attribute: bool or
+    float}}) and, given ``nav_include`` (an xy box), defines one more NavMesh Include volume at ``fixes.NAV_INCLUDE_PATH``."""
     from pxr import Sdf
 
     out_path = Path(out_path)
@@ -350,6 +408,18 @@ def write_wrapper(out_path: Path, off: Iterable[str], stage_path: Path = STAGE_U
         for name, value in attrs.items():
             kind = Sdf.ValueTypeNames.Bool if isinstance(value, bool) else Sdf.ValueTypeNames.Float
             Sdf.AttributeSpec(spec, name, kind).default = value if isinstance(value, bool) else float(value)
+    if nav_include is not None:
+        from .fixes import NAV_INCLUDE_PATH
+
+        parent = Sdf.CreatePrimInLayer(lay, NAV_INCLUDE_PATH.rsplit("/", 1)[0])
+        parent.specifier, parent.typeName = Sdf.SpecifierDef, "Scope"  # defined, or the volume under it is not traversed
+        spec = Sdf.CreatePrimInLayer(lay, NAV_INCLUDE_PATH)
+        spec.specifier, spec.typeName = Sdf.SpecifierDef, "NavMeshVolume"
+        spec.SetInfo("apiSchemas", Sdf.TokenListOp.CreateExplicit(["NavMeshAreaAPI"]))
+        for name, (kind, value) in nav_include_attrs(nav_include).items():
+            attr = Sdf.AttributeSpec(spec, name, getattr(Sdf.ValueTypeNames, kind),
+                                     variability=Sdf.VariabilityUniform if name == "xformOpOrder" else Sdf.VariabilityVarying)
+            attr.default = value
     lay.Save()
     return out_path
 

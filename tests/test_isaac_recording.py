@@ -335,3 +335,62 @@ def test_frame_zero_is_stamped_with_the_run_clock_and_written_to_timing_json(tmp
     stats = rec.finish()
     t = json.loads((tmp_path / "video" / "timing.json").read_text())
     assert stats["t_start_s"] == 12.5 and t["t_start_s"] == 12.5 and t["fps"] == 30 and t["overhead_frames"] == 2 == rec.encoded
+
+
+# ---- a full disk cuts follow.mp4 short (ward_fire, fx round: 3370 of 3750 frames, no error in the run record) ----
+class _FakeEncoder:
+    def __init__(self):
+        self.frames, self.started, self.finalised = [], None, False
+
+    def start_encoding(self, video_filename, framerate, nframes, overwrite_video):
+        self.started = video_filename
+        return True
+
+    def encode_next_frame_from_file(self, name):
+        self.frames.append(name)
+
+    def finalize_encoding(self):
+        self.finalised = True
+        Path(self.started).write_bytes(b"\0" * 16)
+
+
+def _recorder_with_frames(tmp_path, n=4, size=1000):
+    cfg = R.RecordConfig(res=(1280, 720), fps=25, record=True, preview=False, video_dir=tmp_path / "video",
+                         preview_path=tmp_path / "preview" / "latest.jpg")
+    rec = R.Recorder(cfg, app=None, timeline=None, stage=None, rects=[(0, 0, 1, 1)])
+    rec._enc = _FakeEncoder()
+    rec.follow_dir = cfg.video_dir / R.FOLLOW_DIR
+    rec.follow_dir.mkdir(parents=True)
+    for i in range(n):
+        (rec.follow_dir / f"f_{i:06d}.jpg").write_bytes(b"x" * size)
+    return rec
+
+
+def test_disk_problem_when_free_space_is_below_what_the_encode_needs():
+    assert R.disk_problem(need_b=100 * 2**20, free_b=10 * 2**30, what="follow.mp4") is None
+    msg = R.disk_problem(need_b=400 * 2**20, free_b=300 * 2**20, what="follow.mp4")
+    assert msg and "follow.mp4" in msg and "disk" in msg
+
+
+def test_follow_encode_on_a_full_disk_is_a_problem_in_the_stats(tmp_path, monkeypatch):
+    rec = _recorder_with_frames(tmp_path, n=4, size=1000)
+    monkeypatch.setattr(R, "_free_bytes", lambda path: 10)  # nearly nothing left
+    assert rec._encode_follow() == 4  # still encodes what it can: part of a video beats none
+    assert rec._enc.finalised
+    assert any(p["what"] == "disk_full" and "follow.mp4" in p["message"] for p in rec.problems)
+
+
+def test_follow_encode_with_room_to_spare_has_no_problem(tmp_path, monkeypatch):
+    rec = _recorder_with_frames(tmp_path, n=4, size=1000)
+    monkeypatch.setattr(R, "_free_bytes", lambda path: 50 * 2**30)
+    assert rec._encode_follow() == 4
+    assert rec.problems == []
+
+
+def test_follow_encode_needs_less_than_its_jpeg_frames(tmp_path, monkeypatch):
+    # a wing run, fx round: 645 MiB of frames, 589 MiB free, and follow.mp4 came out whole at 270 MB
+    rec = _recorder_with_frames(tmp_path, n=4, size=1000)
+    jpeg = 4 * 1000
+    monkeypatch.setattr(R, "_free_bytes", lambda path: int(0.9 * jpeg) + R.DISK_MARGIN_B)
+    rec._encode_follow()
+    assert rec.problems == []

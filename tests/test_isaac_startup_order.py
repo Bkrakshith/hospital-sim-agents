@@ -81,3 +81,61 @@ def test_no_update_between_the_robot_reference_and_its_graph():
     Fake().add()
     assert log[:4] == ["check", "reference", "locate", "graph"]  # nothing steps the app in between
     assert log[4:] == ["update"] * SETTLE_UPDATES + ["articulation"]
+
+
+# ---- every character gets a Behavior agent, or the run says so (QA bug 12) -----------------------------------
+def _bind_host(tmp_path, skelroots, unbound):
+    from wardzero_agents.runlog import RunLog
+
+    h = A.IsaacHost.__new__(A.IsaacHost)
+    h.startup, h._t0 = {}, 0.0
+    h.args = SimpleNamespace(fps=25)
+    h.runlog = RunLog(tmp_path)
+    h.bodies = SimpleNamespace(controllers={})
+    h.svc = SimpleNamespace(world=None)
+    h.app = None
+
+    def bind(app, bodies, world, fps=30):
+        h.people.unbound = list(unbound)
+
+    h.people = SimpleNamespace(skelroots=dict.fromkeys(skelroots, "/World/x"), bind=bind, unbound=[])
+    return h
+
+
+def _host_rows(tmp_path):
+    import json
+    return [json.loads(line) for line in (tmp_path / "host.jsonl").read_text().splitlines()] \
+        if (tmp_path / "host.jsonl").exists() else []
+
+
+def test_people_bound_equals_the_cast_with_bodies(tmp_path, caplog):
+    h = _bind_host(tmp_path, ["N1", "S1"], [])
+    h.bind_people()
+    assert h.startup["people_expected"] == 2 and h.startup["people_agents"] == 2
+    assert not [r for r in _host_rows(tmp_path) if r.get("kind") == "problem"]
+
+
+def test_people_without_an_agent_are_a_problem_in_the_run_record(tmp_path, caplog):
+    import logging
+    h = _bind_host(tmp_path, ["N1", "S1"], ["N1", "S1"])
+    with caplog.at_level(logging.ERROR, logger="wardzero.isaac.app"):
+        h.bind_people()
+    assert h.startup["people_agents"] == 0 and h.startup["people_expected"] == 2
+    rows = [r for r in _host_rows(tmp_path) if r.get("kind") == "problem"]
+    assert rows and rows[0]["what"] == "people_not_animated" and rows[0]["missing"] == ["N1", "S1"]
+    assert any("0 of 2" in r.getMessage() and "N1, S1" in r.getMessage() for r in caplog.records)
+
+
+# ---- a recording problem (a full disk cutting follow.mp4 short) reaches the run record -----------------------
+def test_recording_problems_are_problems_in_the_run_record(tmp_path):
+    from wardzero_agents.runlog import RunLog
+
+    h = A.IsaacHost.__new__(A.IsaacHost)
+    h.runlog, h.bag = RunLog(tmp_path), None
+    problem = {"what": "disk_full", "message": "the disk is nearly full: follow.mp4 may be cut short"}
+    h.recorder = SimpleNamespace(finish=lambda: {"frames": 3, "problems": [problem]})
+    h.finish_recording()
+    rows = _host_rows(tmp_path)
+    assert [r for r in rows if r.get("kind") == "problem"] == [{"kind": "problem", **problem}]
+    rec = [r for r in rows if r.get("kind") == "recording"]
+    assert rec and "problems" not in rec[0] and rec[0]["frames"] == 3

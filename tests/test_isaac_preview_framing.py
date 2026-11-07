@@ -109,3 +109,57 @@ def test_every_shape_is_fully_inside_the_frame(w, h):
     fw, fh = bbox_in_image(v, rects, z=R.CEILING_CUT_M)
     if v.eye[2] > R.CEILING_CUT_M + 1.0 + 1e-9:  # not held up by the ceiling cut: tight on one side
         assert max(fw, fh) == pytest.approx(1 / R.OVERHEAD_MARGIN, rel=1e-3)
+
+
+# ---- the camera frames the scenario's places, not every kept room (QA bug 22) --------------------------------
+from wardzero_agents.config.presets import DEFAULT_CONFIG_ROOT, load_scenario_presets, preset_to_scenario  # noqa: E402
+from wardzero_agents.isaac_host import stage as S  # noqa: E402
+from wardzero_agents.studio import auto_staff  # noqa: E402
+
+PRESETS = load_scenario_presets(DEFAULT_CONFIG_ROOT)
+
+
+def staged(pid, tmp_path_factory):
+    p = PRESETS[pid]
+    return preset_to_scenario(p, DEFAULT_CONFIG_ROOT, tmp_path_factory.mktemp(pid),
+                              characters=auto_staff.with_auto(list(p.characters), p))
+
+
+def _bbox(rects):
+    return (min(r[0] for r in rects), min(r[1] for r in rects), max(r[2] for r in rects), max(r[3] for r in rects))
+
+
+def test_ward_fire_frames_the_ward_not_the_main_corridor(tmp_path_factory):
+    ld = staged("ward_fire", tmp_path_factory)
+    plan = S.cull_plan(ld)
+    assert "Main_Corridor" in plan.rooms  # kept for the route in, but it is not where the scenario happens
+    rects = S.frame_rects(ld, plan)
+    x0, y0, x1, y1 = _bbox(rects)
+    corridor = S.room_rect(ld.site.rooms["Main_Corridor"])
+    assert x0 > corridor[0] + 20  # the 47 m corridor no longer stretches the frame west
+    for rid in ("B1", "B5", "B6", "Ward_Corridor"):  # the bays and the corridor the fire is in are all in it
+        r = S.room_rect(ld.site.rooms[rid])
+        assert x0 <= r[0] and y0 <= r[1] and x1 >= r[2] and y1 >= r[3]
+    for x, y in S.placements(ld):  # every placement: cast, robot start, objects
+        assert x0 <= x <= x1 and y0 <= y <= y1
+    v = R.overhead_view(rects, ASPECT)
+    fw, fh = bbox_in_image(v, rects)
+    assert fw * fh >= 0.6  # the ward fills most of the frame
+
+
+@pytest.mark.parametrize("pid", sorted(PRESETS))
+def test_every_preset_frames_its_people_and_robot(pid, tmp_path_factory):
+    ld = staged(pid, tmp_path_factory)
+    plan = S.cull_plan(ld)
+    rects = S.frame_rects(ld, plan)
+    x0, y0, x1, y1 = _bbox(rects)
+    kx0, ky0, kx1, ky1 = _bbox(list(plan.rects.values()))
+    assert kx0 <= x0 and ky0 <= y0 and x1 <= kx1 and y1 <= ky1  # never wider than the kept rooms
+    for x, y in S.placements(ld):
+        assert x0 <= x <= x1 and y0 <= y <= y1, (pid, x, y)
+
+
+def test_rooms_given_by_hand_are_framed_as_given(tmp_path_factory):
+    ld = staged("ward_fire", tmp_path_factory)
+    plan = S.cull_plan(ld, rooms=["Main_Corridor", "Lobby"])
+    assert sorted(S.frame_rects(ld, plan)) == sorted(plan.rects.values())

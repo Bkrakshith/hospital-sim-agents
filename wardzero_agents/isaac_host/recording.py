@@ -1,7 +1,7 @@
 """Recording and the Studio's live preview (I5).
 
 ``--record`` writes two MP4s to ``<run>/video`` with Isaac's hardware encoder (NVENC, ``omni.videoencoding``):
-``overhead.mp4`` (a camera over the kept rooms) and ``follow.mp4`` (a third-person camera on the robot, when the
+``overhead.mp4`` (a camera over the scenario's places, ``stage.frame_rects``) and ``follow.mp4`` (a third-person camera on the robot, when the
 run has one). ``--preview`` (headless only) writes ``<run>/preview/latest.jpg`` 5 times a second, which the Studio
 streams as MJPEG.
 
@@ -106,6 +106,28 @@ class RecordConfig:
 
     def frames_to_seconds(self, frames: int) -> float:
         return frames / float(self.fps)
+
+
+DISK_MARGIN_B = 64 * 2**20  # free space kept on top of what an encode needs
+FOLLOW_MP4_RATIO = 0.75  # follow.mp4's size over its JPEG frames': 0.40 to 0.60 measured at 720p (a wing run,
+# ward_fire), with room to spare
+
+
+def _free_bytes(path: Path) -> int:
+    try:
+        return shutil.disk_usage(path).free
+    except OSError:
+        return -1  # unknown: no check
+
+
+def disk_problem(need_b: int, free_b: int, what: str) -> Optional[str]:
+    """A message when ``free_b`` bytes on the disk are not enough to write ``need_b`` more for ``what``, else None. The
+    encoder says nothing useful when the disk fills (Kit logs "encodeNextFrame: have nowhere to write to" and the MP4
+    stops short, with no error in the run), so the run record has to say it."""
+    if free_b < 0 or free_b >= need_b + DISK_MARGIN_B:
+        return None
+    return (f"the disk is nearly full ({free_b / 2**20:.0f} MiB free, {what} needs about {need_b / 2**20:.0f} MiB): "
+            f"{what} may be cut short; free some disk space and run again")
 
 
 def encoder_args(cfg: RecordConfig) -> dict:
@@ -365,6 +387,7 @@ class Recorder:
         self._stride = preview_stride(cfg.fps, cfg.preview_hz)
         self._last_rgba = None
         self._held = False
+        self.problems: list[dict] = []  # {"what", "message"}: what went wrong with the videos (the host records them)
 
     # ---- set up ----
     def start(self) -> None:
@@ -506,6 +529,8 @@ class Recorder:
             log.warning("could not stop the Replicator orchestrator: %s", exc)
         self._write_timing(stats)
         log.info("recording done: %s", stats)
+        if self.problems:
+            stats["problems"] = list(self.problems)
         return stats
 
     def _write_timing(self, stats: dict) -> None:
@@ -527,6 +552,11 @@ class Recorder:
         if not files:
             log.warning("no follow-camera frames were written")
             return 0
+        need = int(FOLLOW_MP4_RATIO * sum(p.stat().st_size for p in files))  # the MP4 is smaller than its frames
+        msg = disk_problem(need, _free_bytes(cfg.video_dir), cfg.follow_mp4.name)
+        if msg:
+            log.error("%s", msg)
+            self.problems.append({"what": "disk_full", "message": msg})
         self._enc.start_encoding(video_filename=str(cfg.follow_mp4), framerate=float(cfg.fps), nframes=len(files),
                                  overwrite_video=True)
         for p in files:

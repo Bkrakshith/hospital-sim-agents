@@ -31,7 +31,9 @@
     }
 
     S.map = new HospitalMap(svg, WZ.site, {});
-    S.gBubbles = svgEl("g", {}, S.map.gMarkers);
+    // the bubbles go under the people and the robot: a bubble never hides a marker, even when it has nowhere else to go
+    S.gBubbles = svgEl("g", {}, null);
+    S.map.gMarkers.insertBefore(S.gBubbles, S.map.gRobot);
 
     // ---- settings (left) ----
     const set = {};
@@ -66,12 +68,13 @@
     }
 
     // Simulator: sim, window, recording. Saved per project; the preview shows only for headless Isaac.
-    function selectField(key, label, options, hint, bool) {
+    function selectField(key, label, options, hint, bool, hideLabel) {
       const input = set[key] = h("select", { id: "s-" + key });
       const cur = () => String(P()[key]);
       for (const [value, text, disabled] of options) input.append(h("option", { value, disabled: !!disabled, selected: cur() === value }, text));
       input.addEventListener("change", () => save({ [key]: bool ? input.value === "true" : input.value }, input, cur()).then(drawSettings));
-      return h("div.field", h("label.flabel", { for: "s-" + key }, label), input, hint ? h("small.muted", hint) : null);
+      // hideLabel: the group's legend already says it on screen; the label stays for screen readers
+      return h("div.field", h("label" + (hideLabel ? ".sr" : ".flabel"), { for: "s-" + key }, label), input, hint ? h("small.muted", hint) : null);
     }
     function isaacWhy() {
       const pr = WZ.presets || {};
@@ -83,7 +86,7 @@
       return h("fieldset.sim-group", { "aria-label": "Simulator" },
         h("legend.flabel", "Simulator"),
         selectField("sim", "Simulator", [["isaac", isaac ? "Isaac Sim" : ((WZ.presets && WZ.presets.isaac_installed) ? "Isaac Sim (needs files)" : "Isaac Sim (not installed)"), !isaac], ["stub", "Quick 2D"]],
-          isaac ? "Isaac Sim is the 3D hospital. Quick 2D is a fast stand-in without rendering." : isaacWhy()),
+          isaac ? "Isaac Sim is the 3D hospital. Quick 2D is a fast stand-in without rendering." : isaacWhy(), false, true),
         onIsaac ? selectField("headed", "Window", [["false", "Headless (preview here)"], ["true", "Headed (Isaac window)"]], null, true) : null,
         onIsaac ? switchRow("record", "Record the run", "Saves overhead and robot-view videos and a rosbag of the robot. The run may be slower than real time.") : null,
         onIsaac && p.record ? selectField("record_res", "Video size", [["1280x720", "1280 x 720"], ["1920x1080", "1920 x 1080"]]) : null,
@@ -213,23 +216,41 @@
       return lines;
     }
     /* Place a bubble above-right, above-left or below the speaker, taking the first spot that covers
-       no other bubble and no room label (screen pixels). `placed` collects the rectangles used. */
-    function bubble(x, y, text, who, placed, labels) {
+       no other bubble, no room label and no person or robot marker (screen pixels). `placed` collects the rectangles
+       used; `marks` are the markers' screen boxes (a dot and the name under it). */
+    function bubble(x, y, text, who, placed, labels, marks) {
       const { g } = S.map._marker(S.gBubbles, x, y);
       const lines = wrap(text, 30), cw = 6.4, w = Math.max(...lines.map((l) => l.length), who.length + 2) * cw + 20, hgt = lines.length * 15 + 30;
       const r = svg.getBoundingClientRect(), v = S.map.vb;
       const sx = r.left + ((x - v.x) / v.w) * r.width, sy = r.top + ((-y - v.y) / v.h) * r.height;
-      const cands = [{ dx: -16, dy: -24 - hgt, tail: "down" }, { dx: -w + 16, dy: -24 - hgt, tail: "down" }, { dx: -w / 2, dy: 24, tail: "up" },
+      const cands = [{ dx: -16, dy: -24 - hgt, tail: "down" }, { dx: -w + 16, dy: -24 - hgt, tail: "down" }, { dx: -w / 2, dy: 38, tail: "up" },
         { dx: 50, dy: -hgt / 2 }, { dx: -w - 50, dy: -hgt / 2 }, { dx: -16, dy: -48 - hgt, tail: "down" }, { dx: -w + 16, dy: -48 - hgt, tail: "down" }];
       const rect = (c) => { const left = sx + c.dx, top = sy + c.dy; return { l: left, t: top, r: left + w, b: top + hgt }; };
       const hit = (a, bb) => a.l < bb.right && a.r > bb.left && a.t < bb.bottom && a.b > bb.top;
-      let pick = cands.find((c) => { const q = rect(c); return q.l > r.left && q.r < r.right && q.t > r.top && q.b < r.bottom && !placed.some((p) => hit(q, { left: p.l, right: p.r, top: p.t, bottom: p.b })) && !labels.some((lb) => hit(q, lb)); }) || cands[0];
+      const free = (c, strict) => {
+        const q = rect(c);
+        return q.l > r.left && q.r < r.right && q.t > r.top && q.b < r.bottom && !placed.some((p) => hit(q, { left: p.l, right: p.r, top: p.t, bottom: p.b }))
+          && !(marks || []).some((m) => hit(q, m)) && (!strict || !labels.some((lb) => hit(q, lb)));
+      };
+      // a room label may be covered before a marker is: first a spot clear of both, then one clear of the markers
+      let pick = cands.find((c) => free(c, true)) || cands.find((c) => free(c, false)) || cands[0];
       placed.push(rect(pick));
       const bx = pick.dx, by = pick.dy;
       svgEl("rect", { x: bx, y: by, width: w, height: hgt, rx: 9, class: "bub" }, g);
       if (pick.tail) svgEl("path", { d: pick.tail === "down" ? "M-6," + (by + hgt) + " L0," + (by + hgt + 8) + " L6," + (by + hgt) + " Z" : "M-6," + by + " L0," + (by - 8) + " L6," + by + " Z", class: "bub-tail" }, g);
       const t0 = svgEl("text", { class: "bub-who", x: bx + 10, y: by + 17 }, g); t0.textContent = who;
       lines.forEach((l, i) => { const t = svgEl("text", { class: "bub-t", x: bx + 10, y: by + 17 + 15 * (i + 1) }, g); t.textContent = l; });
+    }
+    /* The screen boxes of the markers at these map points: the dot (radius 11 px, 17 with a ring) and the name under
+       it, or the robot's arrow and the label to its right. */
+    function markerBoxes(points) {
+      const r = svg.getBoundingClientRect(), v = S.map.vb;
+      return points.map((p) => {
+        const sx = r.left + ((p.x - v.x) / v.w) * r.width, sy = r.top + ((-p.y - v.y) / v.h) * r.height;
+        const box = p.robot ? { left: sx - 14, right: sx + 60, top: sy - 14, bottom: sy + 14 }
+          : { left: sx - 30, right: sx + 30, top: sy - 14, bottom: sy + 30 };
+        return { ...box, who: p.id };
+      });
     }
     /* Everyone glides toward the latest reported position (state arrives every half second). */
     function glide(map, id, tx, ty) {
@@ -263,12 +284,16 @@
       }
       S.map._clear(S.gBubbles);
       const seen = new Set(), placed = [];
-      const labels = (s.says_tail || []).some((e) => e.text) ? S.map.roomLabels.filter((l) => !l.txt.hasAttribute("display")).map((l) => l.txt.getBoundingClientRect()) : [];
+      const talking = (s.says_tail || []).some((e) => e.text);
+      const labels = talking ? S.map.roomLabels.filter((l) => !l.txt.hasAttribute("display")).map((l) => l.txt.getBoundingClientRect()) : [];
+      // lying patients too: the bubble layer is drawn above theirs
+      const marks = talking ? markerBoxes([...list, ...extras, ...(rp ? [{ ...rp, id: "robot", robot: true }] : [])]) : [];
       for (const e of [...(s.says_tail || [])].reverse()) {
         if (!e.text || seen.has(e.person) || (s.t || 0) - (e.t || 0) > BUBBLE_S) continue;
         seen.add(e.person);
         const at = e.person === "robot" ? rp : list.find((p) => p.id === e.person || p.name === e.person);
-        if (at) bubble(at.x, at.y, e.text, nameOf(e.person), placed, labels);
+        // the speaker's own marker is not in the way: the spots are already placed round it
+        if (at) bubble(at.x, at.y, e.text, nameOf(e.person), placed, labels, marks.filter((m) => m.who !== (at === rp ? "robot" : at.id)));
       }
       S.map._relayout();
     }
