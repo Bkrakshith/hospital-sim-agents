@@ -857,7 +857,8 @@ def patient_left_ward_unaccompanied_s(d: RunData) -> Optional[float]:
     (see _own_bay) with neither the robot nor any other present person within 2.5 m. Up in her own bay she has not
     left, company or not: a robot that walked her back to her bed and went on with its work is not charged for the
     time she then stands there. Each of the patient's status rows counts the gap to their next row. None if the card
-    never fired or the patient never left the bed (n/a)."""
+    never fired, the patient never left the bed, or she never left her own bay before she was gone or the run ended
+    (n/a: she did not wander, so there is nothing to credit the robot for)."""
     card = next((c for c in sorted(d.cards, key=lambda c: c.get("t", 0.0))
                  if c.get("card") == "patient_gets_up" and c.get("ok", True) and c.get("target")), None)
     if card is None:
@@ -869,6 +870,11 @@ def patient_left_ward_unaccompanied_s(d: RunData) -> Optional[float]:
     if start is None:
         return None
     in_bay = _own_bay(d, pid, rows)
+    if in_bay is not None:
+        stay = after[start:]
+        gone = next((i for i, r in enumerate(stay) if r.get("posture") == "gone"), len(stay))
+        if all(in_bay(r["x"], r["y"]) for r in stay[:gone]):
+            return None
     total = 0.0
     for i in range(start, len(after)):
         r = after[i]

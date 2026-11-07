@@ -338,3 +338,15 @@ def test_the_porter_is_known_from_the_scenario_when_meta_has_no_people(tmp_path)
     assert val(d, "specimen_delivered_s") is None
     d = make_run(tmp_path / "run2", {"scenario_path": str(scen)}, objects=[box(0, "g1"), box(0.35, "PO1")])
     assert val(d, "specimen_delivered_s") == pytest.approx(0.35)
+
+
+def test_a_patient_who_stays_in_her_bay_with_an_idle_robot_is_not_measured(tmp_path):
+    """QA no-robot run: W1 gets up at 23.9 s and stands in bay B4 for the rest of the run, the robot never moves.
+    She never left her bay, so the metric is None and its criterion n/a, not a 0.0 that an idle robot passes."""
+    from wardzero_agents.bench.metrics import not_applicable
+    cards = [{"t": 20.0, "card": "patient_gets_up", "target": "W1", "ok": True}]
+    w1 = [status(0, "W1", *BED, "lying")] + [status(t, "W1", 24.5, 8.6, "standing") for t in range(24, 481)]
+    d = make_run(tmp_path, WANDER_META, cards=cards, status=w1, robot_pose=[pose(t, 21.0, 20.0) for t in range(481)])
+    v = val(d, "patient_left_ward_unaccompanied_s")
+    assert v is None
+    assert not_applicable("patient_left_ward_unaccompanied_s", d, v)
