@@ -70,7 +70,8 @@ from wardzero_agents.world.reach import giver_reach_ok, receiver_zone_ok
 TAKE_REACH_M = 0.8
 CHIME_DB = 55.0
 ACTIONS = ("hand_over", "take", "extinguish", "press_call", "guide_start", "guide_stop", "tell_staff", "note_desk",
-           "approach")
+           "approach", "follow")
+WALKING = ("approach", "guide_start", "tell_staff", "extinguish", "follow")  # these end a follow under way
 GUIDE_CARD = "robot_guide"
 TELL_CARD = "robot_tell_staff"
 CALL_CARD = "robot_staff_call"
@@ -103,6 +104,12 @@ BACK_OFF_S = 0.5
 BACK_OFF_STEP_M = 0.7
 BACK_OFF_COOLDOWN_S = 4.0
 SAFETY = "safety"  # goal ids of its own safety moves: their results are not reported to the brain
+FOLLOW_GOAL = "follow"  # goal ids of its own walks while it follows someone: not reported either
+FOLLOW_NEAR_M = 1.0  # following, the robot keeps between these two distances from the person ...
+FOLLOW_FAR_M = 1.5
+FOLLOW_GAP_M = 1.25  # ... walking up to this far from them when they get further than FOLLOW_FAR_M
+FOLLOW_REPLAN_M = 0.5  # its walk is re-planned once the spot it walks to has moved this far
+FOLLOW_RETRY_S = 2.0  # a walk that failed (blocked, stuck) is tried again after this long
 DESK_M = 1.5  # the receptionist reads the desk computer when she is this close to her chair
 
 GUIDE_HOLD_M = 2.5  # the robot waits while the guided person is further behind than this ...
@@ -156,6 +163,7 @@ class RobotTasks:
         self._spray: dict[str, str] = {}  # action id -> fire id
         self._to_fire: dict[str, str] = {}  # action id -> fire id, walking up to it before spraying
         self._guide: Optional[dict] = None
+        self._following: Optional[dict] = None  # the follow action under way
         self._tell: Optional[dict] = None
         self._notes: list[dict] = []  # desk notes not read yet
         self._goal_xy: Optional[tuple] = None  # (x, y, yaw, exempt) of the goal in flight, for a re-route
@@ -218,6 +226,8 @@ class RobotTasks:
         if action not in ACTIONS:
             self._result(aid, str(action), False, "unknown_action", t)
             return
+        if action in WALKING and self._following is not None:
+            self._end_follow(t, "superseded")
         try:
             getattr(self, f"_{action}")(aid, msg, t)
         except (KeyError, TypeError, ValueError, IndexError):
@@ -650,7 +660,93 @@ class RobotTasks:
             self._goal(self.goal_id, False, "cancelled", t)
         self.world.robot.cancel_goal()
         self._end_guide(t, "stopped")
+        self._end_follow(t, "stopped")
         self._result(aid, "guide_stop", True, "ok", t)
+
+    # ---- following a person ---------------------------------------------------------------
+    def _follow(self, aid, msg, t) -> None:
+        """Stay with a person: walk up to them and keep FOLLOW_NEAR_M-FOLLOW_FAR_M from them as they move, until
+        guide_stop, a goal_pose, cmd_vel, another walking task, or they are gone."""
+        w = self.world
+        pid = self._person(msg["track"])
+        if pid is None:
+            return self._result(aid, "follow", False, "no_person", t)
+        if not self.mobile:
+            return self._result(aid, "follow", False, "cannot_walk", t)
+        r = w.robot
+        if r.has_goal and r._had_goal:  # a walk under way (its own or a task's) is over
+            self._goal(self.goal_id, False, "superseded", t)
+            if self._tell is not None:
+                self._result(self._tell["id"], "tell_staff", False, "superseded", t)
+                self._tell = None
+            r.cancel_goal()
+        self._end_guide(t, "superseded")
+        self._following = {"id": aid, "pid": pid, "spot": None, "retry_at": -math.inf}
+        self._log({"t": t, "kind": "follow", "event": "start", "id": aid, "person": pid})
+        self._result(aid, "follow", True, "following", t)
+        self._follow_step(t)
+
+    def _end_follow(self, t: float, reason: str) -> None:
+        f, self._following = self._following, None
+        if f is None:
+            return
+        r = self.world.robot
+        if str(self.goal_id).startswith(FOLLOW_GOAL + "-") and r.has_goal and r._had_goal:
+            r.cancel_goal()
+        self._log({"t": t, "kind": "follow", "event": "end", "id": f["id"], "person": f["pid"], "reason": reason})
+
+    def _follow_spot(self, p) -> Optional[tuple[float, float]]:
+        """Free floor FOLLOW_GAP_M (or a little nearer or further) from the person, on the robot's side of them, clear
+        for its body: the one nearest the robot."""
+        w, r = self.world, self.world.robot
+        clear = getattr(r.router, "is_clear", None) or getattr(r.router, "is_free", None)
+        base = math.atan2(r.y - p.y, r.x - p.x)
+        best, bd = None, math.inf
+        for dist in (FOLLOW_GAP_M, FOLLOW_NEAR_M + 0.1, FOLLOW_FAR_M - 0.1):
+            for deg in (0, 30, -30, 60, -60, 90, -90):
+                a = base + math.radians(deg)
+                x, y = p.x + dist * math.cos(a), p.y + dist * math.sin(a)
+                if w.site.grid.blocked(x, y) or (clear is not None and not clear(x, y)) \
+                        or not w._los((x, y), (p.x, p.y)):
+                    continue
+                d = math.hypot(x - r.x, y - r.y) + 0.3 * abs(deg) / 90.0
+                if d < bd:
+                    best, bd = (x, y), d
+            if best is not None:
+                return best
+        return None
+
+    def _follow_step(self, t: float) -> None:
+        f, w = self._following, self.world
+        r = w.robot
+        p = w.people.get(f["pid"])
+        if p is None or p.posture == "gone":
+            return self._end_follow(t, "person_gone")
+        walking = r.has_goal and r._had_goal and str(self.goal_id).startswith(FOLLOW_GOAL + "-")
+        d = math.hypot(p.x - r.x, p.y - r.y)
+        if d <= FOLLOW_GAP_M or (not walking and d <= FOLLOW_FAR_M):
+            if walking:
+                r.cancel_goal()  # close enough: stop here
+                f["spot"] = None
+            if not r.has_goal:
+                face = math.atan2(p.y - r.y, p.x - r.x)
+                if abs(math.atan2(math.sin(face - r.yaw), math.cos(face - r.yaw))) > 0.35:
+                    r.turn_to(face)
+            return
+        if t < f["retry_at"]:
+            return
+        spot = self._follow_spot(p)
+        if spot is None:
+            f["retry_at"] = t + FOLLOW_RETRY_S
+            return
+        if walking and f["spot"] is not None and math.hypot(spot[0] - f["spot"][0], spot[1] - f["spot"][1]) \
+                < FOLLOW_REPLAN_M:
+            return  # the walk under way still goes to about the right place
+        gid = f"{FOLLOW_GOAL}-{f['id']}"
+        if self._set_goal(gid, spot[0], spot[1], math.atan2(p.y - spot[1], p.x - spot[0]), t):
+            f["spot"] = spot
+        else:
+            f["retry_at"] = t + FOLLOW_RETRY_S
 
     # ---- telling the staff ---------------------------------------------------------------
     def _staff_to_tell(self) -> tuple[Optional[str], list]:
@@ -958,6 +1054,7 @@ class RobotTasks:
 
     def _goal_pose_now(self, x, y, yaw, t) -> None:
         self._goal_n += 1
+        self._end_follow(t, "superseded")
         gid = f"goal_pose-{self._goal_n}"
         if not self._set_goal(gid, x, y, yaw, t):
             self._goal(gid, False, "no_route", t)
@@ -978,6 +1075,8 @@ class RobotTasks:
         self._goal_xy, self._held_s = (x, y, yaw, exempt), 0.0
         if in_flight:
             self._goal(self.goal_id, False, "superseded", t)
+        if self._following is not None and not str(gid).startswith((SAFETY, FOLLOW_GOAL + "-")):
+            self._end_follow(t, "superseded")  # another walk: the follow is over
         if self._tell is not None and self._tell["id"] != gid:
             self._result(self._tell["id"], "tell_staff", False, "superseded", t)
             self._tell = None
@@ -991,9 +1090,12 @@ class RobotTasks:
             self._result(self._tell["id"], "tell_staff", False, "cancelled", t)
             self._tell = None
         self._end_guide(t, "cancelled")
+        self._end_follow(t, "cancelled")
         self.world.robot.set_cmd_vel(*cmd)
 
     def _goal(self, gid, ok, reason, t) -> None:
+        if str(gid).startswith(FOLLOW_GOAL + "-"):
+            return  # one of its own walks while following: the follow action reports, not each walk
         self._out.results.append({"kind": "goal", "id": gid, "action": "goal", "ok": ok,
                                   "reason": reason, "t": t})
 
@@ -1085,6 +1187,10 @@ class RobotTasks:
                 self._result(aid, "extinguish", False, "cancelled", t)
         if self._guide is not None:
             self._guide_step(t, dt)
+        if self._following is not None:
+            if ev is not None and ev != "arrived" and str(self.goal_id).startswith(FOLLOW_GOAL + "-"):
+                self._following["retry_at"] = t + FOLLOW_RETRY_S  # its walk failed: try again in a moment
+            self._follow_step(t)
         if self._notes:
             self._read_notes(t)
         self._safety(t, dt)

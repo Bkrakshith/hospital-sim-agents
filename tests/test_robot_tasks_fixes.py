@@ -265,3 +265,57 @@ def test_a_take_result_names_the_item(staged, tmp_path):
     s.on_task_action({"id": "k1", "action": "take", "item": "scalpel"})
     res = results(advance(s, 0.2), "k1", "action")
     assert [(r["ok"], r["item"]) for r in res] == [(True, "scalpel")]
+
+
+# ---- follow: the robot stays with a person ---------------------------------------------------------------------------
+def _walk(s, pid, x, y):
+    s.on_intent(Intent(id=f"w-{pid}-{x}-{y}", person=pid, t=s.t, kind="walk_to", point=(x, y)))
+
+
+def test_follow_keeps_the_robot_with_a_walking_person_then_stops_on_guide_stop(staged, tmp_path):
+    s = svc(staged("wandering_patient"), tmp_path)
+    w = s.world
+    put(w, "W1", 19.0, 13.5, yaw=1.57)  # 2 m up the corridor from the robot
+    s.step(0.1)
+    tr = w.tracks.track("W1")
+    s.on_task_action({"id": "fo", "action": "follow", "track": tr})
+    outs = advance(s, 0.2)
+    assert [(r["ok"], r["reason"]) for r in results(outs, "fo", "action")] == [(True, "following")]
+    _walk(s, "W1", 19.0, 20.0)  # up the ward corridor
+    gaps, outs = [], []
+    for _ in range(300):
+        o = s.step(0.1)
+        outs.append(o)
+        gaps.append(math.hypot(w.people["W1"].x - w.robot.x, w.people["W1"].y - w.robot.y))
+    p = w.people["W1"]
+    assert math.hypot(p.x - 19.0, p.y - 20.0) < 0.5  # she got there
+    assert 0.9 <= gaps[-1] <= 1.6  # and the robot is with her
+    assert min(gaps) >= 0.8
+    assert not [r for r in results(outs, kind="goal")]  # its own walks while following are not reported
+    s.on_task_action({"id": "gs", "action": "guide_stop"})
+    advance(s, 0.2)
+    log = _robot_rows(tmp_path, "follow")
+    assert [(r["event"], r["person"]) for r in log] == [("start", "W1"), ("end", "W1")]
+    assert log[-1]["reason"] == "stopped"
+    _walk(s, "W1", 19.0, 13.0)
+    advance(s, 10)
+    assert math.hypot(w.people["W1"].x - w.robot.x, w.people["W1"].y - w.robot.y) > 3.0  # no longer following
+    assert not [r for r in rows(tmp_path / "run", "world") if r.get("kind") == "contact"]
+
+
+def test_follow_an_unknown_track_is_no_person_and_a_goal_ends_it(staged, tmp_path):
+    s = svc(staged("wandering_patient"), tmp_path)
+    w = s.world
+    s.on_task_action({"id": "f0", "action": "follow", "track": "t99"})
+    assert [(r["ok"], r["reason"]) for r in results(advance(s, 0.2), "f0", "action")] == [(False, "no_person")]
+    put(w, "W1", 19.5, 15.0, yaw=1.57)
+    s.step(0.1)
+    s.on_task_action({"id": "f1", "action": "follow", "track": w.tracks.track("W1")})
+    advance(s, 2.0)
+    s.on_goal(19.0, 8.0, None)
+    advance(s, 0.2)
+    ends = [r for r in _robot_rows(tmp_path, "follow") if r["event"] == "end"]
+    assert [(r["id"], r["reason"]) for r in ends] == [("f1", "superseded")]
+    w.people["W1"].posture = "gone"
+    s.on_task_action({"id": "f2", "action": "follow", "track": w.tracks.track("W1")})
+    assert [(r["ok"], r["reason"]) for r in results(advance(s, 0.2), "f2", "action")] == [(False, "no_person")]
