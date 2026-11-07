@@ -200,3 +200,15 @@ def test_the_evacuation_guide_tells_everyone_in_view_before_walking_anyone_out()
     # t1 has not moved 12 s after being told: walked out, and the robot stays at the exit afterwards
     out = decide(r, c, situation(t=21.0, heard=alarm, tracks=both))
     assert out["action"] == "guide" and out["target"] == "t1" and out["return_to_post"] is False
+
+
+def test_of_two_people_that_way_the_one_walking_up_is_taken_for_the_speaker():
+    r = ScriptedRobot()
+    c = card("Greet people who come to reception and walk them where they are going.", "Role: reception guide")
+    s = situation(yaw=-90.0, heard=['- 1 s ago, someone speaking to you, 50 dB, from about 35 degrees to your right: '
+                                    '"Excuse me, can you help us? I need to get to the ward entrance."'],
+                  tracks=["- t1: 2.1 m, ahead and to your right, standing, moving, at (x=-1.35, y=-1.55)",
+                          "- t2: 5.2 m, ahead and to your right, standing, still, at (x=-3.05, y=-4.22)"],
+                  routes=["- Ward entrance: about 14 m, setting off to your left."])
+    d = decide(r, c, s)
+    assert d["action"] == "guide" and d["target"] == "t1"

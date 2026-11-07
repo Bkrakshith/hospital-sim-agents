@@ -351,9 +351,10 @@ class ScriptedRobot:
         rel = _bearing(h.line)
         if rel is not None and s.tracks:
             off = [(abs((math.degrees(math.atan2(tr.y - s.y, tr.x - s.x)) - s.yaw - rel + 180.0) % 360.0 - 180.0),
-                    tr.dist, tr.id) for tr in s.tracks]
-            err, _, tid = min(off)
-            return tid if err <= self.BEARING_OK_DEG else None  # from a direction where nobody is in view
+                    tr) for tr in s.tracks]
+            fits = [(not tr.moving, err, tr.id) for err, tr in off if err <= self.BEARING_OK_DEG]
+            # the one walking up to the robot, when there is one that way; else the one nearest the bearing
+            return min(fits)[2] if fits else None  # (None: from a direction where nobody is in view)
         near = sorted(s.tracks, key=lambda tr: tr.dist)
         return near[0].id if near and near[0].dist <= 4.0 else None
 
