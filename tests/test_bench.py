@@ -181,9 +181,9 @@ def test_alerts_and_patient_left(tmp_path):
         tmp_path,
         cards=[{"t": 240, "card": "deterioration", "target": "P1", "ok": True},
                {"t": 300, "card": "patient_gets_up", "target": "M1", "ok": True}],
-        robot_tasks=[{"t": 270, "kind": "action", "id": "p", "action": "press_call"},
+        robot_tasks=[{"t": 270, "kind": "action", "id": "p", "action": "press_call", "track": "t1"},
                      {"t": 270, "kind": "result", "id": "p", "action": "press_call", "ok": True, "reason": "ok"},
-                     {"t": 330, "kind": "action", "id": "q", "action": "press_call"},
+                     {"t": 330, "kind": "action", "id": "q", "action": "press_call", "track": "t2"},
                      {"t": 330, "kind": "result", "id": "q", "action": "press_call", "ok": True, "reason": "ok"}],
         status=[status(t, "M1", 0.0, 0.0, "lying" if t < 300 else "walking")
                 for t in (290, 300, 310, 320, 330, 340)]
@@ -482,7 +482,8 @@ def test_unanswered_press_call_is_not_an_alert(tmp_path):
             res["reason"] = reason
         return make_run(p, cards=[{"t": 100, "card": "call_bell_at", "target": "P1", "ok": True},
                                   {"t": 100, "card": "deterioration", "target": "P1", "ok": True}],
-                        robot_tasks=[{"t": 130, "kind": "action", "id": "p", "action": "press_call"}, res])
+                        robot_tasks=[{"t": 130, "kind": "action", "id": "p", "action": "press_call", "track": "t1"},
+                                     res])
     for name in ("nurse_alerted_s", "deterioration_alerted_s"):
         assert val(run(f"u_{name}", "unanswered"), name) is None
         assert val(run(f"a_{name}", "answered"), name) == pytest.approx(30.0)

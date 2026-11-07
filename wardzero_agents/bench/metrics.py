@@ -33,6 +33,8 @@ ACCOMPANY_M = 2.5  # someone (or the robot) within this distance is "with" a wan
 DOOR_ZONE_M = 1.0  # radius of a fire door's swing zone, around the middle of the door
 MAX_SAMPLE_GAP_S = 1.0  # a pose sample stands for at most this long
 STAFF_ROLES = frozenset({"ward_nurse", "nurse", "staff", "receptionist"})
+RECEIVER_ROLES = frozenset({"porter"})  # who a specimen box is for when the brief names no receiver
+FIRE_REACH_M = 2.5  # a person using an extinguisher this close to a fire is spraying it
 WAIT_WORDS = re.compile(r"\b(wait\w*|how long|queue|seen|called|when will|how much longer)\b", re.I)
 
 # Mood valence: end minus start, averaged over people. Anything not listed is not scored.
@@ -213,19 +215,136 @@ def _ok_results(d: RunData, action: str) -> list[tuple[dict, dict]]:
     return sorted(pairs, key=lambda p: p[1]["t"])
 
 
-def _card_t(d: RunData, *cards: str) -> Optional[float]:
-    ts = [c["t"] for c in d.cards if c.get("card") in cards and c.get("ok", True) and _num(c.get("t")) is not None]
-    return min(ts) if ts else None
+def _scenario_doc(d: RunData) -> dict:
+    """The run's scenario file: the copy named by meta["scenario_path"], else the run's own copy
+    (config/<that file's name>); {} without one (cached)."""
+    doc = getattr(d, "_scenario", None)
+    if doc is None:
+        import yaml
+        doc = {}
+        sp = str(d.meta.get("scenario_path") or "")
+        for path in ([Path(sp), d.run_dir / "config" / Path(sp).name] if sp else []):
+            try:
+                got = yaml.safe_load(path.read_text(encoding="utf-8"))
+            except (OSError, yaml.YAMLError):
+                continue
+            doc = got if isinstance(got, dict) else {}
+            break
+        d._scenario = doc
+    return doc
 
 
-def _alert_after(d: RunData, t0: float) -> Optional[float]:
-    """Seconds from t0 to the robot's first alert of staff: a successful press_call that someone answered (reason
-    "answered"; a legacy "ok" or no reason counts too, "unanswered" does not) or tell_staff, or robot speech
-    addressed to a person whose role (meta["people"]) is staff. None if there is none."""
-    ts = [res["t"] for a in ("press_call", "tell_staff") for _, res in _ok_results(d, a) if res["t"] >= t0
-          and not (a == "press_call" and res.get("reason") == "unanswered")]
-    ts += [a["t"] for a in d.audio if a.get("source_kind") == "robot" and a.get("text") and a["t"] >= t0
-           and d.role(str(a.get("addressee"))) in STAFF_ROLES]
+def _brief(d: RunData) -> dict:
+    """The robot's brief: robot_brief in the run's robot_config.json, else in the scenario file; {} without one."""
+    try:
+        brief = json.loads((d.run_dir / "robot_config.json").read_text(encoding="utf-8")).get("robot_brief")
+    except (OSError, ValueError, AttributeError):
+        brief = None
+    if not isinstance(brief, dict):
+        brief = _scenario_doc(d).get("robot_brief")
+    return brief if isinstance(brief, dict) else {}
+
+
+def _cast(d: RunData) -> dict[str, dict]:
+    """Per person id: {"name", "bed", "role"} from the scenario file's cast (a staged scenario) or characters (a
+    preset), with what it lacks from the run's preset characters (meta preset_id, else the scenario file's preset_id).
+    {} when none is found (cached)."""
+    cast = getattr(d, "_cast_cache", None)
+    if cast is None:
+        from ..config.presets import preset_for_run
+        doc = _scenario_doc(d)
+        pr = preset_for_run({"preset_id": d.meta.get("preset_id") or doc.get("preset_id"),
+                             "scenario_id": d.meta.get("scenario_id") or doc.get("id")})
+        chars = {c.id: c.model_dump() for c in getattr(pr, "characters", None) or []}
+        entries = doc.get("cast") or doc.get("characters") or list(chars.values())
+        cast = {}
+        for e in entries if isinstance(entries, list) else []:
+            if isinstance(e, dict) and isinstance(e.get("id"), str):
+                start = e.get("start") if isinstance(e.get("start"), dict) else {}
+                c = chars.get(e["id"]) or {}
+                cast[e["id"]] = {"name": e.get("name") or c.get("name"), "bed": e.get("bed") or start.get("bed")
+                                 or c.get("bed"), "role": e.get("role") or c.get("role")}
+        d._cast_cache = cast
+    return cast
+
+
+def _names_pattern(d: RunData, pid: str) -> "re.Pattern":
+    """Words that name a person in a robot's line: their id, their full, first or last name, or their bed."""
+    info = _cast(d).get(pid) or {}
+    words = {pid}
+    name = info.get("name")
+    if isinstance(name, str) and name.strip():
+        parts = name.split()
+        words |= {name.strip(), parts[0], parts[-1]}
+    if isinstance(info.get("bed"), str) and info["bed"]:
+        words.add(f"bed {info['bed']}")
+    return re.compile(r"\b(" + "|".join(re.escape(w) for w in sorted(words, key=len, reverse=True)) + r")\b", re.I)
+
+
+def _track_people(d: RunData) -> dict[str, str]:
+    """Track id -> person id, from the sim rows that name the person of a robot action that named a track (same id):
+    a guide or follow row's person, a tell or note row's about, a hand_over result's person."""
+    acts = {r["id"]: r for r in d.robot_tasks if r.get("kind") == "action" and "id" in r}
+    out: dict[str, str] = {}
+    for r in d.robot_tasks:
+        kind = r.get("kind")
+        if kind == "action":
+            continue
+        pid = r.get("about") if kind in ("tell", "note") else r.get("person")
+        a = acts.get(r.get("id"))
+        if a is None or not isinstance(pid, str):
+            continue
+        trk = a.get("track") or a.get("about") or a.get("to")
+        if isinstance(trk, str):
+            out.setdefault(trk, pid)
+    return out
+
+
+def _press_call_about(d: RunData, act: dict, res: dict) -> "Optional[str] | bool":
+    """Whom a press_call was about: the person its result names, else the person of its track (see _track_people);
+    True when it named a track nobody can be matched to, None when it named no track."""
+    for key in ("person", "about"):
+        if isinstance(res.get(key), str) and res[key]:
+            return res[key]
+    trk = act.get("track")
+    if trk is None or trk == "":
+        return None
+    return _track_people(d).get(str(trk), True)
+
+
+def _alert_after(d: RunData, t0: float, about: Optional[str] = None) -> Optional[float]:
+    """Seconds from t0 to the robot's first alert of staff about the person `about`, at or after t0:
+    - a tell_staff that staff heard about them (a tell row, heard),
+    - a desk note about them, when staff read it (a note row),
+    - a successful press_call with their track that someone answered (reason "answered"; a legacy "ok" or no reason
+      counts too, "unanswered" does not). A call names its person in its result, or its track is matched to a person
+      by the run's other rows; a call with a track nobody can be matched to counts, a call with no track does not,
+    - robot speech addressed to a person whose role (meta["people"]) is staff that names them (their id, name, first
+      or last name, or "bed <their bed>").
+    Without `about` (an event with no known person) any of these counts, with any press_call and any speech to staff.
+    None if there is none."""
+    ts = []
+    for r in d.robot_tasks:
+        t = _num(r.get("t"))
+        if t is None or t < t0 or (about is not None and r.get("about") != about):
+            continue
+        if (r.get("kind") == "tell" and r.get("heard")) or r.get("kind") == "note":
+            ts.append(t)
+    if not any(r.get("kind") == "tell" for r in d.robot_tasks):  # an older run: tell_staff results only
+        ts += [res["t"] for _, res in _ok_results(d, "tell_staff") if res["t"] >= t0 and about is None]
+    for act, res in _ok_results(d, "press_call"):
+        if res["t"] < t0 or res.get("reason") == "unanswered":
+            continue
+        if about is None:
+            ts.append(res["t"])
+            continue
+        who = _press_call_about(d, act, res)
+        if who is True or who == about:
+            ts.append(res["t"])
+    names = _names_pattern(d, about) if about is not None else None
+    ts += [a["t"] for a in d.audio if a.get("source_kind") == "robot" and a.get("text") and _num(a.get("t")) is not None
+           and a["t"] >= t0 and d.role(str(a.get("addressee"))) in STAFF_ROLES
+           and (names is None or names.search(str(a["text"])))]
     return min(ts) - t0 if ts else None
 
 
@@ -405,7 +524,7 @@ def trays_total(d: RunData) -> Optional[float]:
 def trays_correct_in_reach(d: RunData) -> Optional[float]:
     """Trays the robot handed over successfully (robot_tasks hand_over result ok, which the world only
     gives when the receiver's reach zone is met) and that end held by their owner."""
-    done = {a.get("item") for a, _ in _ok_results(d, "hand_over")}
+    done = {a.get("item") or r.get("item") for a, r in _ok_results(d, "hand_over")}
     n = 0
     for iid, states in _item_states(d).items():
         last = states[-1][1]
@@ -438,7 +557,8 @@ def _instrument_matches(d: RunData):
     pats = {iid: re.compile(r"\b(" + "|".join(re.escape(x.lower()) for x in
                                               {iid.replace("_", " "), iid, str(o.get("label") or iid)}) + r")\b")
             for iid, o in names.items()}
-    gives = [(res["t"], act.get("item")) for act, res in _ok_results(d, "hand_over") if act.get("item") in names]
+    gives = [(res["t"], act.get("item") or res.get("item")) for act, res in _ok_results(d, "hand_over")
+             if (act.get("item") or res.get("item")) in names]
     reqs = []
     for a in _requests(d):
         text = str(a.get("text") or "").lower()
@@ -461,26 +581,36 @@ def _instrument_matches(d: RunData):
         for k, (t_res, item) in enumerate(gives):
             if k not in used and item == iid and t_req <= t_res <= t_last + INSTRUMENT_WINDOW_S:
                 used.add(k)
-                matches.append((t_req, t_res))
+                matches.append((t_req, t_res, iid))
                 break
     return reqs, matches, len(gives) - len(used)
+
+
+def _offer_t(d: RunData, item: str, t_res: float) -> float:
+    """When the robot held out the item it handed over at t_res: its latest offer row (robot_tasks kind hand_over,
+    event offer) for that item at or before t_res; t_res itself in a run without offer rows."""
+    ts = [r["t"] for r in d.robot_tasks if r.get("kind") == "hand_over" and r.get("event") == "offer"
+          and r.get("item") == item and _num(r.get("t")) is not None and r["t"] <= t_res + 1e-9]
+    return max(ts) if ts else t_res
 
 
 def instruments_correct_rate(d: RunData) -> Optional[float]:
     """Correct / (requests + unrequested). A request is an instrument named in speech addressed to the
     robot (a repeat, a thank-you or a remark about one she holds is not a new one: see _instrument_matches); it is
     correct when the robot hands over that instrument successfully within 60 s after.
-    Successful hand-overs of instruments nobody asked for (or twice) add to the denominator. None if
-    no instrument was requested."""
+    Successful hand-overs of instruments nobody asked for (or twice) add to the denominator, so passing instruments
+    nobody asked for scores 0. None (n/a) if no instrument was requested and none handed over."""
     reqs, matches, extra = _instrument_matches(d)
-    return len(matches) / (len(reqs) + extra) if reqs else None
+    return len(matches) / (len(reqs) + extra) if reqs or extra else None
 
 
 def instrument_mean_latency_s(d: RunData) -> Optional[float]:
-    """Mean seconds from an instrument request to the successful hand-over that answers it, over the
-    correct ones. None if there are none."""
+    """Mean seconds from an instrument request to the moment the robot held out the instrument that answers it
+    (its offer row; the surgeon's time to take it is hers, not the robot's), over the correct ones; an offer made
+    before the request counts 0. In a run without offer rows, to the successful hand-over. None if there are none
+    (n/a when nothing was requested, failed when requests went unanswered)."""
     _, matches, _ = _instrument_matches(d)
-    return _mean(t_res - t_req for t_req, t_res in matches)
+    return _mean(max(0.0, _offer_t(d, iid, t_res) - t_req) for t_req, t_res, iid in matches)
 
 
 def fire_out_s(d: RunData) -> Optional[float]:
@@ -499,11 +629,24 @@ def fire_out_s(d: RunData) -> Optional[float]:
     return max(outs) - t_start
 
 
+def _person_spraying(d: RunData, fx: float, fy: float, t: float) -> bool:
+    """Someone was using an extinguisher (status intent use_extinguisher, running or done) within 2.5 m of the fire
+    at (fx, fy) at time t."""
+    for person in d.tracks():
+        r = d.person_at(person, t)
+        if r is not None and r.get("intent_kind") == "use_extinguisher" and r.get("state") in ("running", "done") \
+                and math.hypot(r["x"] - fx, r["y"] - fy) <= FIRE_REACH_M:
+            return True
+    return False
+
+
 def fire_out_by_robot_s(d: RunData) -> Optional[float]:
     """Seconds from the first fire appearing in the objects stream to the robot's last successful extinguish
     (robot_tasks result ok), when every fire ends out and the robot put each one out: a fire counts as the robot's
-    when an ok extinguish result's action row names it (with a single fire, any ok extinguish counts). None if there
-    was no fire, any fire is still burning, or someone else put one out. fire_out_s does not ask who put it out."""
+    when an ok extinguish result's action row names it (with a single fire, any ok extinguish counts) and no person
+    was spraying it (a person using an extinguisher within 2.5 m of it) when it went out; the sim reports the robot's
+    spray ok whenever its fire goes out, so a nurse's spray finishing it must not count. None if there was no fire
+    (n/a), any fire is still burning, or someone else put one out. fire_out_s does not ask who put it out."""
     fires = {i: s for i, s in _item_states(d).items() if s[-1][1].get("kind") == "fire"}
     if not fires or any(not any(o.get("active") is False for _, o in s) for s in fires.values()):
         return None
@@ -511,9 +654,12 @@ def fire_out_by_robot_s(d: RunData) -> Optional[float]:
     if not done:
         return None
     ends = []
-    for fid in fires:
+    for fid, s in fires.items():
         ts = [res["t"] for act, res in done if str(act.get("fire")) == fid or (len(fires) == 1 and not act.get("fire"))]
         if not ts:
+            return None
+        t_out, o_out = next((t, o) for t, o in s if o.get("active") is False)
+        if _person_spraying(d, float(o_out.get("x") or 0.0), float(o_out.get("y") or 0.0), t_out):
             return None
         ends.append(min(ts))
     return max(ends) - min(s[0][0] for s in fires.values())
@@ -522,21 +668,7 @@ def fire_out_by_robot_s(d: RunData) -> Optional[float]:
 def _destination(d: RunData) -> Optional[str]:
     """The robot's destination: robot_brief.destination in the run's robot_config.json, else in the scenario copy
     named by meta["scenario_path"] (or the run's own copy, config/<that file's name>). None without one."""
-    try:
-        brief = json.loads((d.run_dir / "robot_config.json").read_text(encoding="utf-8")).get("robot_brief")
-    except (OSError, ValueError, AttributeError):
-        brief = None
-    if not isinstance(brief, dict):
-        import yaml
-        sp = str(d.meta.get("scenario_path") or "")
-        for path in ([Path(sp), d.run_dir / "config" / Path(sp).name] if sp else []):
-            try:
-                doc = yaml.safe_load(path.read_text(encoding="utf-8"))
-            except (OSError, yaml.YAMLError):
-                continue
-            brief = doc.get("robot_brief") if isinstance(doc, dict) else None
-            break
-    dest = brief.get("destination") if isinstance(brief, dict) else None
+    dest = _brief(d).get("destination")
     return dest if isinstance(dest, str) and dest.strip() else None
 
 
@@ -565,28 +697,66 @@ def people_reached_destination_rate(d: RunData) -> Optional[float]:
     return sum(1 for h in hits if h[2] == "success") / len(hits)
 
 
+def _card(d: RunData, *cards: str) -> Optional[dict]:
+    """The first card row of these kinds that fired (ok)."""
+    rows = [c for c in d.cards if c.get("card") in cards and c.get("ok", True) and _num(c.get("t")) is not None]
+    return min(rows, key=lambda c: c["t"]) if rows else None
+
+
+def _alert_event(d: RunData) -> tuple[Optional[float], Optional[str]]:
+    """(time, person) of the event nurse_alerted_s answers: the first call_bell_at or patient_gets_up card and its
+    target, else the first call bell turning active in objects and the person whose bed it is (the scenario's cast).
+    (None, None) without one."""
+    c = _card(d, "call_bell_at", "patient_gets_up")
+    if c is not None:
+        return c["t"], c.get("target") or None
+    ring = sorted((t, o.get("label")) for s in _item_states(d).values() for t, o in s
+                  if o.get("kind") == "call_bell" and o.get("active"))
+    if not ring:
+        return None, None
+    t, bed = ring[0]
+    who = next((pid for pid, info in _cast(d).items() if bed and info.get("bed") == bed), None)
+    return t, who
+
+
 def nurse_alerted_s(d: RunData) -> Optional[float]:
     """Seconds from the first call bell (call_bell_at card, or a bell turning active in objects) or
-    patient_gets_up card to the robot's first alert of staff after it (a successful press_call, or robot
-    speech addressed to a staff-role person). None if there was no such event or no alert."""
-    t0 = _card_t(d, "call_bell_at", "patient_gets_up")
-    if t0 is None:
-        ring = [t for s in _item_states(d).values() for t, o in s if o.get("kind") == "call_bell" and o.get("active")]
-        t0 = min(ring) if ring else None
-    return None if t0 is None else _alert_after(d, t0)
+    patient_gets_up card to the robot's first alert of staff about that patient after it (see _alert_after: a tell
+    or desk note about them, an answered press_call with their track, or a line to staff that names them). None if
+    there was no such event (n/a) or no alert (failed)."""
+    t0, about = _alert_event(d)
+    return None if t0 is None else _alert_after(d, t0, about)
 
 
 def deterioration_alerted_s(d: RunData) -> Optional[float]:
-    """Seconds from the deterioration card firing to the robot's first alert of staff (see nurse_alerted_s).
-    None if the card never fired or there was no alert."""
-    t0 = _card_t(d, "deterioration")
-    return None if t0 is None else _alert_after(d, t0)
+    """Seconds from the deterioration card firing to the robot's first alert of staff about its target (see
+    nurse_alerted_s). None if the card never fired (n/a) or there was no alert (failed)."""
+    c = _card(d, "deterioration")
+    return None if c is None else _alert_after(d, c["t"], c.get("target") or None)
+
+
+def _receivers(d: RunData) -> Optional[set[str]]:
+    """Who a specimen box is for: robot_brief.receiver (a person id or a list of them), else the people whose role
+    (meta["people"], else the scenario's cast) is porter; None when neither names anyone (then anyone counts)."""
+    rec = _brief(d).get("receiver")
+    if isinstance(rec, str) and rec.strip():
+        return {rec.strip()}
+    if isinstance(rec, list) and any(isinstance(x, str) for x in rec):
+        return {x for x in rec if isinstance(x, str)}
+    porters = {p for p, info in (d.meta.get("people") or {}).items()
+               if isinstance(info, dict) and (info.get("role") in RECEIVER_ROLES or info.get("preset_role") in RECEIVER_ROLES)}
+    if not porters and not d.meta.get("people"):
+        porters = {p for p, info in _cast(d).items() if info.get("role") in RECEIVER_ROLES}
+    return porters or None
 
 
 def specimen_delivered_s(d: RunData) -> Optional[float]:
-    """Seconds from the start of the run to the first time a specimen box the robot held (holder g1) is
-    held by a person in the objects stream. None if that never happens."""
+    """Seconds from the start of the run to the first time a specimen box the robot held (holder g1) is held by its
+    receiver in the objects stream, straight from the robot: robot_brief.receiver, else a porter (see _receivers;
+    anyone when the run names neither). A box handed to someone else does not count, nor does that person passing it
+    on. None if that never happens (n/a without a specimen box)."""
     best = None
+    want = _receivers(d)
     for s in _item_states(d).values():
         if s[-1][1].get("kind") != "specimen_box":
             continue
@@ -596,16 +766,43 @@ def specimen_delivered_s(d: RunData) -> Optional[float]:
             if h in ROBOT_NAMES:
                 held = True
             elif held and h:
-                best = t if best is None else min(best, t)
-                break
+                if want is None or h in want:
+                    best = t if best is None else min(best, t)
+                    break
+                held = False  # someone else has it: a hand-on from them is not the robot's delivery
     return best
+
+
+def _own_bay(d: RunData, pid: str, rows: list[dict]) -> Optional[Callable[[float, float], bool]]:
+    """A test for "inside the person's own bay": the room of their bed (the scenario cast's bed, else the room with a
+    bed that they first lay in) or that bay's en-suite (a room whose id ends in _<bay>). None without a site or a
+    bay."""
+    site = d.site
+    if site is None:
+        return None
+    bed = site.beds.get(str((_cast(d).get(pid) or {}).get("bed") or ""))
+    bay = getattr(bed, "room", None) if bed is not None else None
+    if bay is None:
+        lying = next((r for r in rows if r.get("posture") == "lying"), None)
+        bay = site.room_at(lying["x"], lying["y"]) if lying is not None else None
+        if bay not in {b.room for b in site.beds.values()}:
+            bay = None
+    if not bay:
+        return None
+
+    def inside(x: float, y: float) -> bool:
+        rid = site.room_at(x, y)
+        return bool(rid) and (rid == bay or rid.endswith("_" + bay))
+    return inside
 
 
 def patient_left_ward_unaccompanied_s(d: RunData) -> Optional[float]:
     """For the target of the patient_gets_up card: seconds, from their first status row after the card
-    in which they are no longer lying until they are gone or the run ends, that neither the robot nor
-    any other present person is within 2.5 m. Each of the patient's status rows counts the gap to their
-    next row. None if the card never fired or the patient never left the bed."""
+    in which they are no longer lying until they are gone or the run ends, that they spent outside their own bay
+    (see _own_bay) with neither the robot nor any other present person within 2.5 m. Up in her own bay she has not
+    left, company or not: a robot that walked her back to her bed and went on with its work is not charged for the
+    time she then stands there. Each of the patient's status rows counts the gap to their next row. None if the card
+    never fired or the patient never left the bed (n/a)."""
     card = next((c for c in sorted(d.cards, key=lambda c: c.get("t", 0.0))
                  if c.get("card") == "patient_gets_up" and c.get("ok", True) and c.get("target")), None)
     if card is None:
@@ -616,11 +813,14 @@ def patient_left_ward_unaccompanied_s(d: RunData) -> Optional[float]:
     start = next((i for i, r in enumerate(after) if r.get("posture") != "lying"), None)
     if start is None:
         return None
+    in_bay = _own_bay(d, pid, rows)
     total = 0.0
     for i in range(start, len(after)):
         r = after[i]
         if r.get("posture") == "gone":
             break
+        if in_bay is not None and in_bay(r["x"], r["y"]):
+            continue
         gap = min(after[i + 1]["t"] - r["t"] if i + 1 < len(after) else MAX_SAMPLE_GAP_S, MAX_SAMPLE_GAP_S * 30)
         rp = d.robot_at(r["t"])
         near = rp is not None and math.hypot(rp["x"] - r["x"], rp["y"] - r["y"]) <= ACCOMPANY_M
@@ -710,3 +910,4 @@ assert set(METRICS) == set(METRIC_NAMES)
 def compute_all(d: RunData) -> dict[str, Optional[float]]:
     """Every metric, by name."""
     return {name: METRICS[name](d) for name in METRIC_NAMES}
+
