@@ -275,3 +275,104 @@ def test_an_action_the_body_cannot_do_leaves_nothing_pending():
     fixed = [a for a in ACTIONS if a not in ("go_to", "approach", "guide", "follow")]
     d = r.decide(c, situation(held="specimen box (item specimen_1)"), fixed)
     assert d["action"] == "none" and r.pending is None
+
+
+def test_of_two_still_people_that_way_the_one_as_far_as_the_voice_sounds_is_the_speaker():
+    r = ScriptedRobot()
+    c = card("Greet people who come to reception and walk them where they are going.", "Role: reception guide")
+    # 49 dB is a voice from about 3.5 m: the person at 3.5 m, not the one at 5.2 m a degree nearer the bearing
+    s = situation(t=0.8, x=1.05, y=1.62, yaw=-90.0,
+                  heard=['- 0 s ago, someone speaking to you, 49 dB, from about 35 degrees to your right: '
+                         '"Excuse me, can you help us? I need to get to the ward entrance."'],
+                  tracks=["- t1: 3.5 m, ahead and to your right, standing, still, at (x=-1.20, y=-1.00), "
+                          "not spoken to yet",
+                          "- t2: 5.2 m, ahead and to your right, standing, still, at (x=-2.00, y=-2.60), at Main "
+                          "entrance, not spoken to yet",
+                          "- t3: 2.2 m, ahead and to your left, standing, still, at (x=2.00, y=-0.40)"],
+                  routes=["- Ward entrance: about 14 m, setting off to your left."])
+    d = decide(r, c, s)
+    assert d["action"] == "guide" and d["target"] == "t1"
+
+
+def test_a_faint_voice_from_far_off_is_not_put_down_to_someone_close_that_way():
+    r = ScriptedRobot()
+    c = card("Greet people who come to reception and walk them where they are going.", "Role: reception guide")
+    # t1 asked for the ward and was walked there; the walk ended short of it
+    first = situation(t=1.4, heard=['- 0 s ago, someone speaking to you, 50 dB, from the direction of t1 (2.6 m): '
+                                    '"Excuse me, I need to get to the ward entrance."'],
+                      tracks=[track("t1", 2.6, -0.62, -0.32)], routes=["- Ward entrance: about 14 m, setting off to "
+                                                                        "your left."])
+    assert decide(r, c, first)["target"] == "t1"
+    r.pending = None
+    # 35 dB is a voice from well over 10 m: not the person 1.2 m away in that direction
+    s = situation(t=28.5, x=11.91, y=7.20, yaw=152.0,
+                  heard=['- 1 s ago, someone speaking to you, 35 dB (only part heard), from about 56 degrees to your '
+                         'left: "… … … you help … I … … get to the corridor to the outpatient …"'],
+                  tracks=["- t1: 1.2 m, ahead and to your left, standing, still, at (x=10.78, y=6.90)"],
+                  routes=["- Corridor to the outpatient clinics: about 7 m, setting off ahead and to your left."])
+    d = decide(r, c, s)
+    assert d["action"] != "guide" and d["toward_track"] != "t1"
+    # nor, held over, is the person it already walked somewhere, close by that way, taken for them afterwards
+    later = situation(t=31.0, x=11.91, y=7.20, yaw=152.0,
+                      tracks=["- t1: 1.2 m, ahead and to your left, standing, still, at (x=10.78, y=6.90)"],
+                      routes=["- Corridor to the outpatient clinics: about 7 m, setting off ahead and to your left."])
+    d = decide(r, c, later)
+    assert d["target"] != "t1" and d["toward_track"] != "t1"
+
+
+def test_the_reception_guide_looks_for_someone_who_asked_before_it_walks_back_to_its_post():
+    r = ScriptedRobot()
+    c = card("Greet people who come to reception and walk them where they are going.", "Role: reception guide")
+    decide(r, c, situation(t=0.0, x=1.05, y=1.62, yaw=-90.0, routes=["- In front of the reception desk: right beside "
+                                                                     "you."]))
+    r.mem["deferred"] = [("", None, (12.9, 7.2, 50.0), 17.0)]  # an unseen voice, heard at t=17
+    r.mem["looked_t"] = 28.0  # it has just turned that way and is waiting to see who comes into view
+    away = ["- In front of the reception desk: about 13 m, setting off behind you."]
+    d = decide(r, c, situation(t=30.0, x=12.9, y=7.2, yaw=-138.0, room="Main corridor", routes=away))
+    assert d["reason"] != "back to my post"
+    d = decide(r, c, situation(t=200.0, x=12.9, y=7.2, yaw=-138.0, room="Main corridor", routes=away))
+    assert d["action"] == "go_to" and d["reason"] == "back to my post"
+
+
+def test_the_reception_guide_sends_someone_on_when_a_walk_with_them_is_held_up_short():
+    r = ScriptedRobot()
+    c = card("Greet people who come to reception and walk them where they are going.", "Role: reception guide")
+    decide(r, c, situation(t=0.0, x=1.05, y=1.62, yaw=-90.0, routes=["- In front of the reception desk: right beside "
+                                                                     "you."]))
+    ask = situation(t=34.8, x=9.21, y=6.94, yaw=-157.0,
+                    heard=['- 0 s ago, someone speaking to you, 55 dB, from the direction of t2 (2.0 m): '
+                           '"Excuse me, I need to get to the corridor to the outpatient clinics."'],
+                    tracks=["- t2: 2.0 m, straight ahead, standing, moving, at (x=7.82, y=5.50)"],
+                    routes=["- Corridor to the outpatient clinics: about 4 m, setting off straight ahead."])
+    d = decide(r, c, ask)
+    assert d["action"] == "guide" and d["target"] == "t2"
+    held = situation(t=47.7, x=6.58, y=6.05, yaw=-147.0, room="Main corridor",
+                     tracks=["- t2: 1.5 m, behind you, standing, still, at (x=7.60, y=6.90)"],
+                     routes=["- Corridor to the outpatient clinics: about 2 m, setting off straight ahead.",
+                             "- In front of the reception desk: about 8 m, setting off ahead and to your left."],
+                     results=["- rb8 guide_start: ok (started)", "- rb8 walking to a goal: failed (blocked_by_person)"],
+                     events=["- t=34.8s You started guide as rb8 for track t2."])
+    d = decide(r, c, held)
+    assert d["toward_track"] == "t2" and "walk on" in d["say"] and "Corridor to the outpatient clinics" in d["say"]
+
+
+def test_the_reception_guide_answers_someone_it_walks_up_to_once_they_are_close():
+    r = ScriptedRobot()
+    c = card("Greet people who come to reception and walk them where they are going.", "Role: reception guide")
+    decide(r, c, situation(t=0.0, x=1.05, y=1.62, yaw=-90.0))
+    req = '"Excuse me, can you help us? I need to get to the corridor to the outpatient clinics."'
+    r.pending = _Pending("guide", 1.0, "t1", aid="rb2")  # busy walking someone else: held over
+    d = decide(r, c, situation(t=17.5, x=13.1, y=7.2, yaw=-48.0,
+                               heard=[f'- 0 s ago, someone speaking to you, 50 dB, from the direction of t2 (3.0 m): '
+                                      f'{req}'], tracks=["- t2: 6.0 m, straight ahead, standing, still, at "
+                                                         "(x=7.0, y=5.0)"]))
+    assert "moment" in d["say"]
+    r.pending = None
+    d = decide(r, c, situation(t=32.3, x=10.9, y=7.9, yaw=-173.0,
+                               tracks=["- t2: 5.7 m, straight ahead, standing, still, at (x=6.46, y=4.28)"]))
+    assert d["action"] == "approach" and d["target"] == "t2"
+    # they walk up too: once they are close, the robot answers without waiting for its walk to end
+    d = decide(r, c, situation(t=38.9, x=8.71, y=6.25, yaw=-142.0,
+                               tracks=["- t2: 1.0 m, straight ahead, standing, still, at (x=8.42, y=5.90)"],
+                               routes=["- Corridor to the outpatient clinics: about 4 m, setting off straight ahead."]))
+    assert d["action"] == "guide" and d["target"] == "t2" and d["destination"] == "Corridor to the outpatient clinics"

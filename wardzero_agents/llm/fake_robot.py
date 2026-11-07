@@ -307,6 +307,9 @@ class ScriptedRobot:
     def _start(self, s: Situation, d: dict, **extra) -> dict:
         if d["action"] not in ("none", "wait"):
             self.pending = _Pending(d["action"], s.t, d.get("target") or "", extra=extra)
+        if d["action"] == "guide" and d.get("target"):
+            self.mem.setdefault("helped", set()).add(d["target"])
+            self.mem[("guide_to", d["target"])] = d.get("destination") or ""
         return self._said(d)
 
     def _said(self, d: dict) -> dict:
@@ -343,6 +346,14 @@ class ScriptedRobot:
         est = 10.0 ** ((self.VOICE_DB - h.db) / 20.0)
         return est / 2.5 <= max(tr.dist, 1.0) <= est * 2.5
 
+    def _loudness_misfit(self, h: Heard, tr: Track) -> float:
+        """How far this person's distance is from the one the voice's loudness gives: 0 a perfect fit, 1 a factor of
+        2.5 off."""
+        if h.db is None:
+            return 0.0
+        est = 10.0 ** ((self.VOICE_DB - h.db) / 20.0)
+        return abs(math.log(max(tr.dist, 1.0) / max(est, 1.0))) / math.log(2.5)
+
     def _who(self, s: Situation, h: Heard) -> Optional[str]:
         """The track a line came from: the microphone's match when the loudness fits, else the track nearest the
         line's bearing, else the nearest person within 4 m."""
@@ -355,9 +366,11 @@ class ScriptedRobot:
         if rel is not None and s.tracks:
             off = [(abs((math.degrees(math.atan2(tr.y - s.y, tr.x - s.x)) - s.yaw - rel + 180.0) % 360.0 - 180.0),
                     tr) for tr in s.tracks]
-            fits = [(not tr.moving, err, tr.id) for err, tr in off if err <= self.BEARING_OK_DEG]
-            # the one walking up to the robot, when there is one that way; else the one nearest the bearing
-            return min(fits)[2] if fits else None  # (None: from a direction where nobody is in view)
+            fits = [(not tr.moving, err / self.BEARING_OK_DEG + self._loudness_misfit(h, tr), tr.id)
+                    for err, tr in off if err <= self.BEARING_OK_DEG and self._loud_enough(h, tr)]
+            # the one walking up to the robot, when there is one that way; else the one whose direction and distance
+            # fit the voice best (the bearing is only good to a few degrees, so how loud it was counts as much)
+            return min(fits)[2] if fits else None  # (None: nobody in view that way at a distance the voice fits)
         near = sorted(s.tracks, key=lambda tr: tr.dist)
         return near[0].id if near and near[0].dist <= 4.0 else None
 
@@ -618,9 +631,12 @@ class ScriptedRobot:
         if where is None:
             return None
         x0, y0, deg = where
+        helped = self.mem.get("helped", set())
         best = None
         for tr in s.tracks:
             err = abs((math.degrees(math.atan2(tr.y - y0, tr.x - x0)) - deg + 180.0) % 360.0 - 180.0)
+            if tr.id in helped:
+                continue  # someone it has already walked somewhere is not the one still waiting for an answer
             if err <= self.BEARING_OK_DEG and (best is None or err < best[0]):
                 best = (err, tr)
         return best[1] if best else None
@@ -1137,7 +1153,8 @@ class ScriptedRobot:
             return self.reply(s, c, req[0])
         if req:
             return self.defer(s, req[0])  # busy, or the speaker is out of view: a word now, help once found
-        back = self.deferred(s, c) if self.free() else None
+        back = self.walk_on(s) if self.free() else None
+        back = back or (self.deferred(s, c) if self.free() or self._walked_up_to_asker(s) else None)
         back = back or (self.then_say(s) if not self.busy() else None) or self.look_toward(s)
         if back is not None:
             return back
@@ -1146,8 +1163,36 @@ class ScriptedRobot:
         g = self.greet(s)
         return g or self.back_to_post(s) or _decision(reason="waiting at the desk")
 
+    def _walked_up_to_asker(self, s: Situation) -> bool:
+        """Walking up to someone who asked while it was busy, and they are near enough now to answer."""
+        p = self.pending
+        if p is None or p.action != "approach" or not p.track:
+            return False
+        tr = s.track(p.track)
+        return tr is not None and tr.dist <= self.SPEAK_M and any(w[0] == p.track for w in self.mem.get("deferred", []))
+
+    def walk_on(self, s: Situation) -> Optional[dict]:
+        """A walk with someone held up short of their place: tell them to walk on the rest of the way (walking up to
+        them first when they are not close)."""
+        while self.mem.get("walk_on"):
+            tid = self.mem["walk_on"][0]
+            place = self.mem.get(("guide_to", tid))
+            tr = s.track(tid)
+            if place and tr is not None and tr.dist <= self.SPEAK_M:
+                self.mem["walk_on"].pop(0)
+                return self._said(_decision(say=f"We're nearly there. Please walk on to {place}, it is just ahead "
+                                            "of you.", toward=tid, reason="the walk was held up short"))
+            tries = self.mem.get(("walk_on_tries", tid), 0)
+            if place and tries < 2 and "approach" in self.allowed:
+                self.mem[("walk_on_tries", tid)] = tries + 1
+                return self._start(s, _decision("approach", "", "", tid, reason="back to the person it was walking "
+                                                "with"))
+            self.mem["walk_on"].pop(0)
+        return None
+
     POST_M = 2.0  # farther than this from its post, with nothing to do, the robot walks back to it
     POST_TRIES = 3
+    LOOK_FOR_ASKER_S = 60.0  # someone who asked while it was busy is looked for this long before it walks back
 
     def back_to_post(self, s: Situation) -> Optional[dict]:
         """A walk back to the place beside its post, when nothing keeps it here (a walk that ended away from the post,
@@ -1160,6 +1205,8 @@ class ScriptedRobot:
             return None
         if any(o.dist <= self.SPEAK_M and s.t - self.spoke_t.get(o.id, -1e9) <= self.TALKING_S for o in s.tracks):
             return None
+        if any(s.t - t0 <= self.LOOK_FOR_ASKER_S for _, _, _, t0 in self.mem.get("deferred", [])):
+            return None  # still looking round for someone who asked while it was busy
         tries = self.mem.get("post_tries", 0)
         if tries >= self.POST_TRIES:
             return None
