@@ -287,3 +287,14 @@ def test_in_an_evacuation_someone_who_never_came_along_is_not_gone_back_for_or_s
                                tracks=[track("t1", 1.0, 6.0, 0.0), track("t2", 3.0, 3.0, 0.0)]))
     assert d["action"] == "guide" and d["target"] == "t2", d
     assert "nearly there" not in (d["say"] or "")
+
+
+def test_a_go_to_is_not_ended_by_the_walk_it_replaced():
+    """Third QA (Isaac meal_round): after the bell the scripted robot re-sent its walk every 2 s, each new goal_pose
+    superseding the last, because the superseded result of the walk it had replaced counted as its own walk's end."""
+    from wardzero_agents.llm.fake_robot import Result, _Pending
+    bot = ScriptedRobot()
+    bot.pending = _Pending("go_to", 90.0)
+    assert bot._finished([Result("goal_pose-2", "walking to a goal", False, "superseded")], 90.6) is None
+    end = Result("goal_pose-3", "walking to a goal", True, "arrived")
+    assert bot._finished([end], 110.0) is end

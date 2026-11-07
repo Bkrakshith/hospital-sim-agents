@@ -318,7 +318,10 @@ class ScriptedRobot:
         if held is not None:
             return held[1] if t - held[0] >= self.GUIDE_STAY_S else None
         for r in new:
-            if p.action == "go_to" and r.what == "walking to a goal" and not r.id.startswith("rb"):
+            if p.action == "go_to" and r.what == "walking to a goal" and not r.id.startswith("rb") \
+                    and r.reason != "superseded":
+                # a superseded goal is the walk this go_to replaced, not its end (taking it as the end re-sent the
+                # walk every turn, each new one superseding the last: Isaac meal_round after the bell)
                 return r
             if p.aid is None or r.id != p.aid:
                 continue
