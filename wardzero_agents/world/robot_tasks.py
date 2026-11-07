@@ -127,6 +127,15 @@ RECEPTION_ROLES = ("receptionist",)
 WARD_STAFF_ROLES = ("ward_nurse", "nurse", "staff")
 
 
+SIM_ONLY_KEYS = ("person",)  # result keys for the run log only: the robot addresses people by track, never by id
+
+
+def wire_result(r: dict) -> dict:
+    """A task result as the robot may see it on <ns>/task/result: without the sim-only keys (the receiver's person id
+    on a hand_over result is for the run log and the benchmark)."""
+    return {k: v for k, v in r.items() if k not in SIM_ONLY_KEYS}
+
+
 def _seg_dist(x: float, y: float, a, b) -> float:
     dx, dy = b[0] - a[0], b[1] - a[1]
     L2 = dx * dx + dy * dy
@@ -169,8 +178,8 @@ class RobotTasks:
         self._inbox: list[tuple[str, object, float]] = []  # commands not carried out yet: (kind, payload, t)
         world.robot_commands = self.apply_pending  # the world carries them out at the start of its step
 
-    def _result(self, aid, action, ok, reason, t) -> None:
-        self._out.results.append({"id": aid, "action": action, "ok": ok, "reason": reason, "t": t})
+    def _result(self, aid, action, ok, reason, t, **extra) -> None:
+        self._out.results.append({"id": aid, "action": action, "ok": ok, "reason": reason, "t": t, **extra})
 
     def _log(self, rec: dict) -> None:
         """A sim-side row for robot_tasks.jsonl (the benchmark's view; never published to the robot)."""
@@ -220,15 +229,28 @@ class RobotTasks:
         p = self.world.people.get(pid or "")
         return pid if p is not None and p.posture != "gone" else None
 
+    def _ho_result(self, aid, ok, reason, t, pid: Optional[str], item_id) -> None:
+        """A hand_over result; the run log row names the receiver (person) and the item. ``wire_result`` drops the
+        person before the robot gets it."""
+        self._out.results.append({"id": aid, "action": "hand_over", "ok": ok, "reason": reason, "t": t,
+                                  "person": pid, "item": None if item_id is None else str(item_id)})
+
     def _hand_over(self, aid, msg, t) -> None:
         w = self.world
+        item_id = str(msg["item"])
         pid = self._person(msg["to"])
         if pid is None:
-            return self._result(aid, "hand_over", False, "unknown_track", t)
-        item = w.objects.items.get(str(msg["item"]))
+            return self._ho_result(aid, False, "unknown_track", t, None, item_id)
+        item = w.objects.items.get(item_id)
+        r = w.robot
+        if item is not None and item.holder is None and \
+                math.hypot(item.x - r.x, item.y - r.y) <= TAKE_REACH_M:
+            # within its reach and not held yet: it takes the item and holds it out, in one action
+            item.holder, item.x, item.y = "g1", r.x, r.y
+            w._log_objects(t)
         if item is None or item.holder != "g1":
-            return self._result(aid, "hand_over", False, "not_holding", t)
-        q, r = w.people[pid], w.robot
+            return self._ho_result(aid, False, "not_holding", t, pid, item_id)
+        q = w.people[pid]
         if msg.get("place") is not None:
             place = tuple(float(v) for v in msg["place"])
             if len(place) != 3:
@@ -236,7 +258,7 @@ class RobotTasks:
         else:
             place, why = self.hand_over_place((r.x, r.y), q, item.kind)
             if place is None:
-                return self._result(aid, "hand_over", False, why, t)
+                return self._ho_result(aid, False, why, t, pid, item.id)
         why = w._check_hand_over("g1", pid, item.id, place)
         lying = q.bed is not None and q.posture == "lying" and not q.sitting_up
         name = self._item_name(item)
@@ -248,7 +270,7 @@ class RobotTasks:
                 f"(accept_item) and you sit up in bed to take it, with no separate sit_up_in_bed needed; if not, "
                 f"refuse it (refuse_item).")))
         elif why != "ok":
-            return self._result(aid, "hand_over", False, why, t)
+            return self._ho_result(aid, False, why, t, pid, item.id)
         elif q.kind != "static" and "accept_item" in ROLE_INTENTS.get(q.inst.role, ()):
             # someone up and about: nothing else tells them an offer is open, and it closes after a few seconds
             no = "reject_item" if "reject_item" in ROLE_INTENTS.get(q.inst.role, ()) else "refuse_item"
@@ -257,8 +279,10 @@ class RobotTasks:
                 f"it ({no}).")))
         old = w._offers.get(pid)
         if old is not None and old["giver"] == "g1":  # one result per action: close the old offer
-            self._result(old["intent"], "hand_over", False, "superseded", t)
+            self._ho_result(old["intent"], False, "superseded", t, pid, old["item"])
         w._offers[pid] = {"giver": "g1", "item": item.id, "place": place, "t": t, "intent": aid}
+        # the moment the robot holds it out (a latency is measured to here, not to the receiver's answer)
+        self._log({"t": t, "kind": "hand_over", "event": "offer", "id": aid, "person": pid, "item": item.id})
 
     @staticmethod
     def _item_name(item) -> str:
@@ -326,14 +350,15 @@ class RobotTasks:
 
     def _take(self, aid, msg, t) -> None:
         w = self.world
-        item = w.objects.items.get(str(msg["item"]))
+        item_id = str(msg["item"])
+        item = w.objects.items.get(item_id)
         if item is None or item.holder is not None:
-            return self._result(aid, "take", False, "unknown_item", t)
+            return self._result(aid, "take", False, "unknown_item", t, item=item_id)
         if math.hypot(item.x - w.robot.x, item.y - w.robot.y) > TAKE_REACH_M:
-            return self._result(aid, "take", False, "out_of_reach", t)
+            return self._result(aid, "take", False, "out_of_reach", t, item=item_id)
         item.holder, item.x, item.y = "g1", w.robot.x, w.robot.y
         w._log_objects(t)
-        self._result(aid, "take", True, "ok", t)
+        self._result(aid, "take", True, "ok", t, item=item_id)
 
     def _extinguish(self, aid, msg, t) -> None:
         w = self.world

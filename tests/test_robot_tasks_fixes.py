@@ -175,3 +175,93 @@ def test_the_first_goal_at_x10_is_not_stuck_after_one_long_step(staged, tmp_path
     outs = [s.step(0.5)] + advance(s, 0.3, 0.05)
     assert not [r for r in results(outs, kind="goal") if r["reason"] == "stuck"]
     assert math.hypot(w.robot.x - start[0], w.robot.y - start[1]) > 1.0
+
+
+# ---- hand-over: the offer row, the receiver and item on the result, no_answer, one-step hand-over ------------------
+def _robot_rows(tmp_path, kind=None):
+    return [r for r in rows(tmp_path / "run", "robot_tasks") if kind is None or r.get("kind") == kind]
+
+
+def _face_porter(s):
+    w = s.world
+    po = w.people["PO1"]
+    w.robot.teleport(8.88, 1.72, math.atan2(po.y - 1.72, po.x - 8.88))
+    return w.tracks.track("PO1")
+
+
+def test_an_accepted_hand_over_logs_the_offer_and_names_receiver_and_item(staged, tmp_path):
+    s = svc(staged("specimen_run"), tmp_path)
+    tr = _face_porter(s)
+    s.on_task_action({"id": "ho", "action": "hand_over", "item": "specimen_1", "to": tr})
+    advance(s, 0.3)
+    s.on_intent(Intent(id="acc", person="PO1", t=s.t, kind="accept_item"))
+    outs = advance(s, 1.0)
+    res = results(outs, "ho", "action")
+    assert [(r["ok"], r["reason"], r["person"], r["item"]) for r in res] == [(True, "ok", "PO1", "specimen_1")]
+    offer = [r for r in _robot_rows(tmp_path, "hand_over")]
+    assert [(r["event"], r["person"], r["item"], r["id"]) for r in offer] == [("offer", "PO1", "specimen_1", "ho")]
+    logged = [r for r in _robot_rows(tmp_path, "result") if r.get("id") == "ho"]
+    assert logged and logged[0]["person"] == "PO1" and logged[0]["item"] == "specimen_1"
+    assert offer[0]["t"] <= logged[0]["t"]
+    # the robot's own copy of the result carries no person id
+    assert "person" not in rt.wire_result(res[0]) and rt.wire_result(res[0])["item"] == "specimen_1"
+
+
+def test_a_declined_offer_is_refused_and_an_unanswered_one_is_no_answer(staged, tmp_path):
+    s = svc(staged("specimen_run"), tmp_path)
+    tr = _face_porter(s)
+    s.on_task_action({"id": "h1", "action": "hand_over", "item": "specimen_1", "to": tr})
+    advance(s, 0.3)
+    s.on_intent(Intent(id="no", person="PO1", t=s.t, kind="refuse_item"))
+    outs = advance(s, 1.0)
+    assert [(r["ok"], r["reason"]) for r in results(outs, "h1", "action")] == [(False, "refused")]
+    s.on_task_action({"id": "h2", "action": "hand_over", "item": "specimen_1", "to": tr})
+    outs = advance(s, 12.0)
+    assert [(r["ok"], r["reason"], r["person"]) for r in results(outs, "h2", "action")] == [
+        (False, "no_answer", "PO1")]
+    assert s.world.objects.items["specimen_1"].holder == "g1"
+
+
+def test_an_unanswered_offer_to_a_patient_lying_flat_is_no_answer_not_out_of_reach(staged, tmp_path):
+    s = svc(staged("meal_round"), tmp_path)
+    w = s.world
+    tr = w.tracks.track("M1")
+    x, y = s.tasks._reach_spots(w.people["M1"], "tray")[0]
+    b = w.site.beds[w.people["M1"].bed]
+    w.robot.teleport(x, y, math.atan2(b.y - y, b.x - x))
+    s.on_task_action({"id": "ho", "action": "hand_over", "item": "tray_M1", "to": tr})
+    outs = advance(s, 12.0)
+    assert [(r["ok"], r["reason"]) for r in results(outs, "ho", "action")] == [(False, "no_answer")]
+
+
+def test_a_hand_over_takes_an_item_within_reach_first(staged, tmp_path):
+    """One decision passes one instrument: the robot takes it off the tray and holds it out in the same action."""
+    s = svc(staged("scrub_nurse"), tmp_path)
+    w = s.world
+    sc = w.objects.items["scalpel"]
+    assert sc.holder is None
+    assert math.hypot(sc.x - w.robot.x, sc.y - w.robot.y) <= rt.TAKE_REACH_M
+    s.on_task_action({"id": "ho", "action": "hand_over", "item": "scalpel", "to": w.tracks.track("S1")})
+    advance(s, 0.2)
+    assert sc.holder == "g1"
+    assert [r["event"] for r in _robot_rows(tmp_path, "hand_over")] == ["offer"]
+    s.on_intent(Intent(id="acc", person="S1", t=s.t, kind="accept_item"))
+    outs = advance(s, 1.0)
+    assert [(r["ok"], r["reason"], r["person"], r["item"]) for r in results(outs, "ho", "action")] == [
+        (True, "ok", "S1", "scalpel")]
+    assert sc.holder == "S1"
+    # an item beyond its reach is not taken: not_holding, as before
+    far = next(i for i in w.objects.items.values() if i.holder is None
+               and math.hypot(i.x - w.robot.x, i.y - w.robot.y) > rt.TAKE_REACH_M) if any(
+        i.holder is None and math.hypot(i.x - w.robot.x, i.y - w.robot.y) > rt.TAKE_REACH_M
+        for i in w.objects.items.values()) else None
+    if far is not None:
+        s.on_task_action({"id": "h2", "action": "hand_over", "item": far.id, "to": w.tracks.track("S1")})
+        assert [r["reason"] for r in results(advance(s, 0.2), "h2", "action")] == ["not_holding"]
+
+
+def test_a_take_result_names_the_item(staged, tmp_path):
+    s = svc(staged("scrub_nurse"), tmp_path)
+    s.on_task_action({"id": "k1", "action": "take", "item": "scalpel"})
+    res = results(advance(s, 0.2), "k1", "action")
+    assert [(r["ok"], r["item"]) for r in res] == [(True, "scalpel")]

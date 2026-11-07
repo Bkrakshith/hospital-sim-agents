@@ -1288,10 +1288,17 @@ class StubWorld:
             if not answered and t - o["t"] <= self._window(receiver):
                 continue
             del self._offers[receiver]
-            ok, why = self.hand_over(o["giver"], receiver, o["item"], o["place"], max(t, resp[1] if resp else t))
+            q = self.people.get(receiver)
+            mindless = q is not None and q.kind == "static"
+            if o["giver"] == ROBOT_ID and not answered and not mindless:
+                ok, why = False, "no_answer"  # the window ran out with no reply: not a refusal, not a reach problem
+            elif o["giver"] == ROBOT_ID and answered and resp[0] != "accept_item":
+                ok, why = False, "refused"  # they declined: said before any check of where it was held out
+            else:
+                ok, why = self.hand_over(o["giver"], receiver, o["item"], o["place"], max(t, resp[1] if resp else t))
             if o["giver"] == ROBOT_ID:
                 self.robot_results.append({"id": o["intent"], "action": "hand_over", "ok": ok,
-                                           "reason": why})
+                                           "reason": why, "person": receiver, "item": o["item"]})
             if giver is not None and giver.intent_id == o["intent"]:
                 giver.state, giver.reason = ("done", None) if ok else ("failed", why)
                 giver.progress = 1.0 if ok else giver.progress
@@ -1426,7 +1433,7 @@ class StubWorld:
         old = self._offers.get(intent.target)
         if old is not None and old["giver"] == ROBOT_ID:  # the robot's offer is replaced: tell it
             self.robot_results.append({"id": old["intent"], "action": "hand_over", "ok": False,
-                                       "reason": "superseded"})
+                                       "reason": "superseded", "person": intent.target, "item": old["item"]})
         self._offers[intent.target] = {"giver": pid, "item": item.id, "place": place, "t": t,
                                        "intent": intent.id}
         return []
