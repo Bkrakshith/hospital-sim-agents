@@ -420,13 +420,21 @@ class IsaacHost:
         log.info("the G1 walks (GEAR-SONIC): routes with %.2f m clearance, at most %.1f m/s", G1_CLEARANCE_M,
                  self.profile.max_speed)
 
+    def _frame_rects(self) -> list:
+        """What the overhead camera fits: the scenario's places (stage.frame_rects), not every kept room."""
+        try:
+            return stage_mod.frame_rects(self.loaded, self.plan)
+        except Exception as exc:  # a nicety only: the kept rooms, as before
+            log.warning("could not work out the camera framing: %s", exc)
+            return list(self.plan.rects.values())
+
     def frame_view(self) -> None:
         if not self.args.headed:
             return
         if self.robot is not None:  # the follow camera, behind and above the robot; desk and overhead stay selectable
             try:
                 r = self.loaded.scenario.robot
-                self.cams = recording.HeadedCameras(self.stage, list(self.plan.rects.values()) or
+                self.cams = recording.HeadedCameras(self.stage, self._frame_rects() or
                                                     [tuple(self.loaded.site.bounds[i] for i in (0, 2, 1, 3))],
                                                     self.robot.pose, (1280, 720), post=(r.x, r.y, r.yaw))
                 self.cams.start()
@@ -485,7 +493,7 @@ class IsaacHost:
         cfg = recording.RecordConfig.from_args(self.args, self.run_dir)
         if cfg is None:
             return
-        self.recorder = recording.Recorder(cfg, self.app, self.timeline, self.stage, list(self.plan.rects.values()) or
+        self.recorder = recording.Recorder(cfg, self.app, self.timeline, self.stage, self._frame_rects() or
                                            [tuple(self.loaded.site.bounds[i] for i in (0, 2, 1, 3))],
                                            robot_pose=self.robot.pose if self.robot is not None else None,
                                            clock=lambda: float(self.svc.t) if getattr(self, "svc", None) is not None else 0.0)

@@ -1,7 +1,7 @@
 """Recording and the Studio's live preview (I5).
 
 ``--record`` writes two MP4s to ``<run>/video`` with Isaac's hardware encoder (NVENC, ``omni.videoencoding``):
-``overhead.mp4`` (a camera over the kept rooms) and ``follow.mp4`` (a third-person camera on the robot, when the
+``overhead.mp4`` (a camera over the scenario's places, ``stage.frame_rects``) and ``follow.mp4`` (a third-person camera on the robot, when the
 run has one). ``--preview`` (headless only) writes ``<run>/preview/latest.jpg`` 5 times a second, which the Studio
 streams as MJPEG.
 
