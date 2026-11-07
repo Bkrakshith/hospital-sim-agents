@@ -19,14 +19,17 @@ An action is a JSON dict {"id", "action", ...} from <ns>/task/action:
                                                   with seat, it ends beside a free seat there and shows it to them;
                                                   return_to_post (default true) false leaves it where the guide ended
   follow {track}                                  walks up to the person and stays 1.0-1.5 m from them as they move,
-                                                  until guide_stop, a goal, cmd_vel, another walking task, or they are
-                                                  gone; result ok/following at the start (no_person: unknown track)
+                                                  stepping back when they come nearer, until guide_stop, a goal,
+                                                  cmd_vel, another walking task it takes on (one refused leaves the
+                                                  follow on), or they are gone; result ok/following at the start
+                                                  (no_person: unknown track)
   approach {track}                                walks up to the person (APPROACH_M from them) and faces them; to a
                                                   patient in bed, or with an item in hand, it ends where it can hand
                                                   the item over (beside the bed; in front of or beside them)
   tell_staff {about: track, message?}             walks to the reception counter, or on a ward to the nearest ward
                                                   staff member (a staff locator: the robot is led to where she is),
                                                   tells them this person needs help, then walks back to its post
+                                                  (not while a fire alarm sounds)
   note_desk {about: track, message}               a note on the reception desk computer: the robot does not move or
                                                   speak; the receptionist reads it when she is at the desk
 Each action ends in one result {"id", "action", "ok", "reason", "t"}; nothing here uses person ids
@@ -238,12 +241,14 @@ class RobotTasks:
         if action not in ACTIONS:
             self._result(aid, str(action), False, "unknown_action", t)
             return
-        if action in WALKING and self._following is not None:
-            self._end_follow(t, "superseded")
+        f, n0 = self._following, len(self._out.results)
         try:
             getattr(self, f"_{action}")(aid, msg, t)
         except (KeyError, TypeError, ValueError, IndexError):
             self._result(aid, action, False, "bad_request", t)
+        refused = any(r.get("id") == aid and r.get("ok") is False for r in self._out.results[n0:])
+        if action in WALKING and f is not None and self._following is f and not refused:
+            self._end_follow(t, "superseded")  # another walking task was taken on (one refused leaves the follow on)
 
     # ---- actions -------------------------------------------------------------------------
     def _person(self, track) -> Optional[str]:
@@ -733,6 +738,7 @@ class RobotTasks:
                 self._tell = None
             r.cancel_goal()
         self._end_guide(t, "superseded")
+        self._end_follow(t, "superseded")  # following someone else (or the same person afresh)
         self._following = {"id": aid, "pid": pid, "spot": None, "retry_at": -math.inf}
         self._log({"t": t, "kind": "follow", "event": "start", "id": aid, "person": pid})
         self._result(aid, "follow", True, "following", t)
@@ -776,7 +782,8 @@ class RobotTasks:
             return self._end_follow(t, "person_gone")
         walking = r.has_goal and r._had_goal and str(self.goal_id).startswith(FOLLOW_GOAL + "-")
         d = math.hypot(p.x - r.x, p.y - r.y)
-        if d <= FOLLOW_GAP_M or (not walking and d <= FOLLOW_FAR_M):
+        # nearer than FOLLOW_NEAR_M (she came towards it): it steps back to the gap, on its side of her
+        if d >= FOLLOW_NEAR_M and (d <= FOLLOW_GAP_M or (not walking and d <= FOLLOW_FAR_M)):
             if walking:
                 r.cancel_goal()  # close enough: stop here
                 f["spot"] = None
@@ -890,7 +897,8 @@ class RobotTasks:
         self._log({"t": t, "kind": "tell", "id": tl["id"], "about": tl["about"], "staff": tl["staff"],
                    "heard": heard, "reason": reason})
         self._result(tl["id"], "tell_staff", heard, reason, t)
-        if self.mobile and tl.get("walked"):  # walked to tell them: back to its post, as after a guide
+        if self.mobile and tl.get("walked") and not getattr(w, "alarm_active", False):
+            # walked to tell them: back to its post, as after a guide (never while the fire alarm sounds)
             x, y, yaw = self.post
             if self._set_goal(f"{tl['id']}-return", x, y, yaw, t):
                 return
@@ -1126,12 +1134,12 @@ class RobotTasks:
         self._goal_xy, self._held_s = (x, y, yaw, exempt), 0.0
         if in_flight:
             self._goal(self.goal_id, False, "superseded", t)
+        self.goal_id = gid  # before the follow ends: ending it must not cancel this new walk
         if self._following is not None and not str(gid).startswith((SAFETY, FOLLOW_GOAL + "-")):
             self._end_follow(t, "superseded")  # another walk: the follow is over
         if self._tell is not None and self._tell["id"] != gid:
             self._result(self._tell["id"], "tell_staff", False, "superseded", t)
             self._tell = None
-        self.goal_id = gid
         return True
 
     def _cmd_vel_now(self, cmd, t) -> None:

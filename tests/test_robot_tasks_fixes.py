@@ -119,6 +119,24 @@ def test_tell_staff_in_b6_stops_clear_and_the_robot_can_walk_back_to_the_patient
     assert goals == [(True, "arrived")]
 
 
+def test_no_return_to_post_after_a_tell_while_the_fire_alarm_sounds(staged, tmp_path):
+    """After walking to tell a nurse it stays there while the alarm sounds (its post may be by the fire)."""
+    s = svc(staged("night_call_bell", auto=True), tmp_path)
+    w = s.world
+    x, y = s.tasks._reach_spots(w.people["P1"], "tray")[0]
+    w.robot.teleport(x, y, 0.0)
+    s.on_world_event(WorldEvent(id="al", t=0.0, kind="alarm", text="Fire alarm"))
+    s.on_task_action({"id": "tl", "action": "tell_staff", "about": w.tracks.track("P1")})
+    outs = []
+    for _ in range(1200):
+        outs.append(s.step(0.1))
+        if results(outs[-1:], "tl", "action"):
+            break
+    assert results(outs, "tl", "action") and math.hypot(w.robot.x - x, w.robot.y - y) > 1.0  # it walked to tell
+    advance(s, 2.0)
+    assert s.tasks.goal_id != "tl-return" and not w.robot.has_goal
+
+
 # ---- route searches run on the step, not in the message callback ---------------------------------------------------
 class _CountingRouter:
     """Wraps the robot's router and counts the route searches."""
@@ -322,6 +340,78 @@ def test_follow_an_unknown_track_is_no_person_and_a_goal_ends_it(staged, tmp_pat
     w.people["W1"].posture = "gone"
     s.on_task_action({"id": "f2", "action": "follow", "track": w.tracks.track("W1")})
     assert [(r["ok"], r["reason"]) for r in results(advance(s, 0.2), "f2", "action")] == [(False, "no_person")]
+
+
+def test_follow_steps_back_when_she_stands_too_near(staged, tmp_path):
+    s = svc(staged("wandering_patient"), tmp_path)
+    w = s.world
+    put(w, "W1", 19.0, 15.0, yaw=-1.57)
+    s.step(0.1)
+    s.on_task_action({"id": "fo", "action": "follow", "track": w.tracks.track("W1")})
+    advance(s, 4.0)
+    assert 1.0 <= _gap(w, "W1") <= 1.5
+    put(w, "W1", w.robot.x, w.robot.y + 0.8, yaw=-1.57)  # she steps up to it and stops
+    advance(s, 4.0)
+    assert 1.0 <= _gap(w, "W1") <= 1.5 and s.tasks._following is not None
+
+
+@pytest.mark.parametrize("bad", [
+    {"action": "guide_start", "place": "Nowhere_At_All"},  # unknown_place
+    {"action": "guide_start", "track": "t99", "place": "Nowhere_At_All"},  # unknown_track
+    {"action": "approach", "track": "t99"},
+    {"action": "tell_staff", "about": "t99"},
+    {"action": "extinguish", "fire": "no_fire"},
+    {"action": "follow", "track": "t99"},  # no_person
+    {"action": "guide_start"},  # no place: bad_request
+])
+def test_a_rejected_walking_action_does_not_end_a_follow(staged, tmp_path, bad):
+    """A walking action that is refused leaves the robot doing what it did: the follow goes on (the robot is told
+    nothing that ends it)."""
+    s = svc(staged("wandering_patient"), tmp_path)
+    w = s.world
+    put(w, "W1", 19.0, 13.5, yaw=1.57)
+    s.step(0.1)
+    tr = w.tracks.track("W1")
+    s.on_task_action({"id": "fo", "action": "follow", "track": tr})
+    advance(s, 0.5)
+    s.on_task_action({"id": "x", "track": tr, **bad})
+    res = results(advance(s, 0.3), "x", "action")
+    assert len(res) == 1 and res[0]["ok"] is False
+    assert s.tasks._following is not None and s.tasks._following["id"] == "fo"
+    assert not [r for r in _robot_rows(tmp_path, "follow") if r["event"] == "end"]
+
+
+def test_an_accepted_walking_action_ends_the_follow_and_keeps_its_own_walk(staged, tmp_path):
+    s = svc(staged("wandering_patient"), tmp_path)
+    w = s.world
+    put(w, "W1", 19.0, 15.5, yaw=1.57)
+    s.step(0.1)
+    tr = w.tracks.track("W1")
+    s.on_task_action({"id": "fo", "action": "follow", "track": tr})
+    advance(s, 0.3)  # walking up to her (a follow walk is under way)
+    assert w.robot.has_goal
+    s.on_task_action({"id": "ap", "action": "approach", "track": tr})
+    res = results(advance(s, 0.3), "ap", "action")
+    assert [(r["ok"], r["reason"]) for r in res] == [(True, "started")]
+    assert s.tasks._following is None and w.robot.has_goal and s.tasks.goal_id == "ap"  # its walk is not cancelled
+    assert [(r["id"], r["reason"]) for r in _robot_rows(tmp_path, "follow") if r["event"] == "end"] == \
+        [("fo", "superseded")]
+
+
+def test_following_someone_else_ends_the_first_follow(staged, tmp_path):
+    s = svc(staged("wandering_patient"), tmp_path)
+    w = s.world
+    put(w, "W1", 19.0, 13.5, yaw=1.57)
+    other = next(pid for pid, q in w.people.items() if pid != "W1" and q.posture != "gone" and q.kind != "static")
+    put(w, other, 18.0, 12.0)
+    s.step(0.1)
+    s.on_task_action({"id": "f1", "action": "follow", "track": w.tracks.track("W1")})
+    advance(s, 0.3)
+    s.on_task_action({"id": "f2", "action": "follow", "track": w.tracks.track(other)})
+    advance(s, 0.3)
+    log = _robot_rows(tmp_path, "follow")
+    assert [(r["id"], r["event"]) for r in log] == [("f1", "start"), ("f1", "end"), ("f2", "start")]
+    assert s.tasks._following["id"] == "f2"
 
 
 # ---- guide mechanics ---------------------------------------------------------------------------------------------------
@@ -544,9 +634,18 @@ def test_close_range_detections_carry_asleep(staged, tmp_path):
 
 
 def test_start_asleep_on_the_cast_entry(staged, tmp_path):
+    """start_asleep on the scenario's cast entry (validated through CastEntry once it has the field)."""
     loaded = staged("meal_round")
-    insts = [i.model_copy(update={"start_asleep": True}) if i.person_id == "M2" else i for i in loaded.instances]
-    w = sw.StubWorld(dataclasses.replace(loaded, instances=insts), 1)
+    sc = loaded.scenario
+
+    def entry(c):
+        if c.id != "M2":
+            return c
+        if "start_asleep" in type(c).model_fields:
+            return type(c).model_validate({**c.model_dump(), "start_asleep": True})
+        return c.model_copy(update={"start_asleep": True})
+    sc = sc.model_copy(update={"cast": [entry(c) for c in sc.cast]})
+    w = sw.StubWorld(dataclasses.replace(loaded, scenario=sc), 1)
     assert w.people["M2"].asleep and not w.people["M1"].asleep
 
 
