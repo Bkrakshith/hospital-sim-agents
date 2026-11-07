@@ -230,3 +230,27 @@ def test_a_run_without_host_problems_has_none_in_meta(launched):
     host, _, _ = child(launched, "isaac_host")
     meta = json.loads((Path(opt(host.argv, "--run-dir")) / "meta.json").read_text())
     assert "isaac_problems" not in meta
+
+
+def test_a_recorded_isaac_run_waits_for_the_encode_before_calling_the_director_early(launched):
+    """At a normal end the host publishes the stop, the director exits 0 at once, and only then does the host encode
+    follow.mp4 and shut Kit down. The early-exit wait must cover that encode, or a long recorded run ends as a crash."""
+    assert main(["run", V1, "--sim", "isaac", "--record", "--record-res", "1920x1080", "--no-report"]) == 0
+    host, _, kw = child(launched, "isaac_host")
+    assert kw["early_exit_grace_s"] >= host.term_after_s
+    assert kw["early_exit_grace_s"] >= cli.ISAAC_EARLY_EXIT_GRACE_S
+
+
+def test_a_ten_minute_recorded_run_gets_more_than_the_fixed_early_exit_wait():
+    assert cli.isaac_early_exit_grace_s(600.0, True) >= cli.isaac_stop_grace_s(600.0, True)
+    assert cli.isaac_early_exit_grace_s(600.0, True) > cli.ISAAC_EARLY_EXIT_GRACE_S
+    assert cli.isaac_early_exit_grace_s(600.0, False) == cli.ISAAC_EARLY_EXIT_GRACE_S
+
+
+def test_a_host_that_encodes_after_the_director_left_ends_the_run_cleanly(tmp_path, capsys):
+    """The director exits 0 on the stop message; the host (the run's end) exits later, inside the wait it was given."""
+    code = cli.supervise([cli.Child("isaac_host", _py("import time; time.sleep(1.0)"), ends_run=True),
+                          cli.Child("director", _py("import sys; sys.exit(0)"))],
+                         term_after_s=5, kill_after_s=5, early_exit_grace_s=2.0)
+    assert code == 0
+    assert "stopped on its own" not in capsys.readouterr().err

@@ -65,7 +65,7 @@ ISAAC_KILL_AFTER_S = 30.0  # Kit can take a while to shut down
 # which are encoded to follow.mp4 only after the stop (one encoder session at a time). 10 s cut that encode short.
 ISAAC_STOP_BASE_S = 60.0
 ISAAC_MAX_FPS = 30  # the host's highest frame rate (the walking G1 runs at 25)
-ISAAC_ENCODE_FPS = 80.0  # follow frames encoded per second from JPEG files: 232 measured at 720p (scrub_nurse,
+ISAAC_ENCODE_FPS = 80.0  # follow frames encoded per second from JPEG files: 232 measured at 720p (a wing run,
 # 3060 frames in 13.2 s); 80 leaves room for 1080p (2.25 times the pixels)
 SIMS = ("isaac", "stub")
 FASTEMBED_ADVICE = ("The fastembed embedder needs the optional extra. Install it with:\n"
@@ -498,7 +498,8 @@ def _start_live(args, loaded, overrides: dict, meta: dict, out: Optional[dict] =
           f"ROS_DOMAIN_ID={os.environ.get('ROS_DOMAIN_ID', '0')}, robot: {bot}, sim: {_sim_label(args)}", flush=True)
     if not args.no_panel:
         print(f"Control panel: http://127.0.0.1:{args.panel_port}/", flush=True)
-    grace = ISAAC_EARLY_EXIT_GRACE_S if sim == "isaac" else EARLY_EXIT_GRACE_S
+    grace = (isaac_early_exit_grace_s(staged.scenario.duration_min * 60.0, bool(args.record)) if sim == "isaac"
+             else EARLY_EXIT_GRACE_S)
     code = supervise(children, env=_child_env(), early_exit_grace_s=grace)
     print(f"Run finished (exit code {code}). Run folder: {run_dir}", flush=True)
     if sim == "isaac":
@@ -589,6 +590,14 @@ def isaac_stop_grace_s(duration_s: float, record: bool) -> float:
     recorded run, encoding every follow-camera frame of the run (at most the run's length at the host's top rate)."""
     encode = duration_s * ISAAC_MAX_FPS / ISAAC_ENCODE_FPS if record else 0.0
     return ISAAC_STOP_BASE_S + encode
+
+
+def isaac_early_exit_grace_s(duration_s: float, record: bool) -> float:
+    """How long the Isaac host may take to exit after the director and agents left on its stop message before the run
+    counts as a crash: Kit's exit, plus, for a recorded run, the follow encode, which starts only after the stop. Never
+    shorter than the host's own SIGINT to SIGTERM grace, so the two waits agree."""
+    encode = duration_s * ISAAC_MAX_FPS / ISAAC_ENCODE_FPS if record else 0.0
+    return max(ISAAC_EARLY_EXIT_GRACE_S + encode, isaac_stop_grace_s(duration_s, record))
 
 
 def _sim_child(args, rd: str, sp: str, ts: float, ready: float, duration_s: float = 0.0) -> Child:
