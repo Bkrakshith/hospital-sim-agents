@@ -182,6 +182,7 @@ class StubWorld:
         self.loaded = loaded
         self.rng = np.random.default_rng(seed)
         self._ear_rng = np.random.default_rng([seed, 1])  # the noise on the direction of what the robot hears
+        self._repeaters: set[str] = set()  # ids of call-bell chimes repeated at a nurse base (no bearing to the bed)
         self._sleep_rng = np.random.default_rng([seed, 2])  # whether a sleeper's ears caught a line to them
         self._pa_blocked: set = set()  # (t, place) of route-block announcements already made
         self.signs: list[Sign] = list(loaded.signs)
@@ -357,7 +358,12 @@ class StubWorld:
         if h is None:
             return None
         upd: dict = {"source_id": "unknown"}
-        if ev.source_kind in ("person", "cough") and ev.source_id != "bell_robot":  # not its own call chime
+        if ev.source_kind == "person" and not ev.text and ev.source_id.startswith("bell_"):
+            # a chime: the robot can tell what it is (a bed's call bell, or the staff call it pressed itself)
+            bed = ev.source_id[len("bell_"):]
+            upd["text"] = "staff call chime" if bed == "robot" else f"call bell, bed {bed}"
+        if ev.source_kind in ("person", "cough") and ev.source_id != "bell_robot" and ev.id not in self._repeaters:
+            # not its own call chime, nor a bell's repeater at the nurse base (that points away from the bed)
             # its own random stream: the world's draws (and so the rest of a seeded run) are unchanged
             noise = float(self._ear_rng.uniform(-BEARING_NOISE_DEG, BEARING_NOISE_DEG))
             upd["bearing_deg"] = round(wrap_deg(bearing_deg(r, ev.x, ev.y) + noise), 1)
@@ -1444,8 +1450,9 @@ class StubWorld:
         bx, by = (bed.x, bed.y) if bed is not None else (p.x, p.y)
         nx, ny = self._nurse_base(p.x, p.y)
         self._log_objects(t)
-        return [self._event(t, "person", f"bell_{p.bed}", bx, by, 1.0, BELL_DB),
-                self._event(t, "person", f"bell_{p.bed}", nx, ny, 2.0, BELL_DB)]
+        rep = self._event(t, "person", f"bell_{p.bed}", nx, ny, 2.0, BELL_DB)
+        self._repeaters.add(rep.id)
+        return [self._event(t, "person", f"bell_{p.bed}", bx, by, 1.0, BELL_DB), rep]
 
     def _held(self, who: str) -> list:
         return [i for i in self.objects.items.values() if i.holder == who]

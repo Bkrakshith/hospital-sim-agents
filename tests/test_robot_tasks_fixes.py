@@ -597,3 +597,33 @@ def test_the_instrument_tray_behind_the_scrub_robot_is_in_its_view(staged, tmp_p
     # an item behind it out of reach is still out of view
     w.robot.teleport(w.robot.x, w.robot.y + 1.5, w.robot.yaw)
     assert not {i["id"] for i in perceive_objects(w, w.robot)["items"]} & {"scalpel"}
+
+
+# ---- what the logs carry: robot nudges, bells ------------------------------------------------------------------------
+def test_robot_nudges_reach_nudges_jsonl(staged, tmp_path):
+    s = svc(staged("night_call_bell"), tmp_path)
+    s.on_world_event(WorldEvent(id="rb", t=0.0, kind="ring_bell", person="P1"))
+    s.on_task_action({"id": "pc", "action": "press_call", "track": s.world.tracks.track("P1")})
+    outs = advance(s, 0.3)
+    sent = [n for o in outs for n in o.nudges]
+    assert sent and sent[0].card == rt.CALL_CARD
+    logged = rows(tmp_path / "run", "nudges")
+    assert [(r["person"], r["card"], r["message"]) for r in logged] == [(n.person, n.card, n.message) for n in sent]
+
+
+def test_the_robot_hears_what_a_bell_is_and_the_repeater_has_no_bearing(staged, tmp_path):
+    s = svc(staged("night_call_bell"), tmp_path)
+    w = s.world
+    bed = w.people["P1"].bed
+    chimes = w.apply_world_event(WorldEvent(id="rb", t=0.0, kind="ring_bell", person="P1"))
+    assert len(chimes) == 2 and all(e.text is None for e in chimes)  # people's own lines for a bell are unchanged
+    at_bed, repeater = chimes
+    for ev in chimes:  # stand the robot 3 m from each chime, so it hears it
+        w.robot.teleport(ev.x + 3.0, ev.y, math.pi)
+        if not w.robot.router.is_free(w.robot.x, w.robot.y):
+            w.robot.teleport(ev.x, ev.y + 3.0, -math.pi / 2)
+        h = w.robot_heard(ev)
+        assert h is not None and h.text == f"call bell, bed {bed}"
+        assert (h.bearing_deg is None) == (ev is repeater)
+    own = w._event(1.0, "person", "bell_robot", w.robot.x + 1, w.robot.y, 2.0, 55.0)
+    assert w.robot_heard(own).text == "staff call chime"

@@ -1242,5 +1242,7 @@ class RobotTasks:
         for r in w.robot_results:
             self._out.results.append({**r, "t": t})
         w.robot_results.clear()
+        for n in self._out.nudges:  # what the robot's actions told people goes in nudges.jsonl, like every nudge
+            w._log.append(("nudges", n.model_dump(mode="json", by_alias=True)))
         out, self._out = self._out, TaskOutputs()
         return out
