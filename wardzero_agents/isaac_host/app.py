@@ -233,9 +233,10 @@ class IsaacHost:
 
         off = stage_mod.compute_cull(self.plan, self.args.stage, self.args.collision)
         self.swinging = route_doors(self.loaded.site, None if self.plan.full else self.plan.rects)
-        fix_off, authored = fixes.stage_fixes(self.loaded.site, self.plan, self.args.stage, self.args.collision,
-                                              self.swinging)
-        wrapper = stage_mod.write_wrapper(self.run_dir / "stage.usda", off + fix_off, self.args.stage, authored)
+        fix_off, authored, nav_include = fixes.stage_fixes(self.loaded.site, self.plan, self.args.stage,
+                                                           self.args.collision, self.swinging)
+        wrapper = stage_mod.write_wrapper(self.run_dir / "stage.usda", off + fix_off, self.args.stage, authored,
+                                          nav_include=nav_include)
         self.stage = stage_mod.open_stage(self.app, wrapper)
         self.startup["culled_prims"] = len(off)
         self.startup["kept"] = self.plan.describe()
@@ -298,7 +299,25 @@ class IsaacHost:
         self.people.bind(self.app, self.bodies, self.svc.world, fps=self.args.fps)
         if getattr(self, "doors", None) is not None:
             self.doors.bind_agents(self.bodies.controllers)
+        self._check_people_bound()
         self._mark("people_bound")
+
+    def _check_people_bound(self) -> None:
+        """Every character spawned at the start must have a Behavior agent: one without stays frozen (a T-pose) and
+        never walks. A shortfall is logged and written to the run record (host.jsonl, kind "problem"); the launcher
+        copies it into meta.json."""
+        expected = sorted(self.people.skelroots)
+        missing = sorted(getattr(self.people, "unbound", []) or [])
+        self.startup["people_expected"] = len(expected)
+        self.startup["people_agents"] = len(expected) - len(missing)
+        if not missing:
+            log.info("people bound: all %d characters have a Behavior agent", len(expected))
+            return
+        msg = (f"people bound: {len(expected) - len(missing)} of {len(expected)} characters have a Behavior agent; "
+               f"{', '.join(missing)} will not walk or animate (no NavMesh over their rooms?)")
+        log.error("%s", msg)
+        self.runlog.write("host", {"kind": "problem", "what": "people_not_animated", "missing": missing,
+                                   "bound": len(expected) - len(missing), "expected": len(expected), "message": msg})
 
     def bake_navmesh(self) -> None:  # 6
         import omni.anim.navigation.core as nav

@@ -325,9 +325,28 @@ def compute_cull(plan: CullPlan, stage_path: Path = STAGE_USD, collision_path: O
     return off
 
 
+NAV_Z_CENTER_M, NAV_Z_SIZE_M = -0.033, 0.5  # the stage's own include slab: 0.5 m thick about the floor
+
+
+def nav_include_attrs(box: Box) -> dict[str, tuple[str, object]]:
+    """The attributes of an Include NavMeshVolume over an xy box, as the stage's own include slab has them
+    ({name: (Sdf value type name, value)}; a unit cube scaled and moved over the box)."""
+    (x0, y0), (x1, y1) = box
+    return {
+        "extent": ("Float3Array", [(-0.5, -0.5, -0.5), (0.5, 0.5, 0.5)]),
+        "nav:area": ("String", "Walkable"),
+        "nav:volume:type": ("Token", "Include"),
+        "xformOp:translate": ("Double3", ((x0 + x1) / 2, (y0 + y1) / 2, NAV_Z_CENTER_M)),
+        "xformOp:scale": ("Float3", (x1 - x0, y1 - y0, NAV_Z_SIZE_M)),
+        "xformOpOrder": ("TokenArray", ["xformOp:translate", "xformOp:scale"]),
+    }
+
+
 def write_wrapper(out_path: Path, off: Iterable[str], stage_path: Path = STAGE_USD,
-                  authored: Optional[Mapping[str, Mapping[str, object]]] = None) -> Path:
-    """A root layer that sublayers the real stage, deactivates ``off`` and authors ``authored`` ({prim: {attribute: bool or float}})."""
+                  authored: Optional[Mapping[str, Mapping[str, object]]] = None,
+                  nav_include: Optional[Box] = None) -> Path:
+    """A root layer that sublayers the real stage, deactivates ``off``, authors ``authored`` ({prim: {attribute: bool or
+    float}}) and, given ``nav_include`` (an xy box), defines one more NavMesh Include volume at ``fixes.NAV_INCLUDE_PATH``."""
     from pxr import Sdf
 
     out_path = Path(out_path)
@@ -350,6 +369,18 @@ def write_wrapper(out_path: Path, off: Iterable[str], stage_path: Path = STAGE_U
         for name, value in attrs.items():
             kind = Sdf.ValueTypeNames.Bool if isinstance(value, bool) else Sdf.ValueTypeNames.Float
             Sdf.AttributeSpec(spec, name, kind).default = value if isinstance(value, bool) else float(value)
+    if nav_include is not None:
+        from .fixes import NAV_INCLUDE_PATH
+
+        parent = Sdf.CreatePrimInLayer(lay, NAV_INCLUDE_PATH.rsplit("/", 1)[0])
+        parent.specifier, parent.typeName = Sdf.SpecifierDef, "Scope"  # defined, or the volume under it is not traversed
+        spec = Sdf.CreatePrimInLayer(lay, NAV_INCLUDE_PATH)
+        spec.specifier, spec.typeName = Sdf.SpecifierDef, "NavMeshVolume"
+        spec.SetInfo("apiSchemas", Sdf.TokenListOp.CreateExplicit(["NavMeshAreaAPI"]))
+        for name, (kind, value) in nav_include_attrs(nav_include).items():
+            attr = Sdf.AttributeSpec(spec, name, getattr(Sdf.ValueTypeNames, kind),
+                                     variability=Sdf.VariabilityUniform if name == "xformOpOrder" else Sdf.VariabilityVarying)
+            attr.default = value
     lay.Save()
     return out_path
 

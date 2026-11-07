@@ -14,6 +14,12 @@
    copies of the leaves (their sign meshes) and the three Junction side panels that sit on ``Compartment/Leaf1``'s
    hinge axis are deactivated: the panels' overlap with that leaf's hinge end, not its rotate op, is what gave the
    Compartment pair non-finite poses (door spike, ``research_notes/isaac_host/door_spike_report.md``).
+3. A NavMesh over the theatre wing. The stage's only Include volume (``NavMeshVolume``, the hospital's slab, y from
+   -4.8 to 37.2) does not reach the wing south of the hospital (Scrub, Theatre, y down to -24.4). A run that keeps only
+   the wing also culls the whole ``Navmesh`` scope (its box misses the kept rooms), so the bake made no NavMesh at all:
+   the Behavior System switched itself off, no character got an agent and the surgeon stood in a T-pose. Fix: when a
+   kept room is not inside an Include volume, the wrapper layer defines one more Include volume over those rooms
+   (``NAV_INCLUDE_PATH``, outside every culled group).
 
 The selection logic is pure Python (unit-tested); the stage reads need pxr, so they import it inside the function.
 """
@@ -34,6 +40,10 @@ NAV_PARENT = "/World/Hospital/Navmesh"
 FREE_USES = ("bedroom", "nurse_base", "ae_treatment")  # rooms that people must be able to walk into (ward and A&E bays)
 MIN_OVERLAP_M = 0.3  # an exclude that overlaps a room by less than this (a wall's thickness) is left alone
 DOOR_ROOT = "/World/Fixtures/Doors"  # door leaves only: lifts and call buttons are not touched
+NAV_INCLUDE_PATH = "/World/WZNavMesh/KeptRooms"  # the extra Include volume (never under a culled group)
+NAV_INCLUDE_MARGIN_M = 1.0  # around the uncovered rooms (their walls and doorways are in the NavMesh too)
+COVER_TOL_M = 1.0  # a room counts as inside an include volume up to this much past its edge (B1 reaches 0.55 m
+# past the slab: its outer wall, and its floor has always had a NavMesh)
 
 
 def _overlap(a: Box, r) -> float:
@@ -48,6 +58,24 @@ def nav_volumes_off(volumes: Mapping[str, tuple[str, Box]], site: "Site", plan: 
              if r.use in FREE_USES and (plan.full or rid in plan.rects)]
     return sorted(path for path, (kind, box) in volumes.items()
                   if kind == "Exclude" and any(_overlap(box, r) >= MIN_OVERLAP_M for r in rooms))
+
+
+def _inside(rect, box: Box, tol: float = COVER_TOL_M) -> bool:
+    (bx0, by0), (bx1, by1) = box
+    return rect[0] >= bx0 - tol and rect[1] >= by0 - tol and rect[2] <= bx1 + tol and rect[3] <= by1 + tol
+
+
+def nav_include_box(volumes: Mapping[str, tuple[str, Box]], site: "Site", plan: CullPlan) -> Optional[Box]:
+    """The xy box of one more Include volume for the kept rooms (all rooms for the full site) that no Include volume of
+    the stage covers, with a margin; None when every kept room is covered."""
+    rects = list(plan.rects.values()) if not plan.full else [room_rect(r) for r in site.rooms.values()]
+    includes = [box for kind, box in volumes.values() if kind == "Include"]
+    out = [r for r in rects if not any(_inside(r, b) for b in includes)]
+    if not out:
+        return None
+    m = NAV_INCLUDE_MARGIN_M
+    return ((min(r[0] for r in out) - m, min(r[1] for r in out) - m),
+            (max(r[2] for r in out) + m, max(r[3] for r in out) + m))
 
 
 def static_leaves(bodies: Mapping[str, bool], swinging: Iterable[str]) -> list[str]:
@@ -119,18 +147,24 @@ def read_baked_names(collision_path: Optional[Path]) -> list[str]:
 
 
 def stage_fixes(site: "Site", plan: CullPlan, stage_path: Path, collision_path: Optional[Path] = None,
-                swinging: Iterable[str] = ()) -> tuple[list[str], dict[str, dict[str, object]]]:
-    """(prims to deactivate, {prim: {attribute: value}} to author) for the wrapper layer. ``swinging``: the doors
-    ``doors_isaac`` will hinge (their leaves stay dynamic)."""
+                swinging: Iterable[str] = ()) -> tuple[list[str], dict[str, dict[str, object]], Optional[Box]]:
+    """(prims to deactivate, {prim: {attribute: value}} to author, the xy box of an extra NavMesh Include volume or
+    None) for the wrapper layer. ``swinging``: the doors ``doors_isaac`` will hinge (their leaves stay dynamic)."""
     from pxr import Usd
 
     # One more open of the source stage (about a second): ``stage.compute_cull`` opens it too, but it returns only the
     # list of prims to cull and the two passes want different things, so they are not merged.
     st = Usd.Stage.Open(str(stage_path))
-    off = nav_volumes_off(read_nav_volumes(st), site, plan)
+    volumes = read_nav_volumes(st)
+    off = nav_volumes_off(volumes, site, plan)
+    include = nav_include_box(volumes, site, plan)
     baked = baked_collision_off(read_baked_names(collision_path))
     authored = {p: {"physics:rigidBodyEnabled": False} for p in static_leaves(read_door_bodies(st), swinging)}
     log.info("stage fixes: %d NavMesh exclude volume(s) off (%s); %d baked leaf/panel collider(s) off; %d door leaf "
              "body(ies) static; swinging doors: %s", len(off), ", ".join(Path(p).name for p in off) or "none",
              len(baked), len(authored), ", ".join(swinging) or "none")
-    return off + baked, authored
+    if include is not None:
+        (x0, y0), (x1, y1) = include
+        log.info("stage fixes: kept rooms outside the stage's NavMesh include volume; one more include over "
+                 "(%.1f, %.1f) to (%.1f, %.1f)", x0, y0, x1, y1)
+    return off + baked, authored, include

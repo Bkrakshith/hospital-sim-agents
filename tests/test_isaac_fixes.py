@@ -82,6 +82,50 @@ def test_stage_fixes_returns_the_baked_colliders_and_static_leaves(monkeypatch, 
     pxr = types.ModuleType("pxr")
     pxr.Usd = types.SimpleNamespace(Stage=types.SimpleNamespace(Open=lambda p: None))
     monkeypatch.setitem(sys.modules, "pxr", pxr)
-    off, authored = fixes.stage_fixes(v1.site, CullPlan(), Path("x.usd"), Path("c.usd"), ["E_Compartment"])
+    off, authored, _ = fixes.stage_fixes(v1.site, CullPlan(), Path("x.usd"), Path("c.usd"), ["E_Compartment"])
     assert off == ["/World/BakedColliders/c1_World_Fixtures_Doors_Other_Leaf0_SignP"]
     assert authored == {"/World/Fixtures/Doors/Other/Leaf0": {"physics:rigidBodyEnabled": False}}
+
+
+# ---- a NavMesh where the stage's include volume does not reach (the theatre wing) ---------------------------
+def test_kept_rooms_outside_the_include_volume_get_an_include_of_their_own(v1):
+    # scrub_nurse keeps Scrub and Theatre, south of the hospital's only include slab (y >= -4.8): with nothing else the
+    # bake made no NavMesh, the Behavior System was off and the surgeon stood in a T-pose (QA bug 12)
+    plan = cull_plan(v1, rooms=["Scrub", "Theatre"])
+    box = fixes.nav_include_box(VOLUMES, v1.site, plan)
+    assert box is not None
+    (x0, y0), (x1, y1) = box
+    for rid in ("Scrub", "Theatre"):
+        r = room_rect(v1.site.rooms[rid])
+        assert x0 <= r[0] and y0 <= r[1] and x1 >= r[2] and y1 >= r[3]
+    assert y1 < -4.0  # only the wing: not a second slab over the hospital
+
+
+def test_kept_rooms_inside_the_include_volume_need_nothing(v1):
+    plan = cull_plan(v1, rooms=["Ward_Corridor", "B1", "Lobby"])
+    assert fixes.nav_include_box(VOLUMES, v1.site, plan) is None
+
+
+def test_the_full_site_covers_the_wing_too(v1):
+    box = fixes.nav_include_box(VOLUMES, v1.site, CullPlan())
+    assert box is not None and box[0][1] <= room_rect(v1.site.rooms["Theatre"])[1]
+
+
+def test_without_any_include_volume_every_kept_room_is_covered(v1):
+    plan = cull_plan(v1, rooms=["Lobby"])
+    box = fixes.nav_include_box({}, v1.site, plan)
+    r = room_rect(v1.site.rooms["Lobby"])
+    assert box[0][0] <= r[0] and box[1][1] >= r[3]
+
+
+def test_stage_fixes_returns_the_include_box(monkeypatch, v1):
+    monkeypatch.setattr(fixes, "read_nav_volumes", lambda st: dict(VOLUMES))
+    monkeypatch.setattr(fixes, "read_door_bodies", lambda st: {})
+    monkeypatch.setattr(fixes, "read_baked_names", lambda p: [])
+    import sys, types
+    pxr = types.ModuleType("pxr")
+    pxr.Usd = types.SimpleNamespace(Stage=types.SimpleNamespace(Open=lambda p: None))
+    monkeypatch.setitem(sys.modules, "pxr", pxr)
+    plan = cull_plan(v1, rooms=["Theatre"])
+    off, authored, include = fixes.stage_fixes(v1.site, plan, Path("x.usd"), Path("c.usd"), [])
+    assert include == fixes.nav_include_box(VOLUMES, v1.site, plan) and include is not None
