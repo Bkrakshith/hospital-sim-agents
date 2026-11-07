@@ -38,6 +38,7 @@ timeline:
   - {id: b3, at: "t+01:40", card: freeze, target: V2}
 criteria:
   - {id: reached, label: People reach the right exit, metric: people_reached_destination_rate, op: ">=", threshold: 0.8, weight: 4}   # first guess
+  - {id: frozen, label: The person who froze is helped within 45 seconds, metric: frozen_person_helped_s, op: "<=", threshold: 45, weight: 3}   # first guess
   - {id: unanswered, label: Few requests left unanswered, metric: unanswered_requests, op: "<=", threshold: 1, weight: 2}   # first guess
   - {id: response, label: Answers within 5 seconds, metric: mean_response_s, op: "<=", threshold: 5, weight: 1}   # first guess
   - {id: distance, label: Keeps clear of people, metric: min_distance_m, op: ">=", threshold: 0.5, weight: 1}   # first guess
