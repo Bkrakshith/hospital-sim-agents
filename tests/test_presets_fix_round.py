@@ -284,3 +284,9 @@ def test_reception_robot_sees_someone_within_greeting_range_at_the_start(staged)
     seen = {w.tracks.person(d["track"]) for d in perceive_people(w, w.robot)}
     near = {pid for pid in seen if math.hypot(w.people[pid].x - w.robot.x, w.people[pid].y - w.robot.y) <= 2.5}
     assert near, seen
+
+
+def test_scrub_job_passes_an_instrument_in_one_decision():
+    job = PRESETS["scrub_nurse"].robot_brief["job"]
+    assert "one action" in job and "hand_over" in job
+    assert "(take," not in job

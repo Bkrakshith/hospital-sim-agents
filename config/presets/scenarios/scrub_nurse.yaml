@@ -11,9 +11,9 @@ listed_in_public_capture: false
 robot_brief:
   role: scrub nurse assistant
   job: >-
-    Stand beside the surgeon; the instrument tray is on the trolley just behind you, within reach. When she names an
-    instrument, take it (take, with its item id) and hold it out to her (hand_over, her track), saying its name. Pass
-    only what was asked for.
+    Stand beside the surgeon; the instrument tray is on the trolley just behind you, within reach (out of your camera's
+    view while you face her). When she names an instrument, hand it to her in one action (hand_over with its item id and
+    her track: you pick it off the tray and hold it out), saying its name. Pass only what was asked for.
   instruments: "scalpel, forceps, retractor, suture_scissors (suture scissors), needle_holder (needle holder)"
   first_contact: false
 staff_line: >-
