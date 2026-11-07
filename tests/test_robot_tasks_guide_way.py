@@ -235,6 +235,68 @@ def test_the_guided_person_holds_the_robot_longer_than_a_bystander_does(staged, 
     assert [e["reason"] for e in guide_end(tmp_path / "b")] == ["blocked_by_person"]
 
 
+@pytest.mark.parametrize("first", ["V1", "V2"])
+def test_a_bystander_beside_the_guided_person_blocks_as_usual(staged, tmp_path, monkeypatch, first):
+    """The longer wait is only for the person it guides when nobody else is in its way: with a bystander standing
+    beside her across its way (no way round), the guide ends blocked_by_person after the usual give-up time, whoever
+    comes first in the world's list of people."""
+    monkeypatch.setattr(rt, "REPLAN_S", 1e9)
+    monkeypatch.setattr(rt.RobotTasks, "_avoid", lambda self, exempt: [])
+    s = svc(staged("reception_guide"), tmp_path)
+    w = s.world
+    alone_with(w, {"V1", "V2"})
+    goal = w._resolve_place("ward_entrance")
+    a, b = along(w, goal, 0.85), along(w, goal, 0.80)
+    put(w, "V1", a[0], a[1] + 0.25)
+    put(w, "V2", b[0], b[1] - 0.25)
+    w.people = dict(sorted(w.people.items(), key=lambda kv: kv[0] != first))
+    s.step(0.1)
+    s.on_task_action({"id": "gd", "action": "guide_start", "track": w.tracks.track("V1"), "place": "ward_entrance"})
+    t0 = s.t
+    for _ in range(int((rt.GIVE_UP_S + 4.0) / 0.1)):
+        s.step(0.1)
+        if s.tasks._guide is None:
+            break
+    ends = guide_end(tmp_path)
+    assert [e["reason"] for e in ends] == ["blocked_by_person"], ends
+    assert ends[0]["t"] - t0 <= rt.GIVE_UP_S + 1.0, ends
+
+
+@pytest.mark.parametrize("first", ["V1", "V2"])
+def test_a_bystander_beside_the_person_just_guided_blocks_the_walk_back_as_usual(staged, tmp_path, monkeypatch, first):
+    """On the walk back to post, the person just guided and a bystander side by side across its way (no way round):
+    the walk back ends blocked_by_person after the usual give-up time, not the longer wait kept for her alone."""
+    s = svc(staged("reception_guide"), tmp_path)
+    w = s.world
+    alone_with(w, {"V1", "V2"})
+    put(w, "V1", 1.6, 0.0)
+    put(w, "V2", -6.0, -6.0)
+    s.step(0.1)
+    guide(s, "V1", "ward_entrance")
+    assert [e["reason"] for e in guide_end(tmp_path)] == ["arrived"]
+    monkeypatch.setattr(rt, "REPLAN_S", 1e9)
+    monkeypatch.setattr(rt.RobotTasks, "_avoid", lambda self, exempt: [])
+    post = s.tasks.post
+    r = w.robot
+    s.tasks._set_goal("gd-return", post[0], post[1], post[2], s.t)  # its way back as planned from here, straight
+    a, b = along(w, post[:2], 0.85), along(w, post[:2], 0.80)
+    ux, uy = (a[0] - r.x), (a[1] - r.y)
+    n = math.hypot(ux, uy) or 1.0
+    px, py = -uy / n, ux / n
+    put(w, "V1", a[0] + 0.25 * px, a[1] + 0.25 * py)
+    put(w, "V2", b[0] - 0.25 * px, b[1] - 0.25 * py)
+    w.people = dict(sorted(w.people.items(), key=lambda kv: kv[0] != first))
+    assert s.tasks._lets_pass("V1") and not s.tasks._lets_pass("V2")
+    t0 = s.t
+    back = []
+    for _ in range(int((rt.GIVE_UP_S + 4.0) / 0.1)):
+        back += [x for x in s.step(0.1).task_results if x.get("id") == "gd-return" and x["reason"] != "superseded"]
+        if back:
+            break
+    assert back and back[-1]["reason"] == "blocked_by_person", back
+    assert back[-1]["t"] - t0 <= rt.GIVE_UP_S + 1.0, back
+
+
 def test_a_guide_whose_person_is_already_at_the_place_ends_arrived(staged, tmp_path, monkeypatch, body):
     """She walked on ahead and stands at the place, in the robot's way: the guide is done, not blocked."""
     monkeypatch.setattr(rt, "REPLAN_S", 1e9)

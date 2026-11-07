@@ -1067,11 +1067,17 @@ class RobotTasks:
     def _blocker(self) -> Optional[str]:
         """Someone ahead of the walking robot on its way (along its planned path, not its heading), nearer than its
         goal, or anyone inside PERSON_KEEP_M in front."""
+        found = self._blockers()
+        return found[0] if found else None
+
+    def _blockers(self) -> list:
+        """Everyone _blocker would count as in the robot's way, in the world's order of people."""
         w = self.world
         r = w.robot
         way = self._way()
+        out: list = []
         if way is None:
-            return None
+            return out
         c, s_ = math.cos(way), math.sin(way)
         left = math.inf
         if self._goal_xy is not None:
@@ -1088,18 +1094,20 @@ class RobotTasks:
             if pid == exempt:
                 # the person it walks up to (a hand-over may need it close): only when really close
                 if d < TARGET_KEEP_M and in_front:
-                    return pid
+                    out.append(pid)
                 continue
             if in_front and (d < PERSON_KEEP_M or (d < STOP_CLOSE_M and before_goal)):
-                return pid
-            if ahead < STOP_AHEAD_M and lat < LATERAL_M and before_goal:
-                return pid
-        return None
+                out.append(pid)
+            elif ahead < STOP_AHEAD_M and lat < LATERAL_M and before_goal:
+                out.append(pid)
+        return out
 
     def _lets_pass(self, pid: str) -> bool:
         """pid is the person the robot is walking somewhere with, standing in its way: the person it guides, on the
         guide's walk to the place, or the person it has just guided, on its walk back to post. It does not give up on
-        them as on a bystander: it waits, routes round them, and lets them go first."""
+        them as on a bystander: it waits, routes round them, and lets them go first. Only the automatic walk back
+        ("<guide id>-return") counts: a walk back the robot's brain sends itself (a goal_pose) is its own decision,
+        so it ends ``blocked_by_person`` after the usual give-up time and the brain decides what to do next."""
         g = self._guide
         if g is not None:
             return pid == g["pid"] and g["phase"] == "walking" and not g.get("seat_id") and self.goal_id == g["id"]
@@ -1154,9 +1162,11 @@ class RobotTasks:
                 return
         held_by_guide = self._guide is not None and self._guide["phase"] == "walking" and self._guide["held"]
         moving = r.has_goal and r._had_goal and self.mobile
-        blocker = self._blocker() if moving else None
+        blockers = self._blockers() if moving else []
+        blocker = blockers[0] if blockers else None
         hold = blocker is not None
-        patient = hold and self._lets_pass(blocker)
+        # the longer wait is for the person it walks with only when nobody else stands in its way too
+        patient = hold and all(self._lets_pass(b) for b in blockers)
         g = self._guide
         if patient and g is not None and blocker == g["pid"] and not getattr(self, "_backing", False) \
                 and self._arrived(g):
@@ -1189,6 +1199,8 @@ class RobotTasks:
             self._held_s = 0.0
             if not moving:
                 self._held_total = self._let_pass_s = 0.0
+        # A walk with only its final turn on the spot left holds for nobody (_way is None), so no step back starts
+        # until the turn ends: the turn moves the robot into nobody.
         if not self.mobile or getattr(self, "_backing", False) or (moving and not hold):
             self._close_s = 0.0
             return
