@@ -190,6 +190,9 @@ class StubWorld:
         # set by the task layer: the robot's speed cap near people (None for no cap), worked out from where everyone
         # is just before the robot moves, so it is never a step late
         self.robot_speed_cap = None
+        # set by the task layer: carries out the robot's commands that came since the last step (route searches
+        # included), at the start of the step, before anyone moves
+        self.robot_commands = None
         taken_beds: set[str] = set()
         for inst in loaded.instances:
             if inst.seat is not None:
@@ -901,6 +904,8 @@ class StubWorld:
             return  # time never runs backwards; last_t is unchanged
         dt = t - self.last_t
         self.last_t = t
+        if self.robot_commands is not None:
+            self.robot_commands(t)
         for pid, p in self.people.items():
             if p.plan and pid not in self.body_driven:
                 self._advance(pid, p, dt)

@@ -114,3 +114,64 @@ def test_tell_staff_in_b6_stops_clear_and_the_robot_can_walk_back_to_the_patient
         if goals:
             break
     assert goals == [(True, "arrived")]
+
+
+# ---- route searches run on the step, not in the message callback ---------------------------------------------------
+class _CountingRouter:
+    """Wraps the robot's router and counts the route searches."""
+
+    def __init__(self, base):
+        self.base, self.calls = base, 0
+
+    def route(self, *a, **k):
+        self.calls += 1
+        return self.base.route(*a, **k)
+
+    def __getattr__(self, name):
+        return getattr(self.base, name)
+
+
+def test_no_route_search_runs_while_a_command_is_received(staged, tmp_path):
+    s = svc(staged("night_call_bell", auto=True), tmp_path, 10.0)
+    w = s.world
+    x, y = s.tasks._reach_spots(w.people["P1"], "tray")[0]
+    w.robot.teleport(x, y, 0.0)
+    s.step(0.01)
+    w.robot.router = counting = _CountingRouter(w.robot.router)
+    tr = w.tracks.track("P1")
+    s.on_task_action({"id": "tl", "action": "tell_staff", "about": tr})
+    s.on_task_action({"id": "ap", "action": "approach", "track": tr})
+    s.on_goal(19.0, 15.0, None)
+    assert counting.calls == 0
+    o = s.step(0.01)
+    assert counting.calls > 0
+    # carried out in the order they came: the tell walk, the approach (already there), then the goal replaced the walk
+    assert sorted((r["id"], r["reason"]) for r in o.task_results if r.get("kind") != "goal") == [
+        ("ap", "already_there"), ("tl", "superseded")]
+    assert s.tasks.goal_id == "goal_pose-1" and w.robot.has_goal
+
+
+def test_a_tell_walk_that_gets_stuck_reports_stuck_not_no_route(staged, tmp_path):
+    s = svc(staged("night_call_bell", auto=True), tmp_path)
+    w = s.world
+    x, y = s.tasks._reach_spots(w.people["P1"], "tray")[0]
+    w.robot.teleport(x, y, 0.0)
+    s.on_task_action({"id": "tl", "action": "tell_staff", "about": w.tracks.track("P1")})
+    advance(s, 1.0)
+    assert w.robot.has_goal and s.tasks.goal_id == "tl"
+    w.robot.cancel_goal()
+    w.robot.goal_event = "stuck"  # the body gave the walk up
+    outs = advance(s, 0.2)
+    assert [(r["ok"], r["reason"]) for r in results(outs, "tl", "action")] == [(False, "stuck")]
+
+
+def test_the_first_goal_at_x10_is_not_stuck_after_one_long_step(staged, tmp_path):
+    """specimen_run at x10: one capped 5 s step right after a goal_pose ended it 'stuck' with no movement."""
+    s = svc(staged("specimen_run", auto=True), tmp_path, 10.0)
+    w = s.world
+    s.step(0.01)
+    start = (w.robot.x, w.robot.y)
+    s.on_goal(10.0, 2.0, None)
+    outs = [s.step(0.5)] + advance(s, 0.3, 0.05)
+    assert not [r for r in results(outs, kind="goal") if r["reason"] == "stuck"]
+    assert math.hypot(w.robot.x - start[0], w.robot.y - start[1]) > 1.0

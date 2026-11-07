@@ -166,6 +166,8 @@ class RobotTasks:
         self.post = (rc.x, rc.y, rc.yaw) if rc is not None else tuple(world.robot.pose)
         self._hazards_seen = (getattr(world, "_hazards", ()), self._router_version())
         world.robot_speed_cap = self._near_cap  # the world sets the cap just before it moves the robot
+        self._inbox: list[tuple[str, object, float]] = []  # commands not carried out yet: (kind, payload, t)
+        world.robot_commands = self.apply_pending  # the world carries them out at the start of its step
 
     def _result(self, aid, action, ok, reason, t) -> None:
         self._out.results.append({"id": aid, "action": action, "ok": ok, "reason": reason, "t": t})
@@ -174,7 +176,34 @@ class RobotTasks:
         """A sim-side row for robot_tasks.jsonl (the benchmark's view; never published to the robot)."""
         self.world._log.append(("robot_tasks", rec))
 
+    # ---- commands in: kept for the step (a route search never runs in a message callback) -----------------------
     def handle(self, msg: dict, t: float) -> None:
+        """A task action from <ns>/task/action. It is carried out on the world's next step (``apply_pending``), in the
+        order the commands came, so the route searches it may need run there, not in the message callback."""
+        self._inbox.append(("action", dict(msg), t))
+
+    def goal_pose(self, x, y, yaw, t) -> None:
+        """A goal_pose command (carried out on the next step); no route is reported as a goal result."""
+        self._inbox.append(("goal", (x, y, yaw), t))
+
+    def cmd_vel(self, cmd, t) -> None:
+        """A cmd_vel command (carried out on the next step, after any command that came before it)."""
+        self._inbox.append(("cmd", cmd, t))
+
+    def apply_pending(self, t: float) -> None:
+        """Carry out the commands that came since the last step. The world calls this at the start of its step, before
+        anyone moves; ``step`` calls it too, for a clock that is held."""
+        while self._inbox:  # each keeps the time it came (a reply to it may come before this step)
+            kind, payload, t0 = self._inbox.pop(0)
+            t0 = min(t0, t)
+            if kind == "action":
+                self._handle_now(payload, t0)
+            elif kind == "goal":
+                self._goal_pose_now(*payload, t0)
+            else:
+                self._cmd_vel_now(payload, t0)
+
+    def _handle_now(self, msg: dict, t: float) -> None:
         aid = str(msg.get("id") or f"a{len(self._out.results)}")
         action = msg.get("action")
         if action not in ACTIONS:
@@ -902,8 +931,7 @@ class RobotTasks:
         v = getattr(rr, "version", None)
         return v if v is not None else getattr(getattr(rr, "base", None), "version", 0)
 
-    def goal_pose(self, x, y, yaw, t) -> None:
-        """A goal_pose command; no route is reported as a goal result."""
+    def _goal_pose_now(self, x, y, yaw, t) -> None:
         self._goal_n += 1
         gid = f"goal_pose-{self._goal_n}"
         if not self._set_goal(gid, x, y, yaw, t):
@@ -931,7 +959,7 @@ class RobotTasks:
         self.goal_id = gid
         return True
 
-    def cmd_vel(self, cmd, t) -> None:
+    def _cmd_vel_now(self, cmd, t) -> None:
         if self.world.robot.has_goal and self.world.robot._had_goal:
             self._goal(self.goal_id, False, "cancelled", t)
         if self._tell is not None:
@@ -963,6 +991,7 @@ class RobotTasks:
 
     def step(self, t: float, dt: float) -> TaskOutputs:
         w = self.world
+        self.apply_pending(t)  # commands the world did not step for (a held clock)
         for aid, fid in list(self._spray.items()):
             f = w.objects.fires.get(fid)
             if f is None or math.hypot(f.x - w.robot.x, f.y - w.robot.y) > EXTINGUISH_RANGE_M:
@@ -1010,7 +1039,7 @@ class RobotTasks:
                 if ev == "arrived":
                     self._speak_tell(t)
                 else:
-                    self._result(gid, "tell_staff", False, "no_route" if ev == "stuck" else ev, t)
+                    self._result(gid, "tell_staff", False, ev, t)  # a route existed: "stuck" says what happened
                     self._tell = None
         hz = (getattr(w, "_hazards", ()), self._router_version())
         if hz != self._hazards_seen:  # a fire started or went out, or a route was blocked: the walk under way goes round
