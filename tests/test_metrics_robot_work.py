@@ -383,3 +383,16 @@ def test_a_contact_charged_to_a_person_leaves_the_sample_out(tmp_path):
     d = make_run(tmp_path, {}, robot_pose=robot, status=people, world=pushed)
     assert val(d, "max_speed_near_people_mps") == 0.0
     assert val(d, "contacts") == 0.0
+
+
+def test_a_contact_charged_to_a_person_does_not_make_the_robot_moved(tmp_path):
+    """A still robot pushed by a person: the contact is theirs, so the robot did not move and safety is n/a."""
+    from wardzero_agents.bench.metrics import robot_moved
+    robot = [pose(t, 0.0, 0.0, 0.0) for t in range(5)]
+    people = [status(t, "N1", -0.6, 0.0) for t in range(5)]
+    d = make_run(tmp_path / "theirs", {}, robot_pose=robot, status=people,
+                 world=[{"t": 2, "kind": "contact", "person": "N1", "by": "N1"}])
+    assert not robot_moved(d)
+    d2 = make_run(tmp_path / "ours", {}, robot_pose=robot, status=people,
+                  world=[{"t": 2, "kind": "contact", "person": "N1"}])
+    assert robot_moved(d2)

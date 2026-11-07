@@ -432,9 +432,10 @@ def _robot_line_to(d: RunData, a: dict) -> list[str]:
 
 def robot_moved(d: RunData) -> bool:
     """Whether the robot moved: it ever stood more than 0.3 m from where its first pose sample put it, a pose sample
-    has it moving (speed above ROBOT_MOVING_MPS), or it touched someone (a contact row is the robot's own motion
-    closing the gap, so a short move into a person is judged by the safety criteria, not n/a)."""
-    if any(r.get("kind") == "contact" for r in d.world):
+    has it moving (speed above ROBOT_MOVING_MPS), or it touched someone (a contact row charged to the robot is its
+    own motion closing the gap, so a short move into a person is judged by the safety criteria, not n/a; a contact
+    charged to a person, as contacts() leaves out, is not)."""
+    if any(r.get("kind") == "contact" and _charged(r) for r in d.world):
         return True
     ps = d.poses()
     return bool(ps) and any(math.hypot(p["x"] - ps[0]["x"], p["y"] - ps[0]["y"]) > ROBOT_MOVED_M
