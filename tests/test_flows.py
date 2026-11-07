@@ -420,7 +420,8 @@ def test_guided_arrival_is_recorded(tmp_path):
                              "reason": "arrived"})
     d.ingest("robot_tasks", {"t": 12.0, "kind": "guide", "event": "end", "id": "a2", "person": "P1",
                              "reason": "left_behind"})
-    assert [(a, p) for _, a, p in d.robot_did] == [("guide", "P2"), ("guided", "P2")]
+    assert [(a, p) for _, a, p, _ in d.robot_did] == [("guide", "P2"), ("guided", "P2"), ("guide_ended", "P2"),
+                                                      ("guide_ended", "P1")]
     assert d.robot_did[1][0] == 9.0
     v = d.view(10.0)
     assert holds({"robot_did": {"action": "guided", "about": "P2"}}, v)

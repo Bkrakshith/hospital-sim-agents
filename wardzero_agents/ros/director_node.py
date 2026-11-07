@@ -38,8 +38,10 @@ AUDIT_PERIOD_S = 30.0  # wall seconds: the ROS graph does not change with sim ti
 AUDIT_FIRST_S = 2.0
 MAX_EVENTS = 100
 TAIL_STREAMS = ("decisions", "says", "tokens", "audio", "robot_tasks", "robot_pose", "objects")
-SPOKE_NEAR_M = 2.5  # the robot "spoke to" someone it addressed, or (no addressee) anyone this close
+SPOKE_NEAR_M = 2.5  # an old run (no heard_by on the audio rows): an unaddressed line counts for anyone this close
+HEARD_NEAR_M = 4.0  # an unaddressed line counts for the people who heard it within this distance of the robot
 ROBOT_ACTIONS = ("press_call", "hand_over", "take", "extinguish", "approach")  # result rows the flow counts
+FIRST_STATUS_GRACE_S = 10.0  # the flow waits this long at most for the cast's first statuses before its first tick
 
 
 class Outbox(Protocol):
@@ -104,8 +106,10 @@ class DirectorService:
         self.robot_xy = (sc.robot.x, sc.robot.y)  # live, from robot_pose
         self.robot_said_at: dict[str, list[float]] = {}  # person -> when the robot spoke to them
         self.said_to_robot: set[str] = set()
-        self.robot_did: list[tuple[float, str, Optional[str]]] = []  # (t, action, person or None)
+        self.robot_did: list[tuple[float, str, Optional[str], Optional[str]]] = []  # (t, action, person, item)
         self.fires: dict[str, bool] = {}
+        self._flow_started = getattr(loaded, "flow", None) is None  # a storyboard runs on the clock from the start
+        self._t_first: Optional[float] = None
         self.executor = CardExecutor(loaded.deck, {i.person_id: i for i in loaded.instances},
                                      loaded.personas, sc.seed)
         self.seed = sc.seed
@@ -209,36 +213,70 @@ class DirectorService:
             if rec.get("source_kind") != "robot":
                 return
             t = _rec_t(rec, self.t)
-            to = rec.get("addressee")
-            if isinstance(to, str) and to:
-                heard = {to}
-            else:
-                rx, ry = self.robot_xy
-                heard = {pid for pid, st in self.statuses.items()
-                         if st.posture != "gone" and math.hypot(st.x - rx, st.y - ry) <= SPOKE_NEAR_M}
-            for pid in heard:
+            for pid in self._spoken_to(rec):
                 self.robot_said_at.setdefault(pid, []).append(t)
         elif stream == "robot_tasks":
             kind, t = rec.get("kind"), _rec_t(rec, self.t)
             if kind == "guide" and rec.get("event") in ("start", "seat"):
-                self.robot_did.append((t, "guide" if rec["event"] == "start" else "seat", rec.get("person")))
-            elif kind == "guide" and rec.get("event") == "end" and rec.get("reason") == "arrived":
-                self.robot_did.append((t, "guided", rec.get("person")))  # they reached the place it walked them to
+                self._did(t, "guide" if rec["event"] == "start" else "seat", rec.get("person"))
+            elif kind == "guide" and rec.get("event") == "end":
+                if rec.get("reason") == "arrived":
+                    self._did(t, "guided", rec.get("person"))  # they reached the place it walked them to
+                self._did(t, "guide_ended", rec.get("person"))  # the walk is over, arrived or not
+            elif kind == "follow" and rec.get("event") == "start":
+                self._did(t, "follow", rec.get("person"))
             elif kind == "tell" and rec.get("heard"):
-                self.robot_did.append((t, "tell", rec.get("about")))
+                self._did(t, "tell", rec.get("about"))
             elif kind == "note":
-                self.robot_did.append((t, "note", rec.get("about")))
+                self._did(t, "note", rec.get("about"))
             elif kind == "result" and rec.get("ok") and rec.get("action") in ROBOT_ACTIONS:
                 if rec["action"] == "press_call" and rec.get("reason") == "unanswered":
                     return  # the call reached no member of staff: nobody was alerted
-                self.robot_did.append((t, rec["action"], None))
+                # hand_over: the receiver took the item; other actions name a person where the sim knows one
+                self._did(t, rec["action"], rec.get("person") or rec.get("about"), rec.get("item"))
         elif stream == "objects":
             for o in rec.get("objects") or []:
                 if isinstance(o, dict) and o.get("kind") == "fire" and isinstance(o.get("id"), str):
                     size = o.get("size")
                     self.fires[o["id"]] = (o.get("active") is False) or (isinstance(size, (int, float)) and size <= 0)
 
+    def _did(self, t: float, action: str, person, item=None) -> None:
+        self.robot_did.append((t, action, person if isinstance(person, str) and person else None,
+                               item if isinstance(item, str) and item else None))
+
+    def _spoken_to(self, rec: dict) -> set[str]:
+        """The people a robot line counts as spoken to: its addressee; with no addressee, the people who heard it
+        within HEARD_NEAR_M of the robot, or all who heard it for a line to the room; an old row with no heard_by:
+        anyone within SPOKE_NEAR_M."""
+        to = rec.get("addressee")
+        to_room = rec.get("to_room") is True or to == "room"
+        if isinstance(to, str) and to and not to_room:
+            return {to}
+        rx, ry = self.robot_xy
+        x, y = rec.get("x"), rec.get("y")
+        if isinstance(x, (int, float)) and isinstance(y, (int, float)) and not isinstance(x, bool):
+            rx, ry = float(x), float(y)  # where the robot was when it spoke
+
+        def within(pid: str, m: float) -> bool:
+            st = self.statuses.get(pid)
+            return st is not None and st.posture != "gone" and math.hypot(st.x - rx, st.y - ry) <= m
+
+        heard = rec.get("heard_by")
+        if isinstance(heard, list):
+            heard = {p for p in heard if isinstance(p, str) and p}
+            return heard if to_room else {p for p in heard if within(p, HEARD_NEAR_M)}
+        return {pid for pid in self.statuses if within(pid, SPOKE_NEAR_M)}
+
     # ---- tick ----------------------------------------------------------------------------
+    def _flow_ready(self, t: float) -> bool:
+        """A flow's first tick waits for every cast member's first status (a card aimed at someone at the start would
+        otherwise find nobody there), for FIRST_STATUS_GRACE_S at most."""
+        if not self._flow_started:
+            if self._t_first is None:
+                self._t_first = t
+            self._flow_started = self.cast <= set(self.statuses) or t - self._t_first >= FIRST_STATUS_GRACE_S
+        return self._flow_started
+
     def view(self, t: float) -> WorldView:
         present = {pid for pid, st in self.statuses.items()
                    if st.posture != "gone" and pid not in self.static_ids}
@@ -258,7 +296,7 @@ class DirectorService:
 
     def tick(self, t: float) -> None:
         self.t = t
-        if not self.stopped:
+        if not self.stopped and self._flow_ready(t):
             view = self.view(t)
             firings = self.engine.tick(view)
             if self.chaos_enabled:
