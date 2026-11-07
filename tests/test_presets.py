@@ -18,9 +18,10 @@ ROOT = Path(__file__).resolve().parents[1] / "config"
 IDS = {"reception_guide", "scrub_nurse", "meal_round", "ward_fire", "evacuation_guide", "specimen_run",
        "visiting_rush", "wandering_patient", "night_call_bell", "ae_waiting"}
 PERSONA_ROLE = {"ward_nurse": "ward_nurse", "receptionist": "receptionist", "patient": "bed_patient", "ae_patient": "ae_patient",
-                "visitor": "ward_visitor", "surgeon": "surgeon", "porter": "porter", "custom": "custom"}
+                "visitor": "ward_visitor", "surgeon": "surgeon", "porter": "porter", "custom": "custom",
+                "wheelchair_patient": "patient"}
 TRUST = {"ward_nurse": 0.65, "receptionist": 0.65, "patient": 0.75, "ae_patient": 0.75, "visitor": 0.75, "surgeon": 0.62,
-         "porter": 0.65, "custom": 0.70}
+         "porter": 0.65, "custom": 0.70, "wheelchair_patient": 0.75}
 
 
 @pytest.fixture(scope="module")

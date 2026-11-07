@@ -28,16 +28,32 @@ def _default_site():
     return load_site(DEFAULT_CONFIG_ROOT)
 
 
-def receptionist(site=None) -> CharacterSpec:
-    """The receptionist, seated in the staff chair behind the reception desk."""
+# Her role in a scene where the robot's job is not reception (None: the stock receptionist role text). In the
+# evacuation the robot guides people out; a receptionist with the stock text ("step in when someone is in danger") is
+# the natural person to take that over, so she gets her own fire duty instead.
+SCENE_ROLE_PROMPTS = {
+    "evacuation_guide": (
+        "You are the receptionist. When the fire alarm sounds, your fire duty is at the desk: phone the switchboard and "
+        "the fire service and tell them where the fire is. [inferred from HTM 05-02]\n"
+        "The robot guides the visitors and patients out by the safe way, so do not lead, call or take anyone out "
+        "yourself. [scenario brief]\n"
+        "Leave by the way the robot uses once the public are out of the lobby, or at once if the fire reaches the "
+        "desk. [inferred from HTM 05-02]"),
+}
+
+
+def receptionist(site=None, preset: Optional[ScenarioPreset] = None) -> CharacterSpec:
+    """The receptionist, seated in the staff chair behind the reception desk, with the scene's role text if it has
+    one (SCENE_ROLE_PROMPTS)."""
     seat = (site or _default_site()).seats[STAFF_SEAT]
     return CharacterSpec(id=RECEPTIONIST_ID, name="Grace Okafor", sex="female", age_band="31-50",
-                         role="receptionist", mood="happy", room="Lobby", x=seat.x, y=seat.y, yaw=seat.yaw, auto=True)
+                         role="receptionist", mood="happy", room="Lobby", x=seat.x, y=seat.y, yaw=seat.yaw, auto=True,
+                         role_prompt=SCENE_ROLE_PROMPTS.get(preset.id) if preset is not None else None)
 
 
 def auto_characters(preset: Optional[ScenarioPreset], site=None) -> list[CharacterSpec]:
     """What a project made from this preset gets added: the receptionist in a reception scene, else nothing."""
-    return [receptionist(site)] if is_reception_scene(preset) else []
+    return [receptionist(site, preset)] if is_reception_scene(preset) else []
 
 
 def with_auto(characters: list[CharacterSpec], preset: Optional[ScenarioPreset], site=None,

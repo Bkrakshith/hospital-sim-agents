@@ -9,17 +9,27 @@ duration_min: 10
 arrival_entrance: ward_entrance
 robot_brief:
   role: specimen runner
-  job: Carry the specimen box from the ward nurse base to the porter waiting at the main lift lobby. Hand it to the porter yourself, and share the corridor and lift lobby politely. If a bed or a person is in your way and your walk stops short, wait a moment and try again, or ask them to let you past; keep the box until the porter takes it.
+  job: >-
+    You start at the ward entrance holding the specimen box. Carry it through the ward doors and down the main corridor
+    to the porter, who waits at the porter point in the main lift lobby (Porter waiting point), and hand it to the
+    porter yourself. Share the corridor and lift lobby politely. If a bed or a person is in your way and your walk
+    stops short, wait a moment and try again, or ask them to let you past; keep the box until the porter takes it.
   items: [specimen box]
   destination: porter_point
   first_contact: false
+staff_line: >-
+  The robot is carrying the specimen box from the ward entrance to the porter at the main lift lobby, and hands it to
+  the porter itself.
 robot_start: {x: 15.0, y: 7.5, yaw: 0.0}
 characters:
-  - {id: N1, name: Karen Scott, sex: female, age_band: 31-50, role: ward_nurse, mood: stressed, room: Ward_Entrance, x: 16.5, y: 8.8, yaw: 3.1416}
-  - {id: PO1, name: Michael Turner, sex: male, age_band: 31-50, role: porter, mood: custom, room: Main_LiftLobby, x: 8.86, y: 0.66, yaw: 0.0,
+  - {id: N1, name: Karen Scott, sex: female, age_band: 31-50, role: ward_nurse, mood: stressed, room: Ward_Entrance, x: 16.5, y: 8.8, yaw: 3.1416,
+     role_prompt: "You are the nurse at the ward entrance desk, on the phone and doing a patient's discharge paperwork. You have given the specimen box to the robot to take to the porter, so you do not carry it yourself or follow the robot. [inferred]"}
+  # The porter stands just short of the porter point, facing the way the robot comes, not on it: the robot walking up
+  # to him reaches the point (robot_reached_destination_s), and nobody else stands as close to it.
+  - {id: PO1, name: Michael Turner, sex: male, age_band: 31-50, role: porter, mood: custom, room: Main_LiftLobby, x: 8.86, y: 0.3, yaw: 1.5708,
      role_prompt: "You are the porter waiting at the porter point in the main lift lobby for a specimen box the robot is bringing from the ward. Wait there for it; do not go to the ward to fetch it yourself. When the robot holds it out, check the label and accept it within a few seconds. [inferred from Goddard 2012]"}
   - {id: V1, name: Lily Bailey, sex: female, age_band: 51-70, role: visitor, mood: happy, room: Ward_Corridor, x: 19.0, y: 12.0, yaw: 1.5708}
-  - {id: W1, name: Harry Cooper, sex: male, age_band: 71+, role: patient, mood: anxious, room: Main_Corridor, x: 8.0, y: 6.0, yaw: 3.1416,
+  - {id: W1, name: Harry Cooper, sex: male, age_band: 71+, role: wheelchair_patient, mood: anxious, room: Main_Corridor, x: 8.0, y: 6.0, yaw: 3.1416,
      role_prompt: "You are a patient in a wheelchair going for a scan, waiting in the corridor. You move slowly and cannot get out of the way quickly. [Smarr 2014]"}
   - {id: V2, name: Grace Harris, sex: female, age_band: 31-50, role: visitor, mood: stressed, room: Main_LiftLobby, x: 10.0, y: -2.2, yaw: -1.5708}
   # A porter wheels a patient on a trolley bed down the corridor (escort mechanism, see the beat below).
@@ -27,10 +37,10 @@ characters:
      role_prompt: "You are a bed porter wheeling a patient on a trolley bed to the main lift lobby. Keep to walking pace, take up the corridor, and expect others to give way. [inferred from Mutlu 2008]\nYou are not collecting any specimens: if the robot offers you one, say no and tell it the specimen porter waits at the porter point by the lifts. [scenario brief]", mood_prompt: ""}
   - {id: W2, name: Ruth Wood, sex: female, age_band: 71+, role: patient, mood: anxious, room: Ward_Corridor, x: 19.0, y: 17.0, yaw: -1.5708,
      role_prompt: "You are lying on a trolley bed being wheeled to a scan. You cannot move yourself and you watch the ceiling and the people near you. [Naithani 2008]"}
-  - {id: W3, name: Oscar Hall, sex: male, age_band: 51-70, role: patient, mood: stressed, room: Ward_Corridor, x: 18.2, y: 22.0, yaw: -1.5708,
+  - {id: W3, name: Oscar Hall, sex: male, age_band: 51-70, role: wheelchair_patient, mood: stressed, room: Ward_Corridor, x: 18.2, y: 22.0, yaw: -1.5708,
      role_prompt: "You are a patient in a wheelchair, heading for the lift. You move slowly and cannot get out of the way quickly. [Smarr 2014]"}
   # A crowded lift lobby: two visitors, and a second trolley bed waiting for the lift by the door (the real obstacle).
-  - {id: V3, name: Emily Rose, sex: female, age_band: 18-30, role: visitor, mood: excited, room: Main_LiftLobby, x: 8.0, y: 1.5, yaw: -1.5708}
+  - {id: V3, name: Emily Rose, sex: female, age_band: 18-30, role: visitor, mood: excited, room: Main_LiftLobby, x: 7.5, y: 1.9, yaw: -1.5708}
   - {id: V4, name: William Ward, sex: male, age_band: 51-70, role: visitor, mood: sad, room: Main_LiftLobby, x: 10.2, y: 0.0, yaw: 3.1416}
   - {id: TR2, name: Freddie Moore, sex: male, age_band: 31-50, role: ward_nurse, mood: custom, room: Main_LiftLobby, x: 8.4, y: 3.3, yaw: -1.5708,
      role_prompt: "You are a bed porter waiting with a patient on a trolley bed for the lift. Stay beside the bed and do not move it out of the way for anyone. [inferred from Mutlu 2008]\nYou are not collecting any specimens: if the robot offers you one, say no and tell it the specimen porter waits at the porter point by the lifts. [scenario brief]", mood_prompt: ""}

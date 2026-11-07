@@ -8,14 +8,24 @@ known_places: [entrance, reception_front, clinic_corridor, ward_doors, ward_entr
 duration_min: 10
 robot_brief:
   role: reception guide
-  job: Greet people who come to reception, give short clear directions, and walk them to where they are going if they cannot find it. If someone needs a nurse or a person, walk to the reception desk and tell the receptionist.
-  destination: ward_entrance
+  job: >-
+    Greet people who come to reception, give short clear directions, and walk them to where they are going if they
+    cannot find it. If someone needs a member of staff, leave a note on the desk computer for the receptionist; if they
+    need someone in person, walk to the reception desk and tell the receptionist.
+  destination: ward_entrance  # read by the score; shown to the robot only with destination_line
+  destination_line: >-
+    That is where people who ask for the ward go: walk them there when they ask. It is not a walk for you to make on
+    your own.
+staff_line: >-
+  The reception robot greets people at reception, gives directions and walks people where they need to go. It leaves
+  you a note on the desk computer, or tells you, when someone needs a member of staff.
 robot_start: {x: 1.05, y: 1.62, yaw: -1.5708}
 characters:
   - {id: V1, name: Priya Patel, sex: female, age_band: 31-50, role: visitor, mood: anxious, room: Lobby, x: -1.2, y: -1.0, yaw: 0.0}
   - {id: H1, name: Arthur Wood, sex: male, age_band: 71+, role: patient, mood: sad, room: Lobby, x: -2.0, y: -2.6, yaw: 0.0,
      role_prompt: "You are an outpatient on your feet, not in a bed. You are hard of hearing and often miss what people say, so lean in and ask them to repeat it. [Kessels 2003]\nYou have an appointment in the outpatient clinics and do not know the way. When you notice the robot at reception, go and ask it. [inferred]"}
-  - {id: V2, name: Daniel Evans, sex: male, age_band: 31-50, role: visitor, mood: stressed, room: Lobby, x: 3.0, y: -1.0, yaw: 3.1416}
+  # Within greeting range of the robot at the desk and in its view, so its first hello reaches someone.
+  - {id: V2, name: Daniel Evans, sex: male, age_band: 31-50, role: visitor, mood: stressed, room: Lobby, x: 2.0, y: -0.4, yaw: 2.0}
 objects: []
 timeline:
   - {id: b1, at: "t+01:00", card: lost_visitor, target: V1}

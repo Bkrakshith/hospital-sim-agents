@@ -18,6 +18,9 @@ robot_brief:
   waits: >-
     The wait for minor injuries is about three hours; triage sees people in order of urgency, not arrival. If an
     announcement gives a new wait, use that and tell people.
+staff_line: >-
+  The A&E waiting room robot greets people, checks them in with a note on the desk computer, tells them the waits and
+  walks them to a seat. It alerts staff when a patient gets worse.
 robot_start: {x: -8.6, y: -1.4, yaw: 1.5708}
 characters:
   - {id: P1, name: George Bailey, sex: male, age_band: 51-70, role: ae_patient, mood: anxious, room: AE_Waiting, x: -7.58, y: 0.222, yaw: -1.5708}

@@ -259,11 +259,12 @@ def test_a_fire_that_starts_mid_walk_sends_walkers_round_it(staged, tmp_path):
 STAFF = {"staff", "ward_nurse", "receptionist", "surgeon", "porter", "companion", "custom"}
 
 
-def test_ward_presets_bring_arrivals_in_at_the_ward_entrance(staged):
-    assert PRESETS["visiting_rush"].arrival_entrance == "ward_entrance"
+def test_ward_presets_bring_arrivals_in_at_their_own_entrance(staged):
+    # visiting_rush: the groups come down the ward corridor towards the robot (QA: arriving behind it, they never met it)
+    assert PRESETS["visiting_rush"].arrival_entrance == "Ward_Corridor_centre"
     assert PRESETS["specimen_run"].arrival_entrance == "ward_entrance"
     assert PRESETS["reception_guide"].arrival_entrance is None
-    assert staged("visiting_rush").scenario.arrival_entrance == "ward_entrance"
+    assert staged("visiting_rush").scenario.arrival_entrance == "Ward_Corridor_centre"
     assert staged("reception_guide").scenario.arrival_entrance is None
 
 
@@ -293,7 +294,7 @@ def test_meal_round_has_nobody_to_arrive(staged):
 
 def test_arrivals_spawn_at_the_scenario_entrance_spread_out_on_free_floor(staged):
     w = world(staged, "visiting_rush")
-    lm = w.site.landmarks["ward_entrance"]
+    lm = w.site.landmarks[PRESETS["visiting_rush"].arrival_entrance]
     persona = next(pid for pid, p in w.loaded.personas.items() if p.role == "ward_visitor")
     ids = [w.spawn(persona, 1.0) for _ in range(4)]
     pts = [(w.people[i].x, w.people[i].y) for i in ids]

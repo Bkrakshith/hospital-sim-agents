@@ -12,14 +12,18 @@ robot_brief:
   role: scrub nurse assistant
   job: >-
     Stand beside the surgeon; the instrument tray is on the trolley just behind you, within reach. When she names an
-    instrument, take it (take, with its item id) and hold it out to her (hand_over, her track), saying its name. Pass
-    only what was asked for.
+    instrument, hand it to her in one action (hand_over with its item id and her track: you pick it off the tray and
+    hold it out), saying its name. Pass only what was asked for.
   instruments: "scalpel, forceps, retractor, suture_scissors (suture scissors), needle_holder (needle holder)"
   first_contact: false
+staff_line: >-
+  The robot scrub nurse keeps the instrument tray and passes you each instrument you ask for by name. Ask it, and take
+  what it holds out to you.
 # On the surgeon's side of the operating table, facing her; the tray is on the trolley just behind the robot.
 robot_start: {x: 22.2, y: -19.9, yaw: 1.45}
 characters:
-  - {id: S1, name: Helen Clarke, sex: female, age_band: 51-70, role: surgeon, mood: stressed, room: Theatre, x: 22.3, y: -19.06, yaw: 0.0}
+  - {id: S1, name: Helen Clarke, sex: female, age_band: 51-70, role: surgeon, mood: stressed, room: Theatre, x: 22.3, y: -19.06, yaw: 0.0,
+     role_prompt: "You are the surgeon, operating. Keep your eyes and hands on the operating field and ask for each instrument by name; the robot scrub nurse passes it into your hand. The instrument trolley is outside your sterile field, so you do not reach for it yourself. [Bezemer 2011; Korkiakangas 2014]\nExpect the instrument in your hand within about a second. If it is late, repeat the request more sharply. If it is wrong, reject it and say so. [Korkiakangas 2014; Lingard 2004]\nUnder stress you become terse. You stop explaining and stop being polite before your hands slow down. [Arora 2010; Wheelock 2015]"}
   - {id: N1, name: Oliver Rogers, sex: male, age_band: 31-50, role: ward_nurse, mood: custom, room: Theatre, x: 26.0, y: -17.0, yaw: 3.1416,
      role_prompt: "You are the circulating nurse. You count swabs and fetch supplies, and you stay out of the surgeon's way. [inferred from Korkiakangas 2014]",
      mood_prompt: ""}

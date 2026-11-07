@@ -251,7 +251,9 @@ def test_staff_are_told_the_robot_does_the_scenarios_main_task(tmp_path):
     loaded = preset_to_scenario(p, CONFIG, tmp_path)
     nurse = loaded.personas["N1"]
     text = " ".join(nurse.goals) + " " + nurse.backstory
-    assert "Leave that work to the robot" in text and p.robot_brief["job"].split(".")[0] in text
+    # staff read the line written to them, never the robot's own job text (QA: quoted, it reads as their job)
+    assert "Leave that work to the robot" in text and p.staff_line.split(".")[0] in text
+    assert p.robot_brief["job"].split(".")[0] not in text
     patient = loaded.personas["M1"]
     assert "Leave that work to the robot" not in " ".join(patient.goals) + patient.backstory
 
